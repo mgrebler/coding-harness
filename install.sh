@@ -98,6 +98,96 @@ always_copy() {
   log "  OVERWRITE: $1"
 }
 
+# Write/replace the coding-harness-managed section in the project's .gitignore.
+manage_gitignore() {
+  local gitignore="$TARGET_DIR/.gitignore"
+  local begin_marker="# BEGIN coding-harness-managed"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "  UPDATE .gitignore: coding-harness-managed section"
+    return
+  fi
+
+  touch "$gitignore"
+
+  # Strip any existing section
+  if grep -qF "$begin_marker" "$gitignore"; then
+    local tmp
+    tmp=$(mktemp)
+    awk '/# BEGIN coding-harness-managed/{skip=1} !skip{print} /# END coding-harness-managed/{skip=0}' "$gitignore" > "$tmp"
+    mv "$tmp" "$gitignore"
+  fi
+
+  # Append updated section
+  cat >> "$gitignore" <<'GITIGNORE'
+
+# BEGIN coding-harness-managed
+# Managed by coding-harness/install.sh — do not edit this section manually.
+# Re-run install.sh after updating the harness to keep this section current.
+
+# .claude/agents — individual files so project-specific agents can coexist
+.claude/agents/agent_common.py
+.claude/agents/implement-auto.py
+.claude/agents/implement_critic.py
+.claude/agents/plan-auto.py
+.claude/agents/plan_critic.py
+.claude/agents/plan-to-implement-auto.py
+.claude/agents/semble-search.md
+.claude/agents/tasks-auto.py
+.claude/agents/tasks_critic.py
+.claude/agents/test-auto.py
+.claude/agents/test_critic.py
+
+# .claude/hooks — individual files so project-specific hooks can coexist
+.claude/hooks/post-commit
+
+# .claude/skills — individual skill dirs so project-specific skills can coexist
+.claude/skills/architecture-review-plan/
+.claude/skills/code-quality-review/
+.claude/skills/speckit-analyze/
+.claude/skills/speckit-checklist/
+.claude/skills/speckit-clarify/
+.claude/skills/speckit-constitution/
+.claude/skills/speckit-git-commit/
+.claude/skills/speckit-git-feature/
+.claude/skills/speckit-git-initialize/
+.claude/skills/speckit-git-remote/
+.claude/skills/speckit-git-validate/
+.claude/skills/speckit-implement/
+.claude/skills/speckit-implement-auto/
+.claude/skills/speckit-implement-critic/
+.claude/skills/speckit-plan/
+.claude/skills/speckit-plan-approved/
+.claude/skills/speckit-plan-auto/
+.claude/skills/speckit-plan-critic/
+.claude/skills/speckit-plan-to-implement-auto/
+.claude/skills/speckit-spec-approved/
+.claude/skills/speckit-specify/
+.claude/skills/speckit-tasks/
+.claude/skills/speckit-tasks-approved/
+.claude/skills/speckit-tasks-auto/
+.claude/skills/speckit-tasks-critic/
+.claude/skills/speckit-taskstoissues/
+.claude/skills/speckit-test/
+.claude/skills/speckit-test-approved/
+.claude/skills/speckit-test-auto/
+.claude/skills/speckit-test-critic/
+
+# .specify subdirs — fully harness-owned, no project files expected here
+.specify/extensions/
+.specify/scripts/
+.specify/templates/
+.specify/workflows/
+
+# .devcontainer — specific files only (devcontainer.json stays tracked)
+.devcontainer/Dockerfile
+.devcontainer/entrypoint.sh
+# END coding-harness-managed
+GITIGNORE
+
+  log "  UPDATE .gitignore: coding-harness-managed section"
+}
+
 # Copy a file from examples/, but only if it doesn't already exist in the target.
 init_copy() {
   local src="$SOURCE_DIR/examples/$1"
@@ -138,6 +228,8 @@ always_copy ".specify/templates"
 always_copy ".specify/workflows"
 always_copy ".devcontainer/Dockerfile"
 always_copy ".devcontainer/entrypoint.sh"
+
+manage_gitignore
 
 # ---------------------------------------------------------------------------
 # Project-initialised files (only written if absent)
