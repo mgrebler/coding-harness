@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — Install or update the SpecKit harness into a target project.
+# install.sh — Install or update the coding-harness into a target project.
 #
 # Usage:
 #   ./install.sh <source-dir> <target-dir> [--dry-run]
@@ -8,6 +8,10 @@
 # <target-dir>  Root of the project to install into.
 #
 # --dry-run     Print what would be done without making any changes.
+#
+# To update an existing project, pull the harness repo and re-run this script:
+#   cd /path/to/coding-harness && git pull
+#   ./install.sh /path/to/coding-harness /path/to/project
 #
 # Behaviour:
 #   ALWAYS OVERWRITES (harness-managed — no project customisation):
@@ -25,9 +29,6 @@
 #     docker-compose.yml
 #     .devcontainer/devcontainer.json
 #     CLAUDE.md
-#
-#   ALWAYS WRITES (project-local update script):
-#     scripts/update-harness.sh  (with source path embedded)
 
 set -euo pipefail
 
@@ -154,39 +155,6 @@ init_copy ".specify/memory/product-context.md"
 init_copy "docker-compose.yml"
 init_copy ".devcontainer/devcontainer.json"
 init_copy "CLAUDE.md"
-
-# ---------------------------------------------------------------------------
-# Install the project-local update script
-# ---------------------------------------------------------------------------
-
-log ""
-log "==> Installing scripts/update-harness.sh"
-
-UPDATE_SCRIPT="$TARGET_DIR/scripts/update-harness.sh"
-
-if [[ "$DRY_RUN" == "false" ]]; then
-  mkdir -p "$TARGET_DIR/scripts"
-  cat > "$UPDATE_SCRIPT" << UPDATESCRIPT
-#!/usr/bin/env bash
-# update-harness.sh — Re-run the SpecKit install from the pinned source.
-#
-# Run this from the project root to pull the latest harness into this project.
-# To switch to git subtree later:
-#   1. git subtree add --prefix=.coding-harness <harness-repo-url> main
-#   2. Update HARNESS_SOURCE below to: "\$(git rev-parse --show-toplevel)/.speckit"
-#   3. Add: git subtree pull --prefix=.coding-harness <harness-repo-url> main
-
-set -euo pipefail
-HARNESS_SOURCE="${SOURCE_DIR}"
-SCRIPT_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
-PROJECT_ROOT="\$(cd "\$SCRIPT_DIR/.." && pwd)"
-exec "\$HARNESS_SOURCE/install.sh" "\$HARNESS_SOURCE" "\$PROJECT_ROOT" "\$@"
-UPDATESCRIPT
-  chmod +x "$UPDATE_SCRIPT"
-  log "  Written: scripts/update-harness.sh (source: $SOURCE_DIR)"
-else
-  log "  [dry-run] Would write: scripts/update-harness.sh (source: $SOURCE_DIR)"
-fi
 
 # ---------------------------------------------------------------------------
 # Post-install reminders

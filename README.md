@@ -4,14 +4,21 @@ A spec-driven coding harness built on Claude Code and SpecKit. Features go throu
 
 ---
 
-## Installing into a New Project
+## Setup
+
+Clone the harness once and keep it somewhere on your machine:
 
 ```bash
 git clone <harness-repo-url> coding-harness
+```
+
+### Installing into a New Project
+
+```bash
 coding-harness/install.sh coding-harness/ /path/to/your-project/
 ```
 
-Then:
+Then customise the project-initialised files:
 
 ```bash
 cd /path/to/your-project
@@ -20,41 +27,41 @@ cd /path/to/your-project
 cp .claude/hooks/post-commit .git/hooks/post-commit
 chmod +x .git/hooks/post-commit
 
-# Customise the project-specific files
-#   .specify/memory/constitution.md   — fill in [PROJECT: ...] placeholders
+# Fill in the project-specific placeholders
+#   .specify/memory/constitution.md   — fill in [PROJECT: ...] sections
 #   .specify/memory/architecture.md   — describe your system architecture
 #   .specify/memory/product-context.md — describe your product and users
-#   docker-compose.yml                — replace <project-name> with your project name
+#   docker-compose.yml                — replace <project-name>
 
-# Add your project's Playwright browser install to .devcontainer/Dockerfile
+# Add your Playwright browser install to .devcontainer/Dockerfile
 # (see the comment block in that file)
 ```
 
 ### Updating an Existing Project
 
-```bash
-# From inside the project:
-./scripts/update-harness.sh
-```
+Pull the harness, then re-run the install script against the project. Harness-managed files are overwritten; project-initialised files are never touched.
 
-This re-runs `install.sh` from the pinned source directory. Harness-managed files are overwritten; project-initialised files (constitution, architecture, etc.) are never touched.
+```bash
+cd /path/to/coding-harness && git pull
+./install.sh /path/to/coding-harness /path/to/your-project
+```
 
 ### Migrating to Git Subtree (Optional)
 
-If you later want harness updates tracked in git:
+If you want the harness pinned inside the project repo so updates are tracked in git:
 
 ```bash
 git subtree add --prefix=.coding-harness <harness-repo-url> main
 ```
 
-Then update `scripts/update-harness.sh` to:
+To update:
 
 ```bash
 git subtree pull --prefix=.coding-harness <harness-repo-url> main
 .coding-harness/install.sh .coding-harness/ .
 ```
 
-`install.sh` itself needs no changes — it already accepts a source directory parameter.
+`install.sh` needs no changes — it already accepts a source directory parameter.
 
 ---
 
