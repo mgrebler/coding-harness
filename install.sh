@@ -110,17 +110,21 @@ manage_gitignore() {
 
   touch "$gitignore"
 
-  # Strip any existing section
+  # Strip existing section, then remove any trailing blank lines it leaves behind
   if grep -qF "$begin_marker" "$gitignore"; then
     local tmp
     tmp=$(mktemp)
     awk '/# BEGIN coding-harness-managed/{skip=1} !skip{print} /# END coding-harness-managed/{skip=0}' "$gitignore" > "$tmp"
-    mv "$tmp" "$gitignore"
+    # Strip trailing blank lines: only print up to the last non-empty line
+    awk 'NF{found=NR} {lines[NR]=$0} END{for(i=1;i<=found;i++) print lines[i]}' "$tmp" > "$gitignore"
+    rm -f "$tmp"
   fi
 
-  # Append updated section
-  cat >> "$gitignore" <<'GITIGNORE'
+  # Add a single blank line separator only if the file already has content
+  [[ -s "$gitignore" ]] && echo >> "$gitignore"
 
+  # Append updated section (no leading blank line — separator is added above)
+  cat >> "$gitignore" <<'GITIGNORE'
 # BEGIN coding-harness-managed
 # Managed by coding-harness/install.sh — do not edit this section manually.
 # Re-run install.sh after updating the harness to keep this section current.
