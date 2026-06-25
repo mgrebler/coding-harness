@@ -1,0 +1,47 @@
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+
+    environment:
+      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN}"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # PROJECT-SPECIFIC: Replace <project-name> with your project name.
+    hostname: <project-name>-dev
+
+    stdin_open: true
+    tty: true
+
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.gitconfig:/home/node/.gitconfig:ro
+      - ~/.ssh:/home/node/.ssh:ro
+      - ~/.config/gh:/home/node/.config/gh:ro
+      - ~/.claude.json:/home/node/.claude.json
+      - ~/.claude:/home/node/.claude
+      # PROJECT-SPECIFIC: Add a named volume here if your project uses Playwright
+      # and you want to cache browser binaries across container restarts:
+      # - playwright_cache:/home/node/.cache/ms-playwright
+
+    working_dir: /workspace
+
+# PROJECT-SPECIFIC: Add project-specific services here (databases, queues, etc.)
+# or in a separate docker-compose.override.yml / docker-compose.test.yml.
+# Example:
+#
+# postgres-test:
+#   image: postgres:16-alpine
+#   environment:
+#     POSTGRES_DB: myapp_test
+#     POSTGRES_USER: postgres
+#     POSTGRES_PASSWORD: postgres
+#   ports:
+#     - "5433:5432"
+
+# volumes:
+#   playwright_cache:

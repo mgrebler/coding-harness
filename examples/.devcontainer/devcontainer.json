@@ -1,0 +1,11 @@
+{
+  "name": "claude-dev",
+
+  "dockerComposeFile": "../docker-compose.yml",
+
+  "service": "dev",
+
+  "workspaceFolder": "/workspace",
+
+  "remoteUser": "node"
+}

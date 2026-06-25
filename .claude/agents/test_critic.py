@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""
+.claude/agents/test_critic.py
+
+Self-contained test critic that runs against a local Ollama LLM.
+Called by test-auto.py when local LLM is configured for the "test" critic.
+
+Usage:
+  python3 .claude/agents/test_critic.py [--feature 012-my-feature] [--iteration 2]
+
+Exit codes:
+  0 - success: result file written
+  1 - runtime error
+  2 - local LLM not configured (caller should fall back to Claude)
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from agent_common import (
+    call_local_llm,
+    get_changed_files,
+    get_feature_from_branch,
+    load_local_llm_config,
+    next_iteration,
+    read_changed_files,
+    strip_fences,
+    write_file,
+)
+
+CRITIC_RESULT_PREFIX = "test-critic-result"
+
+TEST_DIRS = ("backend/tests/", "frontend/tests/")
+
+
+def read_test_results(spec_dir: Path) -> str:
+    results_dir = spec_dir / "test-results"
+    if not results_dir.exists():
+        return "(no test-results directory — red-state artifacts missing)"
+    files = sorted(results_dir.glob("*-red.txt"))
+    if not files:
+        return "(test-results directory exists but no *-red.txt artifacts found)"
+    parts = []
+    for f in files:
+        try:
+            parts.append(f"--- {f.name} ---\n{f.read_text(encoding='utf-8')}")
+        except Exception:
+            parts.append(f"--- {f.name} --- (could not read)")
+    return "\n\n".join(parts)
+
+
+def build_test_critic_prompt(
+    constitution: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    test_principles: str,
+    feature: str,
+    iteration: int,
+    violations_block: str = "",
+    architecture: str | None = None,
+    changed_files_section: str | None = None,
+    test_results: str | None = None,
+    output_instructions: str = "",
+) -> str:
+    """
+    Build the test critic prompt.
+
+    changed_files_section:
+      None  → include git diff instructions (Claude path; agent reads files with tools)
+      str   → embed pre-fetched content (local LLM path)
+
+    test_results:
+      None  → not embedded (Claude path reads them with tools)
+      str   → embed content (local LLM path)
+
+    architecture:
+      None  → not embedded
+      str   → embed content
+    """
+    extra_sections = ""
+    if architecture is not None:
+        extra_sections += f"\n--- ARCHITECTURE ---\n{architecture}\n"
+
+    if changed_files_section is None:
+        file_input = (
+            "Validation process:\n"
+            f"1. Run `git diff main...HEAD --name-only` to identify all changed files\n"
+            "2. Filter to test files only: backend/tests/ and frontend/tests/\n"
+            "3. Read each changed test file in full\n"
+            f"4. Read all files under specs/{feature}/test-results/ (red-output artifacts)\n"
+            "5. Do NOT read implementation files — none should exist yet\n"
+            "6. Validate against every rule below"
+        )
+    else:
+        test_results_block = f"\n--- RED-STATE ARTIFACTS (specs/{feature}/test-results/) ---\n{test_results or '(none)'}" if test_results is not None else ""
+        file_input = f"--- CHANGED TEST FILES (git diff main...HEAD, test paths only) ---\n{changed_files_section}{test_results_block}"
+
+    tail = (
+        f"- status is FAIL if any violation is BLOCKING\n"
+        f"- status is PASS only if zero BLOCKING violations"
+    )
+    if output_instructions:
+        tail += f"\n{output_instructions}"
+
+    return f"""You are the Test Critic Agent for a spec-kit project.
+
+Your sole function is to validate the test files written on this branch against the rules below.
+You do not fix code. You do not write code. You identify violations only.
+{violations_block}
+Inputs already loaded for you:
+
+--- CONSTITUTION ---
+{constitution}
+{extra_sections}
+--- SPEC ---
+{spec}
+
+--- PLAN ---
+{plan}
+
+--- TASKS ---
+{tasks}
+
+--- TEST PRINCIPLES ---
+{test_principles}
+
+{file_input}
+
+Validate against ALL rules in the embedded CONSTITUTION and TEST PRINCIPLES documents above.
+Those documents are the authoritative source for all project-specific test constraints — test
+isolation, stack compliance, assertion quality, test naming, and test library restrictions.
+Read and apply every section.
+
+For violations derived from the memory documents, use the section as the rule label,
+e.g. "Test Principles — Assertion Quality", "Constitution §2 — Stack Constraints".
+
+Harness process checks (apply in addition to the above):
+
+§TQ1 Task Traceability [BLOCKING]: every changed test file corresponds to a [TEST] task in tasks.md; no test file added without a matching [TEST] task entry
+§TQ2 Red State Confirmed [BLOCKING]: a test-results/<TASKID>-red.txt artifact exists for every completed [TEST] task; artifact shows a meaningful failure (assertion or "not found"), not a compile/syntax error in the test file itself
+§TQ3 Spec Coverage [BLOCKING]: test assertions correspond to acceptance criteria in spec.md; every acceptance criterion traceable to at least one assertion; cite untested criteria
+§TQ4 No Implementation Code [BLOCKING]: test files contain no business logic, no database queries outside test setup/teardown, no service orchestration
+§TQ9 CI Readiness [WARNING]: no test.only, describe.only, or it.only in any changed test file; cite file and line if found
+
+Output ONLY valid JSON, no preamble, no markdown fences:
+{{
+  "iteration": {iteration},
+  "status": "PASS or FAIL",
+  "violations": [
+    {{
+      "rule": "<rule label, e.g. §TQ3 — Spec Coverage>",
+      "severity": "BLOCKING or WARNING",
+      "location": "<file path and line number or test name>",
+      "finding": "<specific, citable description>"
+    }}
+  ],
+  "not_applicable": [
+    {{
+      "rule": "<rule label>",
+      "reason": "<why not applicable>"
+    }}
+  ],
+  "summary": "<one paragraph>"
+}}
+
+Rules:
+{tail}"""
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Test critic using local LLM")
+    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
+    parser.add_argument("--iteration", type=int, help="Iteration number (auto-detected if omitted)")
+    args = parser.parse_args()
+
+    config = load_local_llm_config("test")
+    if config is None:
+        sys.exit(2)
+
+    feature = args.feature or get_feature_from_branch("test-critic")
+    spec_dir = Path(f"specs/{feature}")
+
+    iteration = args.iteration if args.iteration is not None else next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
+
+    constitution_path = Path(".specify/memory/constitution.md")
+    architecture_path = Path(".specify/memory/architecture.md")
+    test_principles_path = Path(".specify/memory/test-principles.md")
+    spec_path = spec_dir / "spec.md"
+    plan_path = spec_dir / "plan.md"
+    tasks_path = spec_dir / "tasks.md"
+
+    for p in (constitution_path, spec_path, plan_path, tasks_path):
+        if not p.exists():
+            print(f"[test-critic] ERROR: required file not found: {p}", flush=True)
+            sys.exit(1)
+
+    constitution = constitution_path.read_text(encoding="utf-8")
+    architecture = architecture_path.read_text(encoding="utf-8") if architecture_path.exists() else "(architecture.md not found)"
+    test_principles = test_principles_path.read_text(encoding="utf-8") if test_principles_path.exists() else "(test-principles.md not found)"
+    spec = spec_path.read_text(encoding="utf-8")
+    plan = plan_path.read_text(encoding="utf-8")
+    tasks = tasks_path.read_text(encoding="utf-8")
+
+    changed_files = get_changed_files()
+    changed_test_files = read_changed_files(changed_files, TEST_DIRS)
+    test_results = read_test_results(spec_dir)
+
+    prompt = build_test_critic_prompt(
+        constitution, spec, plan, tasks, test_principles, feature, iteration,
+        architecture=architecture,
+        changed_files_section=changed_test_files,
+        test_results=test_results,
+    )
+
+    print(f"[test-critic] Running iteration {iteration} via local LLM ({config['model']})...", flush=True)
+
+    def _progress(token_count: int, elapsed_s: float, done: bool = False) -> None:
+        if done:
+            print(f"[test-critic]   done — {token_count} tokens in {elapsed_s:.0f}s", flush=True)
+        else:
+            print(f"[test-critic]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True)
+
+    try:
+        raw = call_local_llm(prompt, config, progress_fn=_progress)
+    except Exception as e:
+        print(f"[test-critic] ERROR: local LLM call failed: {e}", flush=True)
+        sys.exit(1)
+
+    cleaned = strip_fences(raw)
+
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        print(f"[test-critic] ERROR: could not parse LLM response as JSON: {e}", flush=True)
+        print(f"[test-critic] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
+        sys.exit(1)
+
+    result["iteration"] = iteration
+
+    result_path = spec_dir / f"{CRITIC_RESULT_PREFIX}-{iteration}.json"
+    write_file(result_path, json.dumps(result, indent=2))
+
+    status = result.get("status", "FAIL")
+    violations = result.get("violations", [])
+    blocking = sum(1 for v in violations if v.get("severity") == "BLOCKING")
+    warnings = sum(1 for v in violations if v.get("severity") == "WARNING")
+
+    if status == "PASS":
+        print(f"[test-critic] iteration {iteration} → PASS → {result_path}", flush=True)
+    else:
+        print(f"[test-critic] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}", flush=True)
+
+
+if __name__ == "__main__":
+    main()
