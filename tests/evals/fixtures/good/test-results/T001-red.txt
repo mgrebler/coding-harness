@@ -1,0 +1,9 @@
+FAIL tests/routes/health.test.ts
+  GET /health
+    ✗ returns 200 with { status: ok }
+      AssertionError: expected 404 to be 200
+        at tests/routes/health.test.ts:10:26
+
+Test Files  1 failed (1)
+Tests       1 failed (1)
+Duration    312ms

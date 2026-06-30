@@ -255,6 +255,38 @@ Critic passes can optionally run against a local [Ollama](https://ollama.com) in
 
 ---
 
+## Regression Tests
+
+The harness has a two-layer test suite under `tests/`.
+
+### Layer 1 — Unit tests (no LLM, fast)
+
+Tests for pure functions in `agent_common.py` and the prompt-building functions exported by each critic module. No external calls.
+
+```bash
+bash tests/run_tests.sh --skip-evals
+# or directly:
+python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
+```
+
+### Layer 2 — Critic evals (requires local Ollama)
+
+Each critic script (`plan_critic.py`, `tasks_critic.py`, `test_critic.py`, `implement_critic.py`) is run against known-good and known-bad fixture artifacts. The result JSON is asserted. This catches prompt degradation, rule drift, or regressions in critic logic.
+
+Fixtures live in `tests/evals/fixtures/` — a minimal "health endpoint" feature with good and bad variants for each pipeline stage.
+
+```bash
+bash tests/run_tests.sh
+# Override Ollama model (default: deepseek-r1:8b):
+OLLAMA_MODEL=qwen3:30b-a3b bash tests/run_tests.sh
+# Override Ollama URL (default: http://localhost:11434):
+OLLAMA_URL=http://host.docker.internal:11434 bash tests/run_tests.sh
+```
+
+The eval tests configure Ollama via a `.specify/local-llm.json` written into each test's temp directory — no changes to your local config needed. If Ollama is unreachable or the model isn't pulled, tests skip with a clear message rather than erroring.
+
+---
+
 ## What This Repo Contains
 
 ```
@@ -280,5 +312,16 @@ speckit/
 │       ├── constitution.md     # Annotated template — fill in project-specific sections
 │       ├── architecture.md     # Structural template
 │       └── product-context.md  # Product vision template
+├── tests/
+│   ├── run_tests.sh            # Top-level runner (--skip-evals for unit only)
+│   ├── unit/                   # Pure-function tests, no LLM
+│   │   ├── test_agent_common.py
+│   │   └── test_prompt_builders.py
+│   └── evals/                  # Critic evals against fixture artifacts (requires Ollama)
+│       ├── fixtures/           # Good and bad artifacts for the health-endpoint feature
+│       ├── test_plan_critic_eval.py
+│       ├── test_tasks_critic_eval.py
+│       ├── test_test_critic_eval.py
+│       └── test_implement_critic_eval.py
 └── install.sh              # Install/update script
 ```

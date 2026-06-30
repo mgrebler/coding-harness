@@ -1,0 +1,150 @@
+"""Unit tests for critic prompt builder functions. No LLM calls — verifies prompt wiring."""
+
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
+from plan_critic import build_plan_critic_prompt
+from tasks_critic import build_tasks_critic_prompt
+from test_critic import build_test_critic_prompt
+from implement_critic import build_implement_critic_prompt
+
+
+class TestPlanCriticPrompt(unittest.TestCase):
+    def _build(self, **kwargs):
+        defaults = dict(constitution="CONST", architecture="ARCH", spec="SPEC", plan="PLAN", iteration=1)
+        defaults.update(kwargs)
+        return build_plan_critic_prompt(**defaults)
+
+    def test_spec_content_injected(self):
+        self.assertIn("MY_SPEC_CONTENT", self._build(spec="MY_SPEC_CONTENT"))
+
+    def test_constitution_content_injected(self):
+        self.assertIn("MY_CONSTITUTION", self._build(constitution="MY_CONSTITUTION"))
+
+    def test_architecture_content_injected(self):
+        self.assertIn("MY_ARCH", self._build(architecture="MY_ARCH"))
+
+    def test_plan_content_injected(self):
+        self.assertIn("MY_PLAN", self._build(plan="MY_PLAN"))
+
+    def test_violations_block_included_when_provided(self):
+        self.assertIn("PREV_VIOLATIONS", self._build(violations_block="PREV_VIOLATIONS"))
+
+    def test_violations_block_absent_when_not_provided(self):
+        prompt = self._build()
+        self.assertNotIn("PREV_VIOLATIONS", prompt)
+
+    def test_traceability_rule_present(self):
+        self.assertIn("Traceability", self._build())
+
+    def test_json_schema_instruction_present(self):
+        prompt = self._build()
+        self.assertIn('"status"', prompt)
+        self.assertIn('"violations"', prompt)
+        self.assertIn("PASS or FAIL", prompt)
+
+
+class TestTasksCriticPrompt(unittest.TestCase):
+    def _build(self, **kwargs):
+        defaults = dict(constitution="CONST", spec="SPEC", plan="PLAN", tasks="TASKS", iteration=1)
+        defaults.update(kwargs)
+        return build_tasks_critic_prompt(**defaults)
+
+    def test_spec_content_injected(self):
+        self.assertIn("MY_SPEC", self._build(spec="MY_SPEC"))
+
+    def test_constitution_content_injected(self):
+        self.assertIn("MY_CONST", self._build(constitution="MY_CONST"))
+
+    def test_tasks_content_injected(self):
+        self.assertIn("MY_TASKS", self._build(tasks="MY_TASKS"))
+
+    def test_violations_block_included_when_provided(self):
+        self.assertIn("PREV_VIOL", self._build(violations_block="PREV_VIOL"))
+
+    def test_rule_labels_present(self):
+        prompt = self._build()
+        self.assertIn("§T1", prompt)  # §T1
+        self.assertIn("§T2", prompt)  # §T2
+
+    def test_json_schema_instruction_present(self):
+        prompt = self._build()
+        self.assertIn('"status"', prompt)
+        self.assertIn("PASS or FAIL", prompt)
+
+
+class TestTestCriticPrompt(unittest.TestCase):
+    def _build(self, **kwargs):
+        defaults = dict(constitution="CONST", spec="SPEC", plan="PLAN", tasks="TASKS",
+                        test_principles="PRINCIPLES", feature="001-health-endpoint", iteration=1)
+        defaults.update(kwargs)
+        return build_test_critic_prompt(**defaults)
+
+    def test_spec_content_injected(self):
+        self.assertIn("MY_SPEC", self._build(spec="MY_SPEC"))
+
+    def test_constitution_content_injected(self):
+        self.assertIn("MY_CONST", self._build(constitution="MY_CONST"))
+
+    def test_test_principles_injected(self):
+        self.assertIn("MY_PRINCIPLES", self._build(test_principles="MY_PRINCIPLES"))
+
+    def test_violations_block_included_when_provided(self):
+        self.assertIn("PREV_VIOL", self._build(violations_block="PREV_VIOL"))
+
+    def test_rule_labels_present(self):
+        prompt = self._build()
+        self.assertIn("§TQ1", prompt)  # §TQ1
+        self.assertIn("§TQ2", prompt)  # §TQ2
+
+    def test_json_schema_instruction_present(self):
+        prompt = self._build()
+        self.assertIn('"status"', prompt)
+        self.assertIn("PASS or FAIL", prompt)
+
+    def test_architecture_optional_included_when_provided(self):
+        self.assertIn("MY_ARCH", self._build(architecture="MY_ARCH"))
+
+    def test_test_results_embedded_on_local_llm_path(self):
+        # test_results only embedded when changed_files_section is also provided (local LLM path)
+        prompt = self._build(changed_files_section="MY_FILES", test_results="MY_RESULTS")
+        self.assertIn("MY_RESULTS", prompt)
+        self.assertIn("MY_FILES", prompt)
+
+
+class TestImplementCriticPrompt(unittest.TestCase):
+    def _build(self, **kwargs):
+        defaults = dict(constitution="CONST", spec="SPEC", plan="PLAN", tasks="TASKS", iteration=1)
+        defaults.update(kwargs)
+        return build_implement_critic_prompt(**defaults)
+
+    def test_spec_content_injected(self):
+        self.assertIn("MY_SPEC", self._build(spec="MY_SPEC"))
+
+    def test_constitution_content_injected(self):
+        self.assertIn("MY_CONST", self._build(constitution="MY_CONST"))
+
+    def test_violations_block_included_when_provided(self):
+        self.assertIn("PREV_VIOL", self._build(violations_block="PREV_VIOL"))
+
+    def test_rule_labels_present(self):
+        prompt = self._build()
+        self.assertIn("§I1", prompt)  # §I1
+        self.assertIn("§I4", prompt)  # §I4
+
+    def test_json_schema_instruction_present(self):
+        prompt = self._build()
+        self.assertIn('"status"', prompt)
+        self.assertIn("PASS or FAIL", prompt)
+
+    def test_contracts_optional_included_when_provided(self):
+        self.assertIn("MY_CONTRACTS", self._build(contracts="MY_CONTRACTS"))
+
+    def test_data_model_optional_included_when_provided(self):
+        self.assertIn("MY_DATA_MODEL", self._build(data_model="MY_DATA_MODEL"))
+
+
+if __name__ == "__main__":
+    unittest.main()
