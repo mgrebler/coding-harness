@@ -25,6 +25,8 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "deepseek-r1:8b")
 
 LOCAL_LLM_CONFIG = {
     "ollama_url": OLLAMA_URL,
+    "num_ctx": 16384,
+    "keep_alive": -1,
     "default": {"enabled": False, "model": ""},
     "critics": {
         "implement": {"enabled": True, "model": OLLAMA_MODEL},

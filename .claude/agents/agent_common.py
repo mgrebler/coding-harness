@@ -356,32 +356,153 @@ def load_local_llm_config(critic_type: str) -> Optional[dict]:
     if not resolved.get("enabled") or not resolved.get("model", "").strip():
         return None
 
-    return {
+    result: dict = {
         "ollama_url": raw.get("ollama_url", "http://host.docker.internal:11434").rstrip("/"),
         "model": resolved["model"],
     }
+    # num_ctx caps the KV-cache context window. Without it Ollama uses the model's
+    # default (often 32k–128k), which overflows VRAM and spills to system RAM.
+    # Critic prompts are typically 3–6k tokens; 8192 keeps everything in VRAM.
+    num_ctx = resolved.get("num_ctx") or raw.get("num_ctx")
+    if num_ctx:
+        result["num_ctx"] = int(num_ctx)
+    # keep_alive controls how long Ollama keeps the model in VRAM after a request.
+    # Set to -1 to pin the model indefinitely — avoids cold-load latency between
+    # critic iterations and between pipeline stages.
+    keep_alive = resolved.get("keep_alive") if "keep_alive" in resolved else raw.get("keep_alive")
+    if keep_alive is not None:
+        result["keep_alive"] = keep_alive
+    return result
+
+
+def _fmt_bytes(b: int) -> str:
+    if b >= 1024**3:
+        return f"{b / 1024**3:.1f} GB"
+    if b >= 1024**2:
+        return f"{b // 1024**2} MB"
+    return f"{b} B"
+
+
+def _get_ps_entry(ollama_url: str, model: str) -> Optional[dict]:
+    """Return the /api/ps entry for model, or None if not loaded / unreachable."""
+    try:
+        with urllib.request.urlopen(f"{ollama_url}/api/ps", timeout=3) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return None
+    base = model.split(":")[0]
+    for entry in data.get("models", []):
+        name = entry.get("name", "")
+        if name == model or name.startswith(base + ":") or name.startswith(base):
+            return entry
+    return None
+
+
+def _log_vram_state(ollama_url: str, model: str) -> None:
+    """
+    Query Ollama's /api/ps and log how much of the model is in VRAM vs system RAM.
+    Best-effort: silent no-op if unreachable or model not yet listed.
+    """
+    entry = _get_ps_entry(ollama_url, model)
+    if entry is None:
+        return
+    size_vram = entry.get("size_vram", 0)
+    size_total = entry.get("size", size_vram)
+    size_ram = max(0, size_total - size_vram)
+    ctx = entry.get("context_length", "?")
+    spillage = " (spillage — reduce num_ctx in local-llm.json)" if size_ram > 0 else " ✓"
+    print(
+        f"[ollama] {entry['name']} — ctx: {ctx} — VRAM: {_fmt_bytes(size_vram)}, RAM: {_fmt_bytes(size_ram)}{spillage}",
+        flush=True,
+    )
+
+
+def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=None) -> None:
+    """
+    Ensure the model is loaded at exactly num_ctx tokens of context.
+
+    Ollama reuses a loaded model for any request that fits within its current context
+    window — it will NOT shrink context on its own, and the OpenAI-compatible endpoint
+    does not apply options.num_ctx at load time. This function:
+      1. Unloads the model if it is currently loaded at the wrong context size.
+      2. Preloads it at num_ctx via the native /api/generate endpoint (which does
+         respect options.num_ctx at load time), using keep_alive=-1 so it stays pinned.
+    """
+    entry = _get_ps_entry(ollama_url, model)
+    current_ctx = entry.get("context_length") if entry else None
+    if current_ctx == num_ctx:
+        return  # already loaded at the right size
+
+    if current_ctx is not None:
+        print(
+            f"[ollama] model loaded at ctx={current_ctx}, want ctx={num_ctx} — reloading at correct size",
+            flush=True,
+        )
+        try:
+            unload_payload = json.dumps({"model": model, "keep_alive": 0}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{ollama_url}/api/generate",
+                data=unload_payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30):
+                pass
+        except Exception:
+            pass
+    else:
+        print(f"[ollama] preloading {model} at ctx={num_ctx}", flush=True)
+
+    # Preload at the correct context via the native endpoint, which respects
+    # options.num_ctx at model-load time (unlike /v1/chat/completions).
+    try:
+        preload_body: dict = {
+            "model": model,
+            "options": {"num_ctx": num_ctx},
+            "keep_alive": keep_alive if keep_alive is not None else -1,
+        }
+        req = urllib.request.Request(
+            f"{ollama_url}/api/generate",
+            data=json.dumps(preload_body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120):
+            pass
+    except Exception:
+        pass  # best-effort; inference will still proceed
 
 
 def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interval: int = 50) -> str:
     """
-    Send prompt to Ollama via the OpenAI-compatible /v1/chat/completions endpoint.
+    Send prompt to Ollama via the native /api/chat endpoint.
     Uses streaming so the socket stays alive during generation (avoids read timeout).
     Thinking mode disabled — reduces latency for rule-checking tasks.
-    Per-chunk read timeout: 120s.
+    Per-chunk read timeout: 300s.
+
+    Uses the native endpoint (not /v1/chat/completions) because the OpenAI-compatible
+    endpoint ignores options.num_ctx at model-load time and always loads at the model's
+    default context size — defeating VRAM optimisation.
 
     progress_fn: optional callable(token_count: int, elapsed_s: float) invoked every
                  progress_interval content tokens. Useful for logging heartbeats to a
                  log file when the caller cannot otherwise observe generation progress.
     progress_interval: how often (in tokens) to fire progress_fn (default: 50).
     """
-    url = f"{config['ollama_url']}/v1/chat/completions"
-    payload = json.dumps({
+    url = f"{config['ollama_url']}/api/chat"
+    options: dict = {"temperature": 0.1}
+    if config.get("num_ctx"):
+        options["num_ctx"] = config["num_ctx"]
+    body: dict = {
         "model": config["model"],
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1,
         "stream": True,
         "think": False,
-    }).encode("utf-8")
+        "options": options,
+    }
+    if "keep_alive" in config:
+        body["keep_alive"] = config["keep_alive"]
+    payload = json.dumps(body).encode("utf-8")
 
     req = urllib.request.Request(
         url,
@@ -392,29 +513,35 @@ def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interva
 
     content_parts = []
     token_count = 0
+    thinking_count = 0
     start = time.monotonic()
 
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=300) as resp:
         for raw_line in resp:
             line = raw_line.decode("utf-8").strip()
-            if not line.startswith("data:"):
+            if not line:
                 continue
-            data = line[len("data:"):].strip()
-            if data == "[DONE]":
-                break
             try:
-                chunk = json.loads(data)
-                delta = chunk["choices"][0]["delta"]
-                if delta.get("role") == "assistant" and not delta.get("content"):
-                    continue
-                token = delta.get("content", "")
+                chunk = json.loads(line)
+                if chunk.get("done"):
+                    break
+                msg = chunk.get("message", {})
+                # Thinking tokens (native API returns them in message.thinking)
+                thinking = msg.get("thinking", "")
+                if thinking:
+                    thinking_count += len(thinking.split())
+                    if thinking_count % progress_interval == 0:
+                        print(f"[ollama] thinking... {thinking_count} tokens ({time.monotonic() - start:.0f}s elapsed)", flush=True)
+                token = msg.get("content", "")
                 if token:
                     content_parts.append(token)
                     token_count += 1
                     if progress_fn and token_count % progress_interval == 0:
                         progress_fn(token_count, time.monotonic() - start)
-            except (KeyError, IndexError, json.JSONDecodeError):
+            except (KeyError, json.JSONDecodeError):
                 continue
+
+    _log_vram_state(config["ollama_url"], config["model"])
 
     if progress_fn and token_count > 0:
         progress_fn(token_count, time.monotonic() - start, done=True)

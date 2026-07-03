@@ -103,6 +103,19 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         self.assertEqual(result["model"], "qwen3:4b")
         self.assertIn("ollama_url", result)
 
+    def test_num_ctx_top_level_passed_through(self):
+        self._write_config({"ollama_url": "http://localhost:11434",
+                            "num_ctx": 8192,
+                            "default": {"enabled": True, "model": "llama3.2"}})
+        result = agent_common.load_local_llm_config("plan")
+        self.assertEqual(result["num_ctx"], 8192)
+
+    def test_num_ctx_absent_when_not_set(self):
+        self._write_config({"ollama_url": "http://localhost:11434",
+                            "default": {"enabled": True, "model": "llama3.2"}})
+        result = agent_common.load_local_llm_config("plan")
+        self.assertNotIn("num_ctx", result)
+
     def test_default_enabled_returns_config(self):
         self._write_config({"ollama_url": "http://localhost:11434",
                             "default": {"enabled": True, "model": "llama3.2"},

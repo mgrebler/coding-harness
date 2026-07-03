@@ -111,6 +111,8 @@ Critic passes can run against a local [Ollama](https://ollama.com) instance inst
 ```json
 {
   "ollama_url": "http://host.docker.internal:11434",
+  "num_ctx": 16384,
+  "keep_alive": -1,
   "default": { "enabled": false, "model": "" },
   "critics": {
     "plan":      { "enabled": true,  "model": "qwen3:30b-a3b" },
@@ -120,6 +122,10 @@ Critic passes can run against a local [Ollama](https://ollama.com) instance inst
   }
 }
 ```
+
+`num_ctx` caps the Ollama KV-cache context window. Without it, Ollama uses the model's default (often 32k–128k), which can overflow VRAM and spill to system RAM, making inference very slow. `16384` is a good default for an 8 GB GPU: critic prompts fit comfortably and the KV cache stays in VRAM. Tune down if your GPU is smaller, or up if your prompts are very large.
+
+`keep_alive: -1` pins the model in VRAM indefinitely, eliminating cold-load latency between critic iterations and pipeline stages. Omit it to use Ollama's default (5 min).
 
 ### Critic Loop Pattern
 
