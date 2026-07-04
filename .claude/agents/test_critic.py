@@ -16,6 +16,7 @@ Exit codes:
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -33,6 +34,53 @@ from agent_common import (
 CRITIC_RESULT_PREFIX = "test-critic-result"
 
 TEST_DIRS = ("backend/tests/", "frontend/tests/")
+
+_ASSERTION_KEYWORDS = (
+    "expect(", "assert.", "toBe(", "toEqual(", "toContain(", "toMatch(",
+    "toBeTruthy", "toBeFalsy", "toHaveLength", "toHaveBeenCalled",
+)
+
+
+def _extract_assertions(content: str) -> str:
+    """Return a numbered list of assertion lines with line numbers."""
+    lines = content.splitlines()
+    hits = []
+    for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if any(kw in stripped for kw in _ASSERTION_KEYWORDS):
+            hits.append(f"  Line {i}: {stripped}")
+    return "\n".join(hits)
+
+
+def _annotate_test_files(file_section: str) -> str:
+    """
+    Prepend each file block in file_section with a pre-extracted assertion list.
+    This reduces §TQ3 checking from a search task to a lookup task, cutting
+    thinking depth for reasoning models.
+    """
+    # Split on "--- path ---" markers (produced by read_changed_files)
+    parts = re.split(r"(?m)^(--- .+ ---\n)", file_section)
+    out = []
+    i = 0
+    while i < len(parts):
+        segment = parts[i]
+        if re.match(r"--- .+ ---\n", segment) and i + 1 < len(parts):
+            content = parts[i + 1]
+            assertions = _extract_assertions(content)
+            if assertions:
+                content = (
+                    "Assertions in this file (pre-extracted for §TQ3 lookup):\n"
+                    + assertions
+                    + "\n\nFull file:\n"
+                    + content
+                )
+            out.append(segment)
+            out.append(content)
+            i += 2
+        else:
+            out.append(segment)
+            i += 1
+    return "".join(out)
 
 
 def read_test_results(spec_dir: Path) -> str:
@@ -129,24 +177,20 @@ Inputs already loaded for you:
 
 {file_input}
 
-Validate against ALL rules in the embedded CONSTITUTION and TEST PRINCIPLES documents above.
-Those documents are the authoritative source for all project-specific test constraints — test
-isolation, stack compliance, assertion quality, test naming, and test library restrictions.
-Read and apply every section.
+Validate against ONLY the harness rules (§TQ1–§TQ9) and the embedded CONSTITUTION and
+TEST PRINCIPLES documents above. Constitution and Test Principles are the authoritative source
+for all project-specific test constraints.
 
-For violations derived from the memory documents, use the section as the rule label,
-e.g. "Test Principles — Assertion Quality", "Constitution §2 — Stack Constraints".
-
-Harness process checks (apply in addition to the above):
+Harness process checks:
 
 §TQ1 Task Traceability [BLOCKING]: every changed test file corresponds to a [TEST] task in tasks.md; no test file added without a matching [TEST] task entry
-§TQ2 Red State Confirmed [BLOCKING]: a test-results/<TASKID>-red.txt artifact exists for every completed [TEST] task; artifact shows a meaningful failure (assertion error or module-not-found), not a syntax error in the test file itself
-§TQ3 Spec Coverage [BLOCKING]: every acceptance criterion in spec.md has at least one corresponding assertion in the test file; cite any criterion with NO matching assertion
-§TQ4 No Implementation Code [BLOCKING]: test files contain no SQL queries, no raw database calls, no business logic computations, no service orchestration — HTTP test client calls (e.g. testClient, fetch) are explicitly allowed and are NOT implementation code
+§TQ2 Red State Confirmed [BLOCKING]: a test-results/<TASKID>-red.txt artifact exists for every completed [TEST] task; artifact shows tests failing with assertion errors (e.g. "AssertionError: expected 404 to be 200") or module-not-found errors — an "AssertionError" line in the artifact IS a meaningful failure and PASSES §TQ2. §TQ2 only fails when: (a) the artifact file is missing, (b) the artifact shows zero failing tests, or (c) every failure is a syntax error in the test file itself.
+§TQ3 Spec Coverage [BLOCKING]: every SUCCESS CRITERION (SC-NNN line) in spec.md must have at least one corresponding assertion in the test file. If the spec contains no SC-NNN lines, every FUNCTIONAL REQUIREMENT (FR-NNN line) must have at least one corresponding assertion instead. Use the "Assertions in this file (pre-extracted for §TQ3 lookup)" list to check coverage — if a matching assertion appears in the list the requirement is covered. Notes: `expect(res.ok).toBe(true)` satisfies any SC/FR requiring a 2xx or "success" response; `.toContain('application/json')` on a header value IS a value assertion (it checks the header CONTAINS that string, not just that the header exists).
+§TQ4 No Implementation Code [BLOCKING]: asserting response status, headers, and body with expect() calls IS correct test code and is NEVER a violation — `expect(res.status).toBe(200)`, `expect(body).toEqual({...})`, `expect(res.headers.get(...)).toContain(...)`, `expect(res.ok).toBe(true)` are ALL normal test assertions. A violation is ONLY when the test file directly contains: SQL queries, raw DB instantiation (new PrismaClient()), route handler setup (new Hono(), app.get()), or service class instantiation. IMPORTANT: code in plan.md, tasks.md, or other context documents is NOT in the test file — only check lines in the "CHANGED TEST FILES" section above.
 §TQ9 CI Readiness [WARNING — never BLOCKING]: the test file contains an it.only, test.only, or describe.only directive — severity MUST be WARNING; if no .only directives are found do NOT include this rule in violations at all
 
 Evidence standard — before reporting any violation you MUST:
-- Quote the exact line(s) from the test file that constitute the violation
+- Copy the exact line(s) verbatim from the "CHANGED TEST FILES" section above — not from plan.md, tasks.md, or any other document
 - Never report a violation based on speculation about runtime behavior, missing files, or hypothetical configuration issues
 - Never use the words "may", "might", or "cannot confirm" as justification for a violation
 - If a rule does not apply, add it to not_applicable rather than inventing a violation
@@ -160,7 +204,7 @@ Output ONLY valid JSON, no preamble, no markdown fences:
       "rule": "<rule label, e.g. §TQ3 — Spec Coverage>",
       "severity": "BLOCKING or WARNING",
       "location": "<file path and line number or test name>",
-      "finding": "<specific, citable description>"
+      "finding": "<quoted evidence from the test file>"
     }}
   ],
   "not_applicable": [
@@ -171,6 +215,8 @@ Output ONLY valid JSON, no preamble, no markdown fences:
   ],
   "summary": "<one paragraph>"
 }}
+
+IMPORTANT: the violations array contains ONLY confirmed rule violations with quoted evidence from the test file. Do NOT include observations, notes, or "X is allowed" entries in violations — those belong in not_applicable or summary.
 
 Rules:
 {tail}"""
@@ -212,6 +258,7 @@ def main():
 
     changed_files = get_changed_files()
     changed_test_files = read_changed_files(changed_files, TEST_DIRS)
+    changed_test_files = _annotate_test_files(changed_test_files)
     test_results = read_test_results(spec_dir)
 
     prompt = build_test_critic_prompt(

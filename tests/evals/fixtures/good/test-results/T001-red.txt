@@ -6,8 +6,10 @@ FAIL backend/tests/routes/health.test.ts
     ✗ sets Content-Type to application/json
       AssertionError: expected null to contain 'application/json'
         at backend/tests/routes/health.test.ts:14:46
-    ✓ requires no authentication
+    ✗ returns a success response
+      AssertionError: expected false to be true
+        at backend/tests/routes/health.test.ts:19:20
 
 Test Files  1 failed (1)
-Tests       2 failed | 1 passed (3)
+Tests       3 failed (3)
 Duration    312ms

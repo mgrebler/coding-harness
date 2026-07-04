@@ -362,9 +362,9 @@ def load_local_llm_config(critic_type: str) -> Optional[dict]:
     }
     # num_ctx caps the KV-cache context window. Without it Ollama uses the model's
     # default (often 32k–128k), which overflows VRAM and spills to system RAM.
-    # Critic prompts are typically 3–6k tokens; 8192 keeps everything in VRAM.
-    num_ctx = resolved.get("num_ctx") or raw.get("num_ctx")
-    if num_ctx:
+    # 16384 is a good default for an 8 GB GPU: critic prompts fit comfortably in VRAM.
+    num_ctx = resolved["num_ctx"] if "num_ctx" in resolved else raw.get("num_ctx")
+    if num_ctx is not None:
         result["num_ctx"] = int(num_ctx)
     # keep_alive controls how long Ollama keeps the model in VRAM after a request.
     # Set to -1 to pin the model indefinitely — avoids cold-load latency between
@@ -372,6 +372,16 @@ def load_local_llm_config(critic_type: str) -> Optional[dict]:
     keep_alive = resolved.get("keep_alive") if "keep_alive" in resolved else raw.get("keep_alive")
     if keep_alive is not None:
         result["keep_alive"] = keep_alive
+    # num_predict caps total generated tokens (thinking + response). For reasoning models
+    # like deepseek-r1, runaway thinking causes hallucinations; this is the safety cap.
+    num_predict = resolved.get("num_predict") if "num_predict" in resolved else raw.get("num_predict")
+    if num_predict is not None:
+        result["num_predict"] = int(num_predict)
+    # temperature controls generation randomness. Default 0.1; use 0.0 for fully
+    # deterministic output (greedy decoding) — useful for reproducible eval runs.
+    temperature = resolved.get("temperature") if "temperature" in resolved else raw.get("temperature")
+    if temperature is not None:
+        result["temperature"] = float(temperature)
     return result
 
 
@@ -390,10 +400,9 @@ def _get_ps_entry(ollama_url: str, model: str) -> Optional[dict]:
             data = json.loads(resp.read())
     except Exception:
         return None
-    base = model.split(":")[0]
     for entry in data.get("models", []):
         name = entry.get("name", "")
-        if name == model or name.startswith(base + ":") or name.startswith(base):
+        if name == model or name.startswith(model + ":"):
             return entry
     return None
 
@@ -490,9 +499,11 @@ def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interva
     progress_interval: how often (in tokens) to fire progress_fn (default: 250).
     """
     url = f"{config['ollama_url']}/api/chat"
-    options: dict = {"temperature": 0.1}
+    options: dict = {"temperature": config.get("temperature", 0.1)}
     if config.get("num_ctx"):
         options["num_ctx"] = config["num_ctx"]
+    if config.get("num_predict"):
+        options["num_predict"] = config["num_predict"]
     body: dict = {
         "model": config["model"],
         "messages": [{"role": "user", "content": prompt}],
@@ -503,6 +514,12 @@ def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interva
     if "keep_alive" in config:
         body["keep_alive"] = config["keep_alive"]
     payload = json.dumps(body).encode("utf-8")
+
+    if config.get("num_ctx"):
+        _ensure_model_context(
+            config["ollama_url"], config["model"],
+            config["num_ctx"], config.get("keep_alive")
+        )
 
     req = urllib.request.Request(
         url,

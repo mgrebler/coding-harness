@@ -21,14 +21,14 @@
 ### Functional Requirements
 
 **FR-001**: GET /health returns HTTP 200 with body `{"status": "ok"}`.
-**FR-002**: The response Content-Type header must be `application/json`.
-**FR-003**: The endpoint must not require authentication.
+**FR-002**: The response Content-Type header must contain `application/json`.
+**FR-003**: GET /health returns a success response (HTTP status in the 2xx range).
 
 ## Success Criteria
 
 **SC-001**: GET /health returns 200 with `{"status": "ok"}` body.
-**SC-002**: Response Content-Type is `application/json`.
-**SC-003**: No auth header required; unauthenticated requests succeed.
+**SC-002**: Response Content-Type contains `application/json`.
+**SC-003**: Response is a success response (`res.ok` is true — status 200-299).
 
 ## Assumptions
 

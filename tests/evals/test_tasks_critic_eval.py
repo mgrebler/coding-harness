@@ -25,6 +25,7 @@ LOCAL_LLM_CONFIG = {
     "ollama_url": OLLAMA_URL,
     "num_ctx": 16384,
     "keep_alive": -1,
+    "temperature": 0.0,
     "default": {"enabled": False, "model": ""},
     "critics": {
         "tasks": {"enabled": True, "model": OLLAMA_MODEL},

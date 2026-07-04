@@ -127,6 +127,8 @@ Critic passes can run against a local [Ollama](https://ollama.com) instance inst
 
 `keep_alive: -1` pins the model in VRAM indefinitely, eliminating cold-load latency between critic iterations and pipeline stages. Omit it to use Ollama's default (5 min).
 
+`temperature` controls generation randomness (default `0.1`). Set to `0.0` for fully deterministic (greedy) decoding — recommended for eval runs and CI to eliminate non-deterministic hallucinations in reasoning models like deepseek-r1.
+
 ### Critic Loop Pattern
 
 Each `*-auto.py` agent runs an iteration loop: generate → critic review → fix → repeat until the critic passes or a max iteration count is reached. Critic prompts are built by companion `*_critic.py` modules. The constitution and quality principles documents from `.specify/memory/` are injected into every critic prompt.

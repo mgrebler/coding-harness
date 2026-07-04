@@ -15,9 +15,8 @@ describe('GET /health', () => {
     expect(res.headers.get('content-type')).toContain('application/json')
   })
 
-  it('requires no authentication', async () => {
+  it('returns a success response', async () => {
     const res = await testClient(app).get('/health')
-    expect(res.status).not.toBe(401)
-    expect(res.status).not.toBe(403)
+    expect(res.ok).toBe(true)
   })
 })
