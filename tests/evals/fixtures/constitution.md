@@ -35,7 +35,7 @@ No agent may introduce a dependency outside this list without a constitution ame
 
 ## 3. API Contract Rules
 
-- All routes defined in `src/routes/`
+- All routes defined in `backend/src/api/`
 - All routes must return `Content-Type: application/json`
 - Error responses use `{ "error": "<message>" }` shape
 - Success responses use documented shapes from contracts/
@@ -45,9 +45,10 @@ No agent may introduce a dependency outside this list without a constitution ame
 ## 4. TDD Policy
 
 All features follow RED → GREEN → REFACTOR.
-- [TEST] tasks write failing tests first
-- [IMPL] tasks make them pass
+- [TEST] tasks write failing tests first (RED state): tests must fail before any implementation begins
+- [IMPL] tasks make tests pass (GREEN state) and include any refactoring (REFACTOR phase); no separate [REFACTOR] task is required
 - No implementation code may be written during [TEST] tasks
+- Correct task order: all [TEST] tasks for a story complete before any [IMPL] tasks for that story begin
 
 ---
 

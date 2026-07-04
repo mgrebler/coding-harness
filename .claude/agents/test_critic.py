@@ -140,10 +140,16 @@ e.g. "Test Principles — Assertion Quality", "Constitution §2 — Stack Constr
 Harness process checks (apply in addition to the above):
 
 §TQ1 Task Traceability [BLOCKING]: every changed test file corresponds to a [TEST] task in tasks.md; no test file added without a matching [TEST] task entry
-§TQ2 Red State Confirmed [BLOCKING]: a test-results/<TASKID>-red.txt artifact exists for every completed [TEST] task; artifact shows a meaningful failure (assertion or "not found"), not a compile/syntax error in the test file itself
-§TQ3 Spec Coverage [BLOCKING]: test assertions correspond to acceptance criteria in spec.md; every acceptance criterion traceable to at least one assertion; cite untested criteria
-§TQ4 No Implementation Code [BLOCKING]: test files contain no business logic, no database queries outside test setup/teardown, no service orchestration
-§TQ9 CI Readiness [WARNING]: no test.only, describe.only, or it.only in any changed test file; cite file and line if found
+§TQ2 Red State Confirmed [BLOCKING]: a test-results/<TASKID>-red.txt artifact exists for every completed [TEST] task; artifact shows a meaningful failure (assertion error or module-not-found), not a syntax error in the test file itself
+§TQ3 Spec Coverage [BLOCKING]: every acceptance criterion in spec.md has at least one corresponding assertion in the test file; cite any criterion with NO matching assertion
+§TQ4 No Implementation Code [BLOCKING]: test files contain no SQL queries, no raw database calls, no business logic computations, no service orchestration — HTTP test client calls (e.g. testClient, fetch) are explicitly allowed and are NOT implementation code
+§TQ9 CI Readiness [WARNING — never BLOCKING]: the test file contains an it.only, test.only, or describe.only directive — severity MUST be WARNING; if no .only directives are found do NOT include this rule in violations at all
+
+Evidence standard — before reporting any violation you MUST:
+- Quote the exact line(s) from the test file that constitute the violation
+- Never report a violation based on speculation about runtime behavior, missing files, or hypothetical configuration issues
+- Never use the words "may", "might", or "cannot confirm" as justification for a violation
+- If a rule does not apply, add it to not_applicable rather than inventing a violation
 
 Output ONLY valid JSON, no preamble, no markdown fences:
 {{

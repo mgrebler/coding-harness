@@ -40,7 +40,7 @@ def _setup_git_repo(tmpdir: Path, test_fixture: Path) -> None:
     def git(*args):
         subprocess.run(["git", *args], cwd=tmpdir, check=True, capture_output=True)
 
-    git("init")
+    git("init", "-b", "main")
     git("config", "user.email", "test@harness.local")
     git("config", "user.name", "Harness Test")
     (tmpdir / "README.md").write_text("# test repo")

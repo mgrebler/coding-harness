@@ -25,22 +25,11 @@ from agent_common import (
     get_feature_from_branch,
     load_local_llm_config,
     next_iteration,
-    read_changed_files,
     strip_fences,
     write_file,
 )
 
 CRITIC_RESULT_PREFIX = "implement-critic-result"
-
-SOURCE_DIRS = (
-    "backend/src/api/",
-    "backend/src/services/",
-    "backend/src/models/",
-    "frontend/src/",
-    "backend/tests/",
-    "frontend/tests/",
-    "prisma/",
-)
 
 
 def read_contracts(spec_dir: Path) -> str:
@@ -204,7 +193,16 @@ def main():
     data_model = data_model_path.read_text(encoding="utf-8") if data_model_path.exists() else "(data-model.md not found)"
 
     changed_files = get_changed_files()
-    changed_sources = read_changed_files(changed_files, SOURCE_DIRS)
+    content_parts = []
+    for path_str in changed_files:
+        p = Path(path_str)
+        if not p.exists():
+            continue
+        try:
+            content_parts.append(f"--- {path_str} ---\n{p.read_text(encoding='utf-8')}")
+        except Exception:
+            content_parts.append(f"--- {path_str} --- (could not read)")
+    changed_sources = "\n\n".join(content_parts) if content_parts else "(no changed files found)"
 
     prompt = build_implement_critic_prompt(
         constitution, spec, plan, tasks, iteration,

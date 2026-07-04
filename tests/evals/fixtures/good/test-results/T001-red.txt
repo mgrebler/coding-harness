@@ -1,9 +1,13 @@
-FAIL tests/routes/health.test.ts
+FAIL backend/tests/routes/health.test.ts
   GET /health
     ✗ returns 200 with { status: ok }
       AssertionError: expected 404 to be 200
-        at tests/routes/health.test.ts:10:26
+        at backend/tests/routes/health.test.ts:8:26
+    ✗ sets Content-Type to application/json
+      AssertionError: expected null to contain 'application/json'
+        at backend/tests/routes/health.test.ts:14:46
+    ✓ requires no authentication
 
 Test Files  1 failed (1)
-Tests       1 failed (1)
+Tests       2 failed | 1 passed (3)
 Duration    312ms

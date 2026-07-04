@@ -34,13 +34,15 @@ LOCAL_LLM_CONFIG = {
 }
 
 IMPL_FILE_IN_REPO = "backend/src/api/health.ts"
+INDEX_FILE_IN_REPO = "backend/src/index.ts"
+TEST_FILE_IN_REPO = "backend/tests/routes/health.test.ts"
 
 
 def _setup_git_repo(tmpdir: Path, impl_fixture: Path) -> None:
     def git(*args):
         subprocess.run(["git", *args], cwd=tmpdir, check=True, capture_output=True)
 
-    git("init")
+    git("init", "-b", "main")
     git("config", "user.email", "test@harness.local")
     git("config", "user.name", "Harness Test")
     (tmpdir / "README.md").write_text("# test repo")
@@ -52,6 +54,17 @@ def _setup_git_repo(tmpdir: Path, impl_fixture: Path) -> None:
     impl_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(impl_fixture, impl_path)
     git("add", IMPL_FILE_IN_REPO)
+
+    index_path = tmpdir / INDEX_FILE_IN_REPO
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(FIXTURES / "good" / "index.ts", index_path)
+    git("add", INDEX_FILE_IN_REPO)
+
+    test_path = tmpdir / TEST_FILE_IN_REPO
+    test_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(FIXTURES / "good" / "health.test.ts", test_path)
+    git("add", TEST_FILE_IN_REPO)
+
     git("commit", "-m", "Implement health endpoint")
 
 

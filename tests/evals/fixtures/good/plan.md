@@ -20,13 +20,13 @@ Add a GET /health route to the Hono application that satisfies FR-001, FR-002, a
 
 ## Phase 0 — Research
 
-No external dependencies needed. The Hono app entry point is `src/index.ts`. Routes are registered in `src/routes/`.
+No external dependencies needed. The Hono app entry point is `backend/src/index.ts`. Routes are registered in `backend/src/api/`.
 
 ## Phase 1 — Design
 
 ### Route implementation
 
-Create `src/routes/health.ts` exporting a Hono `route` that handles `GET /health`:
+Create `backend/src/api/health.ts` exporting a Hono `route` that handles `GET /health`:
 
 ```typescript
 import { Hono } from 'hono'
@@ -35,15 +35,15 @@ route.get('/health', (c) => c.json({ status: 'ok' }))
 export default route
 ```
 
-Register the route in `src/index.ts`:
+Register the route in `backend/src/index.ts`:
 
 ```typescript
-app.route('/', healthRoute)
+app.route('/', healthRoute)  // healthRoute defines GET /health, so final URL is /health
 ```
 
 ### Test implementation
 
-Create `tests/routes/health.test.ts` using `@hono/testing`:
+Create `backend/tests/routes/health.test.ts` using `@hono/testing`:
 
 ```typescript
 import { testClient } from '@hono/testing'
@@ -74,11 +74,12 @@ describe('GET /health', () => {
 ## Project Structure
 
 ```
-src/
-  routes/
-    health.ts        [NEW]
-  index.ts           [MODIFIED — register route]
-tests/
-  routes/
-    health.test.ts   [NEW]
+backend/
+  src/
+    api/
+      health.ts      [NEW]
+    index.ts         [MODIFIED — register route]
+  tests/
+    routes/
+      health.test.ts [NEW]
 ```

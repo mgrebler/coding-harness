@@ -473,7 +473,7 @@ def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=
         pass  # best-effort; inference will still proceed
 
 
-def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interval: int = 50) -> str:
+def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interval: int = 250) -> str:
     """
     Send prompt to Ollama via the native /api/chat endpoint.
     Uses streaming so the socket stays alive during generation (avoids read timeout).
@@ -487,7 +487,7 @@ def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interva
     progress_fn: optional callable(token_count: int, elapsed_s: float) invoked every
                  progress_interval content tokens. Useful for logging heartbeats to a
                  log file when the caller cannot otherwise observe generation progress.
-    progress_interval: how often (in tokens) to fire progress_fn (default: 50).
+    progress_interval: how often (in tokens) to fire progress_fn (default: 250).
     """
     url = f"{config['ollama_url']}/api/chat"
     options: dict = {"temperature": 0.1}
