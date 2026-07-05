@@ -438,16 +438,21 @@ def _log_vram_state(ollama_url: str, model: str) -> None:
     )
 
 
-def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=None, num_gpu=None) -> None:
+def _ensure_model_context(ollama_url: str, model: str, num_ctx: Optional[int] = None, keep_alive=None, num_gpu=None) -> None:
     """
-    Ensure the model is loaded at exactly num_ctx tokens of context.
+    Ensure the model is loaded with the requested num_ctx (if any) and num_gpu (if any).
 
     Ollama reuses a loaded model for any request that fits within its current context
     window — it will NOT shrink context on its own, and the OpenAI-compatible endpoint
-    does not apply options.num_ctx at load time. This function:
+    does not apply options.num_ctx at load time. When num_ctx is given, this function:
       1. Unloads the model if it is currently loaded at the wrong context size.
       2. Preloads it at num_ctx via the native /api/generate endpoint (which does
          respect options.num_ctx at load time), using keep_alive=-1 so it stays pinned.
+
+    When num_ctx is None (the project hasn't opted into pinning it), this function only
+    acts if the model isn't loaded at all yet — it preloads once (to apply num_gpu) and
+    otherwise leaves an already-loaded model alone, since we have no opinion on what
+    context size it should be loaded at and don't want to force one.
 
     num_gpu, if given, is passed through to force a specific GPU-layer split. If that
     preload fails (e.g. it doesn't fit in VRAM on a smaller GPU), retries once without
@@ -456,8 +461,8 @@ def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=
     """
     entry = _get_ps_entry(ollama_url, model)
     current_ctx = entry.get("context_length") if entry else None
-    if current_ctx == num_ctx:
-        return  # already loaded at the right size
+    if entry is not None and (num_ctx is None or current_ctx == num_ctx):
+        return  # already loaded, and either we don't care about its context or it matches
 
     if current_ctx is not None:
         print(
@@ -477,10 +482,10 @@ def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=
         except Exception:
             pass
     else:
-        print(f"[ollama] preloading {model} at ctx={num_ctx}", flush=True)
+        print(f"[ollama] preloading {model}" + (f" at ctx={num_ctx}" if num_ctx is not None else ""), flush=True)
 
-    # Preload at the correct context via the native endpoint, which respects
-    # options.num_ctx at model-load time (unlike /v1/chat/completions).
+    # Preload via the native endpoint, which respects options.num_ctx at model-load
+    # time (unlike /v1/chat/completions).
     def _preload(options: dict) -> None:
         preload_body = {
             "model": model,
@@ -496,7 +501,9 @@ def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=
         with urllib.request.urlopen(req, timeout=120):
             pass
 
-    options: dict = {"num_ctx": num_ctx}
+    options: dict = {}
+    if num_ctx is not None:
+        options["num_ctx"] = num_ctx
     if num_gpu is not None:
         options["num_gpu"] = num_gpu
     try:
@@ -505,7 +512,7 @@ def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=
         if num_gpu is not None:
             print(f"[ollama] num_gpu={num_gpu} failed to load — falling back to auto GPU split", flush=True)
             try:
-                _preload({"num_ctx": num_ctx})
+                _preload({"num_ctx": num_ctx} if num_ctx is not None else {})
             except Exception:
                 pass  # best-effort; inference will still proceed
         # else: best-effort; inference will still proceed
@@ -528,13 +535,16 @@ def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interva
     progress_interval: how often (in tokens) to fire progress_fn (default: 250).
     """
     url = f"{config['ollama_url']}/api/chat"
+    # num_gpu is deliberately NOT included here: it's a model-load-time decision that
+    # _ensure_model_context() already applies (with a fallback if the forced value
+    # doesn't fit). Re-requesting it on every chat call would tell Ollama to reload
+    # whenever the fallback took a different value than the raw config asked for,
+    # forcing a second, unguarded load attempt outside that fallback's protection.
     options: dict = {"temperature": config.get("temperature", 0.1)}
     if config.get("num_ctx"):
         options["num_ctx"] = config["num_ctx"]
     if config.get("num_predict"):
         options["num_predict"] = config["num_predict"]
-    if config.get("num_gpu") is not None:
-        options["num_gpu"] = config["num_gpu"]
     body: dict = {
         "model": config["model"],
         "messages": [{"role": "user", "content": prompt}],
@@ -546,10 +556,10 @@ def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interva
         body["keep_alive"] = config["keep_alive"]
     payload = json.dumps(body).encode("utf-8")
 
-    if config.get("num_ctx"):
+    if config.get("num_ctx") or config.get("num_gpu") is not None:
         _ensure_model_context(
             config["ollama_url"], config["model"],
-            config["num_ctx"], config.get("keep_alive"), config.get("num_gpu")
+            config.get("num_ctx"), config.get("keep_alive"), config.get("num_gpu")
         )
 
     req = urllib.request.Request(

@@ -176,6 +176,87 @@ class TestEnsureModelContextFallback(unittest.TestCase):
         self.assertTrue(calls[1].endswith("/api/generate"))
         self.assertTrue(calls[2].endswith("/api/generate"))
 
+    def test_applies_num_gpu_on_fresh_load_without_num_ctx(self):
+        calls = []
+        bodies = []
+
+        def fake_urlopen(req, timeout=None):
+            if isinstance(req, str):
+                calls.append(req)
+                cm = MagicMock()
+                cm.__enter__.return_value.read.return_value = b'{"models": []}'
+                return cm
+            calls.append(req.full_url)
+            bodies.append(json.loads(req.data))
+            return MagicMock()
+
+        with patch.object(agent_common.urllib.request, "urlopen", side_effect=fake_urlopen):
+            agent_common._ensure_model_context(
+                "http://localhost:11434", "deepseek-r1:8b", num_ctx=None, num_gpu=999
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[0].endswith("/api/ps"))
+        self.assertTrue(calls[1].endswith("/api/generate"))
+        self.assertEqual(bodies[0]["options"], {"num_gpu": 999})
+
+    def test_leaves_already_loaded_model_alone_when_num_ctx_not_specified(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            url = req if isinstance(req, str) else req.full_url
+            calls.append(url)
+            cm = MagicMock()
+            cm.__enter__.return_value.read.return_value = json.dumps(
+                {"models": [{"name": "deepseek-r1:8b", "context_length": 16384}]}
+            ).encode("utf-8")
+            return cm
+
+        with patch.object(agent_common.urllib.request, "urlopen", side_effect=fake_urlopen):
+            agent_common._ensure_model_context(
+                "http://localhost:11434", "deepseek-r1:8b", num_ctx=None, num_gpu=999
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].endswith("/api/ps"))
+
+
+class TestCallLocalLlmEnsuresContext(unittest.TestCase):
+    def test_ensure_model_context_called_without_num_ctx_config(self):
+        config = {"ollama_url": "http://localhost:11434", "model": "deepseek-r1:8b", "num_gpu": 999}
+
+        fake_resp = MagicMock()
+        fake_resp.__enter__.return_value = iter([json.dumps({"done": True}).encode("utf-8")])
+
+        with patch.object(agent_common, "_ensure_model_context") as mock_ensure, \
+             patch.object(agent_common.urllib.request, "urlopen", return_value=fake_resp):
+            agent_common.call_local_llm("hello", config)
+
+        mock_ensure.assert_called_once_with(
+            "http://localhost:11434", "deepseek-r1:8b", None, None, 999
+        )
+
+    def test_chat_request_never_includes_num_gpu(self):
+        # num_gpu is a load-time decision applied solely via _ensure_model_context's
+        # fallback-protected preload. Including it on every /api/chat request risks
+        # forcing an unguarded reload whenever the fallback loaded a different value
+        # than the raw config asked for (see commit fixing the segfault this caused).
+        config = {"ollama_url": "http://localhost:11434", "model": "deepseek-r1:8b", "num_gpu": 999}
+
+        bodies = []
+
+        def fake_urlopen(req, timeout=None):
+            bodies.append(json.loads(req.data))
+            fake_resp = MagicMock()
+            fake_resp.__enter__.return_value = iter([json.dumps({"done": True}).encode("utf-8")])
+            return fake_resp
+
+        with patch.object(agent_common, "_ensure_model_context"), \
+             patch.object(agent_common.urllib.request, "urlopen", side_effect=fake_urlopen):
+            agent_common.call_local_llm("hello", config)
+
+        self.assertNotIn("num_gpu", bodies[0]["options"])
+
 
 class TestStageComplete(unittest.TestCase):
     def test_not_complete(self):
