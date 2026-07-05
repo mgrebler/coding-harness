@@ -69,7 +69,10 @@ def _annotate_test_files(file_section: str) -> str:
             assertions = _extract_assertions(content)
             if assertions:
                 content = (
-                    "Assertions in this file (pre-extracted for §TQ3 lookup):\n"
+                    "Assertions in this file (pre-extracted for §TQ3 lookup). "
+                    "Reminder: expect() calls on response status, headers, body, or "
+                    "res.ok are correct test code, NOT §TQ4 implementation-code "
+                    "violations, no matter how many appear together:\n"
                     + assertions
                     + "\n\nFull file:\n"
                     + content
@@ -194,6 +197,7 @@ Evidence standard — before reporting any violation you MUST:
 - Never report a violation based on speculation about runtime behavior, missing files, or hypothetical configuration issues
 - Never use the words "may", "might", or "cannot confirm" as justification for a violation
 - If a rule does not apply, add it to not_applicable rather than inventing a violation
+- Before reporting a §TQ4 violation specifically: re-read the quoted line. If it is an expect() call on res.status, res.headers, a response body/json value, or res.ok, it is NOT a violation — do not report it, even if it resembles "testing implementation details" by general convention. Only SQL queries, raw DB instantiation, route handler setup, or service class instantiation are §TQ4 violations.
 
 Output ONLY valid JSON, no preamble, no markdown fences:
 {{
