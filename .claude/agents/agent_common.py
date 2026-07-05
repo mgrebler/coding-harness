@@ -334,6 +334,9 @@ def stage_is_complete(spec_dir: Path, stage: str) -> bool:
     return (spec_dir / f"{stage}-auto-complete").exists()
 
 
+_FULL_GPU_OFFLOAD = 999  # sentinel > any real model's layer count; llama.cpp clamps to actual max
+
+
 def load_local_llm_config(critic_type: str) -> Optional[dict]:
     """
     Read .specify/local-llm.json and resolve config for the given critic_type.
@@ -372,6 +375,15 @@ def load_local_llm_config(critic_type: str) -> Optional[dict]:
     keep_alive = resolved.get("keep_alive") if "keep_alive" in resolved else raw.get("keep_alive")
     if keep_alive is not None:
         result["keep_alive"] = keep_alive
+    # num_gpu forces this many transformer layers onto the GPU instead of Ollama's own
+    # conservative auto-split, which testing showed leaves usable VRAM headroom unused
+    # (e.g. it picked 34/37 layers when its own math showed 35 would still fit). Defaults
+    # to a sentinel above any real model's layer count so "all layers" is the default
+    # behavior with no config needed; llama.cpp clamps to the model's actual max. If the
+    # forced value doesn't fit on a smaller GPU, _ensure_model_context() falls back to
+    # Ollama's normal auto-split automatically.
+    num_gpu = resolved["num_gpu"] if "num_gpu" in resolved else raw.get("num_gpu")
+    result["num_gpu"] = int(num_gpu) if num_gpu is not None else _FULL_GPU_OFFLOAD
     # num_predict caps total generated tokens (thinking + response). For reasoning models
     # like deepseek-r1, runaway thinking causes hallucinations; this is the safety cap.
     num_predict = resolved.get("num_predict") if "num_predict" in resolved else raw.get("num_predict")
@@ -426,7 +438,7 @@ def _log_vram_state(ollama_url: str, model: str) -> None:
     )
 
 
-def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=None) -> None:
+def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=None, num_gpu=None) -> None:
     """
     Ensure the model is loaded at exactly num_ctx tokens of context.
 
@@ -436,6 +448,11 @@ def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=
       1. Unloads the model if it is currently loaded at the wrong context size.
       2. Preloads it at num_ctx via the native /api/generate endpoint (which does
          respect options.num_ctx at load time), using keep_alive=-1 so it stays pinned.
+
+    num_gpu, if given, is passed through to force a specific GPU-layer split. If that
+    preload fails (e.g. it doesn't fit in VRAM on a smaller GPU), retries once without
+    num_gpu so Ollama falls back to its own conservative auto-split rather than leaving
+    the model unloaded.
     """
     entry = _get_ps_entry(ollama_url, model)
     current_ctx = entry.get("context_length") if entry else None
@@ -464,10 +481,10 @@ def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=
 
     # Preload at the correct context via the native endpoint, which respects
     # options.num_ctx at model-load time (unlike /v1/chat/completions).
-    try:
-        preload_body: dict = {
+    def _preload(options: dict) -> None:
+        preload_body = {
             "model": model,
-            "options": {"num_ctx": num_ctx},
+            "options": options,
             "keep_alive": keep_alive if keep_alive is not None else -1,
         }
         req = urllib.request.Request(
@@ -478,8 +495,20 @@ def _ensure_model_context(ollama_url: str, model: str, num_ctx: int, keep_alive=
         )
         with urllib.request.urlopen(req, timeout=120):
             pass
+
+    options: dict = {"num_ctx": num_ctx}
+    if num_gpu is not None:
+        options["num_gpu"] = num_gpu
+    try:
+        _preload(options)
     except Exception:
-        pass  # best-effort; inference will still proceed
+        if num_gpu is not None:
+            print(f"[ollama] num_gpu={num_gpu} failed to load — falling back to auto GPU split", flush=True)
+            try:
+                _preload({"num_ctx": num_ctx})
+            except Exception:
+                pass  # best-effort; inference will still proceed
+        # else: best-effort; inference will still proceed
 
 
 def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interval: int = 250) -> str:
@@ -504,6 +533,8 @@ def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interva
         options["num_ctx"] = config["num_ctx"]
     if config.get("num_predict"):
         options["num_predict"] = config["num_predict"]
+    if config.get("num_gpu") is not None:
+        options["num_gpu"] = config["num_gpu"]
     body: dict = {
         "model": config["model"],
         "messages": [{"role": "user", "content": prompt}],
@@ -518,7 +549,7 @@ def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interva
     if config.get("num_ctx"):
         _ensure_model_context(
             config["ollama_url"], config["model"],
-            config["num_ctx"], config.get("keep_alive")
+            config["num_ctx"], config.get("keep_alive"), config.get("num_gpu")
         )
 
     req = urllib.request.Request(

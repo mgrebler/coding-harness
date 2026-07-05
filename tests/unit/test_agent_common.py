@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
 import agent_common
@@ -116,6 +117,19 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         result = agent_common.load_local_llm_config("plan")
         self.assertNotIn("num_ctx", result)
 
+    def test_num_gpu_defaults_to_full_offload_when_unset(self):
+        self._write_config({"ollama_url": "http://localhost:11434",
+                            "default": {"enabled": True, "model": "llama3.2"}})
+        result = agent_common.load_local_llm_config("plan")
+        self.assertEqual(result["num_gpu"], agent_common._FULL_GPU_OFFLOAD)
+
+    def test_num_gpu_explicit_value_respected(self):
+        self._write_config({"ollama_url": "http://localhost:11434",
+                            "num_gpu": 20,
+                            "default": {"enabled": True, "model": "llama3.2"}})
+        result = agent_common.load_local_llm_config("plan")
+        self.assertEqual(result["num_gpu"], 20)
+
     def test_default_enabled_returns_config(self):
         self._write_config({"ollama_url": "http://localhost:11434",
                             "default": {"enabled": True, "model": "llama3.2"},
@@ -135,6 +149,32 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{invalid json")
         self.assertIsNone(agent_common.load_local_llm_config("plan"))
+
+
+class TestEnsureModelContextFallback(unittest.TestCase):
+    def test_falls_back_on_preload_failure(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            url = req if isinstance(req, str) else req.full_url
+            calls.append(url)
+            if url.endswith("/api/ps"):
+                cm = MagicMock()
+                cm.__enter__.return_value.read.return_value = b'{"models": []}'
+                return cm
+            if len(calls) == 2:
+                raise OSError("simulated OOM")
+            return MagicMock()
+
+        with patch.object(agent_common.urllib.request, "urlopen", side_effect=fake_urlopen):
+            agent_common._ensure_model_context(
+                "http://localhost:11434", "deepseek-r1:8b", 16384, num_gpu=999
+            )
+
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(calls[0].endswith("/api/ps"))
+        self.assertTrue(calls[1].endswith("/api/generate"))
+        self.assertTrue(calls[2].endswith("/api/generate"))
 
 
 class TestStageComplete(unittest.TestCase):

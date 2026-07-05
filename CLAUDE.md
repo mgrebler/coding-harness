@@ -127,6 +127,8 @@ Critic passes can run against a local [Ollama](https://ollama.com) instance inst
 
 `keep_alive: -1` pins the model in VRAM indefinitely, eliminating cold-load latency between critic iterations and pipeline stages. Omit it to use Ollama's default (5 min).
 
+`num_gpu` defaults to forcing all model layers onto the GPU, overriding Ollama's own conservative auto-split (testing showed Ollama can leave usable VRAM headroom unused — e.g. choosing 34/37 layers when its own memory-fit calculation showed 35 would still fit). No config is needed to get this: it's the default. If the forced value doesn't fit on a smaller GPU, the harness automatically falls back to Ollama's normal auto-split. Set `num_gpu` explicitly in `local-llm.json` only to override this default (e.g. to force a specific layer count).
+
 `temperature` controls generation randomness (default `0.1`). Set to `0.0` for fully deterministic (greedy) decoding — recommended for eval runs and CI to eliminate non-deterministic hallucinations in reasoning models like deepseek-r1.
 
 ### Critic Loop Pattern
