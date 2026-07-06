@@ -3,7 +3,7 @@
 .claude/agents/tasks-auto.py
 
 Agentic orchestrator for automated task generation and critic loop.
-Triggered by the post-commit git hook on plan approval.
+Run manually via /speckit-tasks-auto after reviewing the plan.
 Runs independently of any Claude Code interactive session.
 
 Usage:

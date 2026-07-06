@@ -421,7 +421,7 @@ async def run(feature: str):
             "2. Fix the BLOCKING violations manually in the test files.\n"
             f"3. Re-run `python .claude/agents/test-auto.py` to restart the automated loop,\n"
             f"   or run `/speckit-test-critic` manually to verify your fixes.\n"
-            "4. Once the critic passes, run `/speckit-test-approved` before starting implementation."
+            "4. Once the critic passes, run `/speckit-implement-auto` to start implementation."
         ),
         log_fn=log,
     )

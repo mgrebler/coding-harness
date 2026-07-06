@@ -17,7 +17,7 @@
 #
 # Behaviour:
 #   ALWAYS OVERWRITES (harness-managed — no project customisation):
-#     .claude/agents/, .claude/hooks/, .claude/skills/
+#     .claude/agents/, .claude/skills/
 #     .specify/extensions/, .specify/scripts/, .specify/templates/, .specify/workflows/
 #     .devcontainer/Dockerfile, .devcontainer/entrypoint.sh
 #
@@ -142,9 +142,6 @@ manage_gitignore() {
 .claude/agents/test-auto.py
 .claude/agents/test_critic.py
 
-# .claude/hooks — individual files so project-specific hooks can coexist
-.claude/hooks/post-commit
-
 # .claude/skills — individual skill dirs so project-specific skills can coexist
 .claude/skills/architecture-review-plan/
 .claude/skills/code-quality-review/
@@ -161,19 +158,15 @@ manage_gitignore() {
 .claude/skills/speckit-implement-auto/
 .claude/skills/speckit-implement-critic/
 .claude/skills/speckit-plan/
-.claude/skills/speckit-plan-approved/
 .claude/skills/speckit-plan-auto/
 .claude/skills/speckit-plan-critic/
 .claude/skills/speckit-plan-to-implement-auto/
-.claude/skills/speckit-spec-approved/
 .claude/skills/speckit-specify/
 .claude/skills/speckit-tasks/
-.claude/skills/speckit-tasks-approved/
 .claude/skills/speckit-tasks-auto/
 .claude/skills/speckit-tasks-critic/
 .claude/skills/speckit-taskstoissues/
 .claude/skills/speckit-test/
-.claude/skills/speckit-test-approved/
 .claude/skills/speckit-test-auto/
 .claude/skills/speckit-test-critic/
 
@@ -224,7 +217,6 @@ init_copy() {
 log "==> Harness-managed files (always overwritten)"
 
 always_copy ".claude/agents"
-always_copy ".claude/hooks/post-commit"
 always_copy ".claude/skills"
 always_copy ".specify/extensions"
 always_copy ".specify/scripts"
@@ -260,9 +252,8 @@ log ""
 log "==> Done."
 log ""
 log "Reminders:"
-log "  1. Copy the git hook:  cp .claude/hooks/post-commit .git/hooks/post-commit && chmod +x .git/hooks/post-commit"
 if [[ -f "$TARGET_DIR/.specify/memory/constitution.md" && "$DRY_RUN" == "false" ]]; then
-  log "  2. Customise .specify/memory/constitution.md — fill in [PROJECT: ...] placeholders"
-  log "  3. Customise .specify/memory/architecture.md and product-context.md"
-  log "  4. Customise docker-compose.yml — replace <project-name> with your project name"
+  log "  1. Customise .specify/memory/constitution.md — fill in [PROJECT: ...] placeholders"
+  log "  2. Customise .specify/memory/architecture.md and product-context.md"
+  log "  3. Customise docker-compose.yml — replace <project-name> with your project name"
 fi

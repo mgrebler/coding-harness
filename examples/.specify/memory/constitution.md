@@ -80,7 +80,7 @@ Every deliverable is split into two tasks that form an inseparable pair:
 [TEST] tasks are executed in the test phase (`/speckit-test`).
 [IMPL] tasks are executed in the implement phase (`/speckit-implement`).
 
-The test phase must complete and be approved before implementation begins (§19).
+The test phase must pass its gate before implementation begins (§19).
 
 A test agent that writes implementation code has violated this constitution.
 An implementation agent that writes new test files or adds/modifies test cases (`it()` / `test()` / `describe()` blocks) has violated this constitution. Updating test setup — mock definitions, fixture data, helper utilities, `setup.ts` files, `vi.mock(...)` calls — to support the implementation is permitted when the required setup was not established during the test phase.

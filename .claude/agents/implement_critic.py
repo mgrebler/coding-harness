@@ -272,7 +272,6 @@ def main():
     content_parts = []
     for path_str in changed_files:
         if (path_str.startswith("specs/")
-                or path_str.endswith("-approved")
                 or "-result-" in path_str):
             continue
         p = Path(path_str)

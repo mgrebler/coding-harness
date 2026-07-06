@@ -11,12 +11,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./install.sh /path/to/your-project
 ```
 
-After install, manually wire up the git hook in the target project:
-```bash
-cp .claude/hooks/post-commit .git/hooks/post-commit
-chmod +x .git/hooks/post-commit
-```
-
 **Update an installed project** (after pulling the latest harness):
 ```bash
 git pull
@@ -39,7 +33,7 @@ The harness enforces a strict spec-driven pipeline:
 specify → plan → tasks → test → implement → human PR review + merge
 ```
 
-Each stage produces a markdown artifact in `specs/NNN-feature/` within the target project. Humans approve each stage; git hooks trigger the next stage automatically after approval commits. No agent ever merges to `main`.
+Each stage produces a markdown artifact in `specs/NNN-feature/` within the target project. Humans review each stage's artifact, then manually run the next stage's command. No agent ever merges to `main`.
 
 **Starting a session in an installed project:**
 ```bash
@@ -49,8 +43,8 @@ claude
 ```
 
 **Two execution modes in installed projects:**
-- **Human-in-the-loop**: approve each stage manually with `/speckit-*-approved` commands
-- **Fully automatic**: `/speckit-plan-to-implement-auto` chains all stages after spec approval
+- **Human-in-the-loop**: review each stage's artifact, then manually run the next `/speckit-*-auto` (or plain `/speckit-*`) command yourself
+- **Fully automatic**: `/speckit-plan-to-implement-auto` chains all stages unattended after `spec.md` is reviewed
 
 ## Harness Architecture
 
@@ -60,7 +54,6 @@ claude
 
 **Always overwrites (harness-managed):**
 - `.claude/agents/` — Python orchestrators for autonomous pipelines
-- `.claude/hooks/` — Git hook that triggers next stage on approval commits
 - `.claude/skills/` — All `/speckit-*` slash commands
 - `.specify/extensions/` — Git integration module
 - `.specify/scripts/` — Shared Bash utilities
@@ -76,9 +69,9 @@ claude
 
 ### Key Directories
 
-**`.claude/agents/`** — Python orchestrators that run autonomous multi-stage pipelines. Each stage has a `*-auto.py` (end-to-end with critic loop) and a `*_critic.py` (builds critic prompts). These are invoked by the git hook after approval commits, or can run standalone. `agent_common.py` provides shared utilities.
+**`.claude/agents/`** — Python orchestrators that run autonomous multi-stage pipelines. Each stage has a `*-auto.py` (end-to-end with critic loop) and a `*_critic.py` (builds critic prompts). These are invoked manually via slash commands, or chained automatically by the fully-automatic pipeline. `agent_common.py` provides shared utilities.
 
-**`.claude/skills/`** — User-facing slash commands. Each is a directory with a `SKILL.md` prompt. Skills write artifacts to disk, approve and commit stages, or trigger agent pipelines (indirectly via git hook).
+**`.claude/skills/`** — User-facing slash commands. Each is a directory with a `SKILL.md` prompt. Skills write artifacts to disk or invoke agent pipelines directly.
 
 **`.specify/memory/`** — Project-specific knowledge that persists across all features in a target project. Constitution is supreme law; architecture/principles documents are long-term north stars. These files are written once by humans and never auto-regenerated.
 
@@ -95,10 +88,8 @@ claude
 | Artifact | Path |
 |---|---|
 | Feature specs/plans/tasks | `specs/NNN-feature/{spec,plan,tasks}.md` |
-| Approval markers | `specs/NNN-feature/{spec,plan,tasks,test}-approved` |
 | Critic results | `specs/NNN-feature/*-result-N.json` |
 | Constitution | `.specify/memory/constitution.md` |
-| Git hook | `.git/hooks/post-commit` |
 
 ### TDD Enforcement
 

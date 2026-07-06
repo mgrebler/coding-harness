@@ -180,7 +180,7 @@ Examples of foundational tasks (adjust based on your project):
 ### Within Each User Story
 
 - [TEST] tasks first — written during the test phase, confirmed failing before implementation begins
-- Paired [IMPL] tasks follow — [IMPL] tasks may not begin until the test phase has been approved (§19)
+- Paired [IMPL] tasks follow — [IMPL] tasks may not begin until the test phase has passed its gate (§19)
 - Story complete before moving to next priority
 
 ### Parallel Opportunities

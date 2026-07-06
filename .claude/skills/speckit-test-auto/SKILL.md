@@ -1,6 +1,6 @@
 ---
 name: speckit-test-auto
-description: Runs the automated test phase loop for the current feature branch by invoking test-auto.py. Writes failing tests for all [TEST] tasks, runs iterative test-critic review, applies fixes, and escalates on failure. Triggered after tasks approval, or invoked manually.
+description: Runs the automated test phase loop for the current feature branch by invoking test-auto.py. Writes failing tests for all [TEST] tasks, runs iterative test-critic review, applies fixes, and escalates on failure. Run manually after reviewing tasks.md.
 user-invocable: true
 ---
 
@@ -34,7 +34,7 @@ Wait for the script to complete and relay its output to the user.
 
 ## What the script does
 
-1. Validates pre-flight conditions (spec.md, plan.md, tasks.md, tasks-approved exist)
+1. Validates pre-flight conditions (spec.md, plan.md, tasks.md exist)
 2. Runs the test agent to write failing tests for all unchecked [TEST] tasks in tasks.md
    (skipped if all [TEST] tasks are already checked off)
 3. Runs an iterative test-critic review loop (up to 3 iterations):
@@ -54,4 +54,4 @@ incomplete step using result files as idempotency markers.
 
 - Does not implement any feature logic — that is done by `/speckit-implement` or `/speckit-implement-auto`
 - Does not push to remote or open a pull request
-- Does not run the implement phase — run `/speckit-test-approved` first, then `/speckit-implement-auto`
+- Does not run the implement phase — run `/speckit-implement-auto` after reviewing the test files

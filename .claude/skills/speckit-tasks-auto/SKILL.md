@@ -1,6 +1,6 @@
 ---
 name: speckit-tasks-auto
-description: Runs the automated task generation and critic loop for the current feature branch by invoking tasks-auto.py. Handles task generation, iterative critic review, revision, and escalation. Triggered automatically by the post-commit hook on plan approval, or invoked manually.
+description: Runs the automated task generation and critic loop for the current feature branch by invoking tasks-auto.py. Handles task generation, iterative critic review, revision, and escalation. Run manually after reviewing the plan.
 user-invocable: true
 ---
 
@@ -34,7 +34,7 @@ Wait for the script to complete and relay its output to the user.
 
 ## What the script does
 
-1. Validates pre-flight conditions (plan.md, plan-approved exist; tasks.md resume/regen/abort prompt if applicable)
+1. Validates pre-flight conditions (plan.md exists; tasks.md resume/regen/abort prompt if applicable)
 2. Generates `tasks.md` via the tasks agent (skipped if already exists and not force-regenerating)
 3. Runs an iterative critic review loop (up to 3 iterations):
    - **Tasks critic**: validates plan traceability, spec coverage, TDD compliance, stack constraints, scope, and dependency validity
@@ -50,5 +50,5 @@ incomplete step using result files as idempotency markers.
 ## What this skill does not do
 
 - Does not implement task generation or critic logic — that lives in tasks-auto.py and its subagents
-- Does not proceed to implementation — that is a separate human-gated step (`/speckit-tasks-approved`)
+- Does not proceed to the test phase — run `/speckit-test-auto` after reviewing `tasks.md`
 - Does not push to remote

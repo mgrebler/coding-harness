@@ -3,7 +3,7 @@
 .claude/agents/plan-auto.py
 
 Agentic orchestrator for automated plan generation and critic loop.
-Triggered by the post-commit git hook on spec approval.
+Run manually via /speckit-plan-auto after reviewing the spec.
 Runs independently of any Claude Code interactive session.
 
 Usage:

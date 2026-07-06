@@ -2,8 +2,8 @@
 """
 .claude/agents/plan-to-implement-auto.py
 
-Full-pipeline orchestrator: chains plan-auto → tasks-auto → implement-auto
-for a feature branch without requiring human approval gates between stages.
+Full-pipeline orchestrator: chains plan-auto → tasks-auto → test-auto → implement-auto
+for a feature branch without stopping for review between stages.
 
 Usage:
   python .claude/agents/plan-to-implement-auto.py
@@ -17,7 +17,7 @@ not supplied.
 
 Resume behaviour:
   Stage completion is tracked via the natural result files each sub-script
-  produces — no *-approved files are created or required:
+  produces:
 
   Plan stage done:      architecture-review-result-*.json with status PASS
   Tasks stage done:     tasks-critic-result-*.json with status PASS
@@ -27,10 +27,12 @@ Resume behaviour:
   Each sub-script also has its own internal resume guards for mid-stage
   interruptions (e.g. a crash during critic iteration 2).
 
-Relationship to manual workflow:
-  The manual workflow uses *-approved files as git hook triggers to auto-launch
-  the next stage. Those files are not required by any sub-script and are never
-  created or consumed by this orchestrator.
+Relationship to manual (human-in-the-loop) workflow:
+  Both workflows gate purely on these artifacts — there are no approval
+  marker files or git hooks involved in either. The only difference is that
+  the manual workflow runs one stage at a time so a human can review the
+  artifact between stages, while this orchestrator runs all four in sequence
+  unattended.
 
 Pre-flight:
   - Must be on a feature branch (not main)

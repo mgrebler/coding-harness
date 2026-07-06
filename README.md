@@ -23,10 +23,6 @@ Then customise the project-initialised files:
 ```bash
 cd /path/to/your-project
 
-# Install the git hook
-cp .claude/hooks/post-commit .git/hooks/post-commit
-chmod +x .git/hooks/post-commit
-
 # Fill in the project-specific placeholders
 #   .specify/memory/constitution.md   — fill in [PROJECT: ...] sections
 #   .specify/memory/architecture.md   — describe your system architecture
@@ -77,8 +73,8 @@ Two modes are supported:
 
 | Mode | When to use |
 |------|-------------|
-| **Human-in-the-loop** | Review and approve each stage; the next stage starts automatically after each approval |
-| **Fully automatic** | Let Claude run the entire plan → tasks → test → implement pipeline after you've approved the spec |
+| **Human-in-the-loop** | Review each stage's artifact, then manually run the next stage yourself |
+| **Fully automatic** | Let Claude run the entire plan → tasks → test → implement pipeline after you've reviewed the spec |
 
 Before running any SpecKit command, start a Claude Code session inside Docker:
 
@@ -90,22 +86,9 @@ claude
 
 ---
 
-## One-Time Hook Setup
-
-The harness uses a post-commit git hook to automatically launch the next pipeline stage after each approval commit. Install it once per clone:
-
-```bash
-cp .claude/hooks/post-commit .git/hooks/post-commit
-chmod +x .git/hooks/post-commit
-```
-
-Once installed, you never need to manually invoke the `*-auto` commands — each approval commit fires the right one in the background.
-
----
-
 ## Human-in-the-Loop Workflow
 
-You are the gatekeeper at each stage. After you approve, the hook automatically starts the next stage as a background process so it's ready for your next review.
+You are the gatekeeper at each stage: review the artifact, then run the next command yourself when you're ready.
 
 ### Step 1 — Specify
 
@@ -117,53 +100,37 @@ You are the gatekeeper at each stage. After you approve, the hook automatically 
 - Writes `specs/NNN-feature/spec.md` from your description
 - Runs a quality checklist; asks for clarification (max 3 questions) if needed
 
-**Review** `specs/NNN-feature/spec.md`. Edit it directly or give Claude feedback.
-
-### Step 2 — Approve the spec
+**Review** `specs/NNN-feature/spec.md`. Edit it directly or give Claude feedback. Then:
 
 ```
-/speckit-spec-approved
+/speckit-plan-auto     # or /speckit-plan for a single generation without the critic loop
 ```
 
-Creates and commits `specs/NNN-feature/spec-approved`. The post-commit hook fires `plan-auto` in the background.
+### Step 2 — Review the plan
 
-### Step 3 — Review the plan
-
-Wait for `specs/NNN-feature/plan.md` to appear, then review it.
-
-### Step 4 — Approve the plan
+Review `specs/NNN-feature/plan.md`. Then:
 
 ```
-/speckit-plan-approved
+/speckit-tasks-auto     # or /speckit-tasks
 ```
 
-Commits `specs/NNN-feature/plan-approved`. The hook fires `tasks-auto` in the background.
+### Step 3 — Review the tasks
 
-### Step 5 — Review the tasks
-
-Wait for `specs/NNN-feature/tasks.md` to appear, then review the dependency-ordered list of `[TEST]` / `[IMPL]` task pairs.
-
-### Step 6 — Approve tasks
+Review the dependency-ordered list of `[TEST]` / `[IMPL]` task pairs in `specs/NNN-feature/tasks.md`. Then:
 
 ```
-/speckit-tasks-approved
+/speckit-test-auto     # or /speckit-test
 ```
 
-Commits `specs/NNN-feature/tasks-approved`. The hook fires `test-auto` in the background.
+### Step 4 — Review the tests
 
-### Step 7 — Review the tests
-
-Wait for the test files and `specs/NNN-feature/test-results/` to appear, then review the failing tests.
-
-### Step 8 — Approve tests
+Review the failing test files. Then:
 
 ```
-/speckit-test-approved
+/speckit-implement-auto     # or /speckit-implement
 ```
 
-Commits `specs/NNN-feature/test-approved`. The hook fires `implement-auto` in the background.
-
-### Step 9 — Review the implementation
+### Step 5 — Review the implementation
 
 When implementation is complete, review the code changes and verify CI passes locally. Then open a PR. **The merge is always a human action.**
 
@@ -187,41 +154,17 @@ This chains four stages — plan, tasks, test, implement — with built-in criti
 
 ---
 
-## Without the Hook (Manual Mode)
-
-```
-/speckit-specify <description>
-# review spec.md
-/speckit-spec-approved
-/speckit-plan          # or /speckit-plan-auto for automatic critic loop
-# review plan.md
-/speckit-plan-approved
-/speckit-tasks         # or /speckit-tasks-auto
-# review tasks.md
-/speckit-tasks-approved
-/speckit-test          # or /speckit-test-auto
-# review test files
-/speckit-test-approved
-/speckit-implement     # or /speckit-implement-auto
-```
-
----
-
 ## Quick Reference
 
 | Command | What it does |
 |---------|-------------|
 | `/speckit-specify <desc>` | Create spec + feature branch |
-| `/speckit-spec-approved` | Approve spec → hook fires `plan-auto` |
 | `/speckit-plan` | Generate implementation plan (manual) |
 | `/speckit-plan-auto` | Generate plan with automatic critic loop |
-| `/speckit-plan-approved` | Approve plan → hook fires `tasks-auto` |
 | `/speckit-tasks` | Generate task list (manual) |
 | `/speckit-tasks-auto` | Generate tasks with automatic critic loop |
-| `/speckit-tasks-approved` | Approve tasks → hook fires `test-auto` |
 | `/speckit-test` | Write failing tests for all `[TEST]` tasks (manual) |
 | `/speckit-test-auto` | Write tests with automatic critic loop |
-| `/speckit-test-approved` | Approve tests → hook fires `implement-auto` |
 | `/speckit-implement` | Implement all tasks (manual) |
 | `/speckit-implement-auto` | Implement with automatic critic loop |
 | `/speckit-plan-to-implement-auto` | Full pipeline: plan → tasks → test → implement |
@@ -293,7 +236,6 @@ The eval tests configure Ollama via a `.specify/local-llm.json` written into eac
 speckit/
 ├── .claude/
 │   ├── agents/             # Python orchestrators (plan-auto, tasks-auto, etc.)
-│   ├── hooks/post-commit   # Git hook that fires the next pipeline stage on approval
 │   └── skills/             # All /speckit-* slash commands
 ├── .specify/
 │   ├── extensions/         # Git integration scripts

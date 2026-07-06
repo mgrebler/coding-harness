@@ -80,15 +80,13 @@ def preflight(spec_dir: Path, feature: str):
 
     # Confirm test phase is complete
     test_critic_results = list(spec_dir.glob("test-critic-result-*.json"))
-    test_approved = (spec_dir / "test-approved").exists()
-    if not test_approved and not test_critic_results:
-        log("ERROR: Test phase not complete. Run /speckit-test-auto or /speckit-test-approved first.")
+    if not test_critic_results:
+        log("ERROR: Test phase not complete. Run /speckit-test-auto first.")
         sys.exit(1)
-    if test_critic_results and not test_approved:
-        passing = find_passing_iteration(spec_dir, "test-critic-result", 3)
-        if passing is None:
-            log("ERROR: No passing test-critic result found. Run /speckit-test-auto to resolve.")
-            sys.exit(1)
+    passing = find_passing_iteration(spec_dir, "test-critic-result", 3)
+    if passing is None:
+        log("ERROR: No passing test-critic result found. Run /speckit-test-auto to resolve.")
+        sys.exit(1)
 
     tasks_content = (spec_dir / "tasks.md").read_text(encoding="utf-8")
     all_done = "- [ ]" not in tasks_content

@@ -58,12 +58,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 1. Run `.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks` from repo root and parse FEATURE_DIR and AVAILABLE_DOCS list. All paths must be absolute.
 
-2. **Verify tasks-approved gate**: Confirm `$FEATURE_DIR/tasks-approved` exists. If not, stop and print:
-   ```
-   [speckit-test] ERROR: tasks-approved not found. Run /speckit-tasks-approved first.
-   ```
-
-3. Load implementation context:
+2. Load implementation context:
    - **REQUIRED**: Read `tasks.md` — identify all unchecked [TEST] tasks (`- [ ]` lines containing `[TEST]`)
    - **REQUIRED**: Read `plan.md` — tech stack, architecture, file structure
    - **REQUIRED**: Read `.specify/memory/test-principles.md` — authoritative quality bar for all tests written in this phase
@@ -71,13 +66,13 @@ You **MUST** consider the user input before proceeding (if not empty).
    - **IF EXISTS**: Read `contracts/` for API specifications and acceptance criteria
    - **IF EXISTS**: Read `spec.md` for user stories and acceptance criteria
 
-4. If no unchecked [TEST] tasks exist in tasks.md, print:
+3. If no unchecked [TEST] tasks exist in tasks.md, print:
    ```
    [speckit-test] All [TEST] tasks already complete. Run /speckit-test-critic to validate.
    ```
    and stop.
 
-5. Execute the test phase — for each unchecked [TEST] task in tasks.md, in dependency order:
+4. Execute the test phase — for each unchecked [TEST] task in tasks.md, in dependency order:
 
    **For each [TEST] task:**
    a. Write the failing test file(s) for this behaviour only.
@@ -101,13 +96,13 @@ You **MUST** consider the user input before proceeding (if not empty).
    e. Mark the [TEST] task as `[x]` in tasks.md.
    f. Report: `[TEST] <TASKID> complete — red output saved to test-results/<TASKID>-red.txt`
 
-6. Progress tracking:
+5. Progress tracking:
    - Report progress after each completed [TEST] task.
    - If a [TEST] task fails with a syntax error (test file itself is broken), fix the syntax and re-run before recording.
    - Do not proceed to the next task until the current one is recorded red.
    - **IMPORTANT**: Mark each completed [TEST] task as `[x]` in tasks.md immediately after recording.
 
-7. Completion:
+6. Completion:
    - Report total [TEST] tasks completed and red-output artifacts written.
    - Print:
      ```
@@ -116,7 +111,7 @@ You **MUST** consider the user input before proceeding (if not empty).
        or /speckit-test-auto for the automated loop.
      ```
 
-8. **Check for extension hooks**: After completion, check if `.specify/extensions.yml` exists in the project root.
+7. **Check for extension hooks**: After completion, check if `.specify/extensions.yml` exists in the project root.
    - If it exists, read it and look for entries under the `hooks.after_test` key
    - Follow the same hook execution pattern as `before_test` above
    - If no hooks are registered or `.specify/extensions.yml` does not exist, skip silently

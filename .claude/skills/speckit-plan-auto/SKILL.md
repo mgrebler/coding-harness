@@ -1,6 +1,6 @@
 ---
 name: speckit-plan-auto
-description: Runs the automated plan generation and critic loop for the current feature branch by invoking plan-auto.py. Handles plan generation, iterative critic review, architecture review, revision, and escalation. Triggered automatically by the post-commit hook on spec approval, or invoked manually.
+description: Runs the automated plan generation and critic loop for the current feature branch by invoking plan-auto.py. Handles plan generation, iterative critic review, architecture review, revision, and escalation. Run manually after reviewing the spec.
 user-invocable: true
 ---
 
@@ -34,7 +34,7 @@ Wait for the script to complete and relay its output to the user.
 
 ## What the script does
 
-1. Validates pre-flight conditions (spec.md, spec-approved exist; plan.md overwrite prompt if applicable)
+1. Validates pre-flight conditions (spec.md exists; plan.md overwrite prompt if applicable)
 2. Generates `plan.md` via the plan agent (skipped if already exists and not force-regenerating)
 3. Runs an iterative two-gate review loop (up to 3 iterations):
    - **Gate 1 — Plan critic**: validates spec/constitution/traceability compliance
@@ -51,5 +51,5 @@ incomplete step using result files as idempotency markers.
 ## What this skill does not do
 
 - Does not implement planning or critic logic — that lives in plan-auto.py and its subagents
-- Does not proceed to task generation — that is a separate human-gated step
+- Does not proceed to task generation — run `/speckit-tasks-auto` after reviewing `plan.md`
 - Does not push to remote
