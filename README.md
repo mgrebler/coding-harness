@@ -15,7 +15,7 @@ git clone <harness-repo-url> coding-harness
 ### Installing into a New Project
 
 ```bash
-coding-harness/install.sh coding-harness/ /path/to/your-project/
+coding-harness/install.sh /path/to/your-project/
 ```
 
 Then customise the project-initialised files:
@@ -43,7 +43,7 @@ Pull the harness, then re-run the install script against the project. Harness-ma
 
 ```bash
 cd /path/to/coding-harness && git pull
-./install.sh /path/to/coding-harness /path/to/your-project
+./install.sh /path/to/your-project
 ```
 
 ### Migrating to Git Subtree (Optional)
@@ -58,10 +58,10 @@ To update:
 
 ```bash
 git subtree pull --prefix=.coding-harness <harness-repo-url> main
-.coding-harness/install.sh .coding-harness/ .
+.coding-harness/install.sh .
 ```
 
-`install.sh` needs no changes — it already accepts a source directory parameter.
+`install.sh` needs no changes — it infers its source from its own location, so this works whether it's a standalone clone or a subtree.
 
 ---
 

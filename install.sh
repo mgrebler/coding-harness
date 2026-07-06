@@ -2,16 +2,18 @@
 # install.sh — Install or update the coding-harness into a target project.
 #
 # Usage:
-#   ./install.sh <source-dir> <target-dir> [--dry-run]
+#   ./install.sh <target-dir> [--dry-run]
 #
-# <source-dir>  Root of the coding-harness repo (or a .coding-harness/ subtree inside a project).
 # <target-dir>  Root of the project to install into.
 #
 # --dry-run     Print what would be done without making any changes.
 #
+# The harness source directory is always wherever this script lives (a
+# standalone clone, or a .coding-harness/ subtree inside a project).
+#
 # To update an existing project, pull the harness repo and re-run this script:
 #   cd /path/to/coding-harness && git pull
-#   ./install.sh /path/to/coding-harness /path/to/project
+#   ./install.sh /path/to/project
 #
 # Behaviour:
 #   ALWAYS OVERWRITES (harness-managed — no project customisation):
@@ -37,7 +39,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 DRY_RUN=false
-SOURCE_DIR=""
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR=""
 
 for arg in "$@"; do
@@ -45,20 +47,18 @@ for arg in "$@"; do
     --dry-run) DRY_RUN=true ;;
     -*) echo "Unknown flag: $arg" >&2; exit 1 ;;
     *)
-      if [[ -z "$SOURCE_DIR" ]]; then SOURCE_DIR="$arg"
-      elif [[ -z "$TARGET_DIR" ]]; then TARGET_DIR="$arg"
+      if [[ -z "$TARGET_DIR" ]]; then TARGET_DIR="$arg"
       else echo "Too many positional arguments." >&2; exit 1
       fi
       ;;
   esac
 done
 
-if [[ -z "$SOURCE_DIR" || -z "$TARGET_DIR" ]]; then
-  echo "Usage: $0 <source-dir> <target-dir> [--dry-run]" >&2
+if [[ -z "$TARGET_DIR" ]]; then
+  echo "Usage: $0 <target-dir> [--dry-run]" >&2
   exit 1
 fi
 
-SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd)"
 TARGET_DIR="$(cd "$TARGET_DIR" && pwd)"
 
 if [[ "$DRY_RUN" == "true" ]]; then

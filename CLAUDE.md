@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Install into a project:**
 ```bash
-./install.sh /path/to/coding-harness /path/to/your-project
+./install.sh /path/to/your-project
 ```
 
 After install, manually wire up the git hook in the target project:
@@ -20,7 +20,7 @@ chmod +x .git/hooks/post-commit
 **Update an installed project** (after pulling the latest harness):
 ```bash
 git pull
-./install.sh /path/to/coding-harness /path/to/your-project
+./install.sh /path/to/your-project
 ```
 
 **Alternative: pin the harness inside the project repo via git subtree:**
@@ -28,7 +28,7 @@ git pull
 git subtree add --prefix=.coding-harness <harness-repo-url> main
 # To update:
 git subtree pull --prefix=.coding-harness <harness-repo-url> main
-.coding-harness/install.sh .coding-harness/ .
+.coding-harness/install.sh .
 ```
 
 ## Pipeline Overview
