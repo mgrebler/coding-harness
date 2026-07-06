@@ -58,6 +58,7 @@ from agent_common import (
     extend_iterations_if_reviewed,
 )
 from plan_critic import build_plan_critic_prompt
+from architecture_critic import build_architecture_review_prompt
 
 AGENT_NAME = "plan-auto"
 CRITIC_RESULT_PREFIX = "plan-critic-result"
@@ -174,64 +175,17 @@ def arch_review_agent_definition(
 ) -> AgentDefinition:
     violations_block = format_violations_block(arch_violations, iteration, "architecture violations (already addressed by the plan agent)")
 
+    output_instructions = (
+        f"- After producing JSON, write it to specs/$FEATURE/architecture-review-result-{iteration}.json using Bash\n"
+        f"- Print one line: [architecture-review] iteration {iteration} → PASS or FAIL → path"
+    )
     return AgentDefinition(
         description="Reviews plan.md for architecture quality, best practices, and operational safety.",
-        prompt=f"""You are the Architecture Review Agent for a spec-kit project.
-
-Your sole function is to evaluate plan.md for architectural quality, best practices, maintainability, and operational safety.
-You do not validate spec/constitution compliance — that is handled by the Plan Critic.
-You do not rewrite sections. You do not edit any files. You identify architecture issues only.
-{violations_block}
-Inputs already loaded for you:
-
---- CONSTITUTION ---
-{constitution}
-
---- ARCHITECTURE ---
-{architecture}
-
---- SPEC ---
-{spec}
-
---- PLAN (current) ---
-{plan}
-
---- ARCHITECTURE PRINCIPLES ---
-{arch_principles}
-
-FAIL if: any Critical issue exists, more than 2 High severity issues exist, or confidence is below 7/10.
-
-Output ONLY valid JSON, no preamble, no markdown fences:
-{{
-  "iteration": {iteration},
-  "status": "PASS or FAIL",
-  "confidence": <number 1-10>,
-  "blocking_issues": [
-    {{
-      "title": "<short title>",
-      "severity": "Critical or High",
-      "principle": "<principle name>",
-      "finding": "<specific, citable description>"
-    }}
-  ],
-  "non_blocking_concerns": [
-    {{
-      "title": "<short title>",
-      "severity": "Medium or Low",
-      "principle": "<principle name>",
-      "finding": "<specific, citable description>"
-    }}
-  ],
-  "required_remediations": ["<concrete required change>"],
-  "summary": "<one paragraph>"
-}}
-
-Rules:
-- status is FAIL if any blocking_issue exists with severity Critical or High (more than 2 High = FAIL)
-- status is PASS if no Critical issues and at most 2 High issues and confidence >= 7
-- After producing JSON, write it to specs/$FEATURE/architecture-review-result-{iteration}.json using Bash
-- Print one line: [architecture-review] iteration {iteration} → PASS or FAIL → path
-""",
+        prompt=build_architecture_review_prompt(
+            constitution, architecture, spec, plan, arch_principles, iteration,
+            violations_block=violations_block,
+            output_instructions=output_instructions,
+        ),
         tools=["Read", "Write", "Bash", "Glob", "Grep"],
     )
 
@@ -397,22 +351,37 @@ async def run(feature: str):
             log(f"Running architecture review (iteration {iteration})...")
             plan = read_file(spec_dir / "plan.md")
 
-            async for message in query(
-                prompt=(
-                    f"Review plan.md for feature {feature} for architectural quality. "
-                    f"Write result to specs/{feature}/architecture-review-result-{iteration}.json."
-                ),
-                options=ClaudeAgentOptions(
-                    allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "architecture-review": arch_review_agent_definition(
-                            constitution, architecture, spec, plan, arch_principles, iteration, arch_violations
-                        )
-                    },
-                    setting_sources=["project"],
-                ),
-            ):
-                log_sdk_message(message, prefix="  ")
+            llm_config = load_local_llm_config("architecture")
+            if llm_config:
+                log(f"Using local LLM ({llm_config['model']}) for architecture review...")
+                arch_critic_script = Path(__file__).parent / "architecture_critic.py"
+                returncode = run_critic_subprocess(
+                    [sys.executable, str(arch_critic_script),
+                     "--feature", feature, "--iteration", str(iteration)],
+                )
+                if returncode == 2:
+                    llm_config = None  # not configured; fall through to Claude
+                elif returncode != 0:
+                    log(f"ERROR: local LLM architecture review failed for iteration {iteration}. Aborting.")
+                    sys.exit(1)
+
+            if not llm_config:
+                async for message in query(
+                    prompt=(
+                        f"Review plan.md for feature {feature} for architectural quality. "
+                        f"Write result to specs/{feature}/architecture-review-result-{iteration}.json."
+                    ),
+                    options=ClaudeAgentOptions(
+                        allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+                        agents={
+                            "architecture-review": arch_review_agent_definition(
+                                constitution, architecture, spec, plan, arch_principles, iteration, arch_violations
+                            )
+                        },
+                        setting_sources=["project"],
+                    ),
+                ):
+                    log_sdk_message(message, prefix="  ")
 
             if not arch_path_iter.exists():
                 log(f"ERROR: architecture review did not write result file for iteration {iteration}. Aborting.")

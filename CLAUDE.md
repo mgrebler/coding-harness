@@ -106,13 +106,17 @@ Critic passes can run against a local [Ollama](https://ollama.com) instance inst
   "keep_alive": -1,
   "default": { "enabled": false, "model": "" },
   "critics": {
-    "plan":      { "enabled": true,  "model": "qwen3:30b-a3b" },
-    "tasks":     { "enabled": false, "model": "" },
-    "implement": { "enabled": false, "model": "" },
-    "test":      { "enabled": false, "model": "" }
+    "plan":         { "enabled": true,  "model": "qwen3:30b-a3b" },
+    "architecture": { "enabled": true,  "model": "qwen3:30b-a3b" },
+    "tasks":        { "enabled": false, "model": "" },
+    "implement":    { "enabled": false, "model": "" },
+    "quality":      { "enabled": false, "model": "qwen3-coder:30b-a3b" },
+    "test":         { "enabled": false, "model": "" }
   }
 }
 ```
+
+`plan`/`architecture` and `implement`/`quality` are each two-gate pipelines — the first key is the spec/constitution critic, the second is the independent architecture-quality or code-quality review that runs after it. There is no separate key for test-principles checking: it's folded into the `test` critic's prompt rather than run as its own gate.
 
 `num_ctx` caps the Ollama KV-cache context window. Without it, Ollama uses the model's default (often 32k–128k), which can overflow VRAM and spill to system RAM, making inference very slow. `16384` is a good default for an 8 GB GPU: critic prompts fit comfortably and the KV cache stays in VRAM. Tune down if your GPU is smaller, or up if your prompts are very large.
 

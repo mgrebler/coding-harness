@@ -23,22 +23,36 @@ def make_llm_config(critic_name: str) -> dict:
         "temperature": 0.0,
         # Backstop against runaway thinking (reasoning models can otherwise generate
         # unboundedly); set well above every legitimate thinking chain observed in
-        # this eval suite so it never truncates a real response mid-JSON.
-        "num_predict": 8192,
+        # this eval suite so it never truncates a real response mid-JSON. The
+        # quality-review prompt (full code-quality-principles.md + multiple file
+        # contents) is the heaviest in the suite and needs more headroom than the
+        # others to finish thinking before answering.
+        "num_predict": 16384,
         "default": {"enabled": False, "model": ""},
         "critics": {critic_name: {"enabled": True, "model": OLLAMA_MODEL}},
     }
 
 
-def run_critic(tmpdir: Path, critic_name: str, feature: str = "001-health-endpoint") -> dict:
-    """Run a critic subprocess and return the parsed result JSON."""
+def run_critic(
+    tmpdir: Path,
+    critic_name: str,
+    feature: str = "001-health-endpoint",
+    result_prefix: str | None = None,
+) -> dict:
+    """Run a critic subprocess and return the parsed result JSON.
+
+    result_prefix defaults to "<critic_name>-critic-result"; pass an explicit
+    value for gates whose result filename doesn't follow that convention
+    (e.g. "architecture-review-result", "code-quality-review-result").
+    """
     script = AGENTS / f"{critic_name}_critic.py"
     subprocess.run(
         [sys.executable, str(script), "--feature", feature],
         cwd=tmpdir,
         check=True,
     )
-    result_path = tmpdir / "specs" / feature / f"{critic_name}-critic-result-1.json"
+    prefix = result_prefix or f"{critic_name}-critic-result"
+    result_path = tmpdir / "specs" / feature / f"{prefix}-1.json"
     return json.loads(result_path.read_text(encoding="utf-8"))
 
 

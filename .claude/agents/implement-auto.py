@@ -60,6 +60,7 @@ from agent_common import (
     run_critic_subprocess,
 )
 from implement_critic import build_implement_critic_prompt
+from quality_critic import build_quality_review_prompt
 
 AGENT_NAME = "implement-auto"
 CRITIC_RESULT_PREFIX = "implement-critic-result"
@@ -286,73 +287,17 @@ def quality_review_agent_definition(
 ) -> AgentDefinition:
     violations_block = format_violations_block(quality_violations, iteration, "quality violations (already addressed by the fix agent)")
 
+    output_instructions = (
+        f"- After producing JSON, write it to specs/$FEATURE/code-quality-review-result-{iteration}.json using Bash\n"
+        f"- Print one line: [code-quality-review] iteration {iteration} → PASS or FAIL → path"
+    )
     return AgentDefinition(
         description="Reviews implemented code for quality, maintainability, and operational safety.",
-        prompt=f"""You are the Code Quality Review Agent for a spec-kit project.
-
-Your sole function is to evaluate the implementation for code quality, maintainability, readability, and operational safety.
-You do not validate spec/constitution/task compliance — that is handled by the Implement Critic.
-You do not fix code. You do not write code. You identify quality issues only.
-{violations_block}
-Inputs already loaded for you:
-
---- CONSTITUTION ---
-{constitution}
-
---- SPEC ---
-{spec}
-
---- PLAN ---
-{plan}
-
---- TASKS ---
-{tasks}
-
---- CODE QUALITY PRINCIPLES ---
-{quality_principles}
-
-Review process:
-1. Run `git diff main...HEAD --name-only` and `git status --short` to identify all changed files
-2. Read each changed source file under backend/src/, frontend/src/, prisma/
-3. Read each changed test file under backend/tests/ and frontend/tests/
-4. Read adjacent existing files for consistency context
-5. Evaluate against all automatic fail conditions, severity rules, core principles, and heuristics in the CODE QUALITY PRINCIPLES section above
-
-FAIL if: any Critical issue exists, more than 3 High severity issues exist, or confidence is below 7/10.
-
-Output ONLY valid JSON, no preamble, no markdown fences:
-{{
-  "iteration": {iteration},
-  "status": "PASS or FAIL",
-  "confidence": <number 1-10>,
-  "blocking_issues": [
-    {{
-      "title": "<short title>",
-      "severity": "Critical or High",
-      "principle": "<principle name>",
-      "location": "<file path and line or function name>",
-      "finding": "<specific, citable description>"
-    }}
-  ],
-  "non_blocking_concerns": [
-    {{
-      "title": "<short title>",
-      "severity": "Medium or Low",
-      "principle": "<principle name>",
-      "location": "<file path and line or function name>",
-      "finding": "<specific, citable description>"
-    }}
-  ],
-  "required_remediations": ["<concrete required correction>"],
-  "summary": "<one paragraph>"
-}}
-
-Rules:
-- status is FAIL if any Critical issue exists, more than 3 High issues exist, or confidence < 7
-- status is PASS otherwise
-- After producing JSON, write it to specs/$FEATURE/code-quality-review-result-{iteration}.json using Bash
-- Print one line: [code-quality-review] iteration {iteration} → PASS or FAIL → path
-""",
+        prompt=build_quality_review_prompt(
+            constitution, spec, plan, tasks, quality_principles, iteration,
+            violations_block=violations_block,
+            output_instructions=output_instructions,
+        ),
         tools=["Read", "Write", "Bash", "Glob", "Grep"],
     )
 
@@ -639,22 +584,38 @@ async def run(feature: str):
         # --- Gate 2: Code quality review ---
         if not quality_path_iter.exists():
             log(f"Running code quality review (iteration {iteration})...")
-            async for message in query(
-                prompt=(
-                    f"Review the implementation for feature {feature} for code quality. "
-                    f"Write result to specs/{feature}/code-quality-review-result-{iteration}.json."
-                ),
-                options=ClaudeAgentOptions(
-                    allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "quality-review": quality_review_agent_definition(
-                            constitution, spec, plan, tasks_content, quality_principles, iteration, quality_violations
-                        )
-                    },
-                    setting_sources=["project"],
-                ),
-            ):
-                log_sdk_message(message, prefix="  ")
+
+            llm_config = load_local_llm_config("quality")
+            if llm_config:
+                log(f"Using local LLM ({llm_config['model']}) for code quality review...")
+                quality_critic_script = Path(__file__).parent / "quality_critic.py"
+                returncode = run_critic_subprocess(
+                    [sys.executable, str(quality_critic_script),
+                     "--feature", feature, "--iteration", str(iteration)],
+                )
+                if returncode == 2:
+                    llm_config = None  # not configured; fall through to Claude
+                elif returncode != 0:
+                    log(f"ERROR: local LLM code quality review failed for iteration {iteration}. Aborting.")
+                    sys.exit(1)
+
+            if not llm_config:
+                async for message in query(
+                    prompt=(
+                        f"Review the implementation for feature {feature} for code quality. "
+                        f"Write result to specs/{feature}/code-quality-review-result-{iteration}.json."
+                    ),
+                    options=ClaudeAgentOptions(
+                        allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+                        agents={
+                            "quality-review": quality_review_agent_definition(
+                                constitution, spec, plan, tasks_content, quality_principles, iteration, quality_violations
+                            )
+                        },
+                        setting_sources=["project"],
+                    ),
+                ):
+                    log_sdk_message(message, prefix="  ")
 
             if not quality_path_iter.exists():
                 log(f"ERROR: quality review did not write result file for iteration {iteration}. Aborting.")

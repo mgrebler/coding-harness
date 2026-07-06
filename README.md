@@ -180,13 +180,17 @@ Critic passes can optionally run against a local [Ollama](https://ollama.com) in
   "ollama_url": "http://host.docker.internal:11434",
   "default": { "enabled": false, "model": "" },
   "critics": {
-    "plan":      { "enabled": true,  "model": "qwen3:30b-a3b" },
-    "tasks":     { "enabled": false, "model": "" },
-    "implement": { "enabled": false, "model": "" },
-    "test":      { "enabled": false, "model": "" }
+    "plan":         { "enabled": true,  "model": "qwen3:30b-a3b" },
+    "architecture": { "enabled": true,  "model": "qwen3:30b-a3b" },
+    "tasks":        { "enabled": false, "model": "" },
+    "implement":    { "enabled": false, "model": "" },
+    "quality":      { "enabled": false, "model": "qwen3-coder:30b-a3b" },
+    "test":         { "enabled": false, "model": "" }
   }
 }
 ```
+
+`architecture` and `quality` are the second-gate reviews for the plan and implement pipelines respectively (run after the `plan`/`implement` critic passes). Test-principles checking has no separate key — it's folded into the `test` critic.
 
 ---
 
@@ -214,7 +218,7 @@ python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
 
 ### Layer 2 — Critic evals (requires local Ollama)
 
-Each critic script (`plan_critic.py`, `tasks_critic.py`, `test_critic.py`, `implement_critic.py`) is run against known-good and known-bad fixture artifacts. The result JSON is asserted. This catches prompt degradation, rule drift, or regressions in critic logic.
+Each critic script (`plan_critic.py`, `tasks_critic.py`, `test_critic.py`, `implement_critic.py`, `architecture_critic.py`, `quality_critic.py`) is run against known-good and known-bad fixture artifacts. The result JSON is asserted. This catches prompt degradation, rule drift, or regressions in critic logic.
 
 Fixtures live in `tests/evals/fixtures/` — a minimal "health endpoint" feature with good and bad variants for each pipeline stage.
 
