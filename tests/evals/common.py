@@ -21,6 +21,10 @@ def make_llm_config(critic_name: str) -> dict:
         "num_ctx": 16384,
         "keep_alive": -1,
         "temperature": 0.0,
+        # Backstop against runaway thinking (reasoning models can otherwise generate
+        # unboundedly); set well above every legitimate thinking chain observed in
+        # this eval suite so it never truncates a real response mid-JSON.
+        "num_predict": 8192,
         "default": {"enabled": False, "model": ""},
         "critics": {critic_name: {"enabled": True, "model": OLLAMA_MODEL}},
     }

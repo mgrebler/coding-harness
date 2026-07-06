@@ -79,6 +79,15 @@ Harness process checks (apply in addition to the above):
 Traceability [BLOCKING]: plan references spec.md; every acceptance criterion in spec.md is
 addressed; plan references data-model.md and contracts/ where applicable
 
+TDD Policy scope note: a Constitution §4-style TDD Policy is satisfied at the PLAN stage if
+plan.md acknowledges that tests precede implementation (e.g. a Constitution Check statement,
+or an explicit note that [TEST] tasks will precede [IMPL] tasks) — do NOT flag a violation
+merely because plan.md itself lacks a literal [TEST]/[IMPL] task-by-task breakdown; that
+granular breakdown belongs in tasks.md, a later pipeline stage the plan critic does not
+validate. Only flag a TDD Policy violation if the plan actively contradicts RED→GREEN→REFACTOR
+(e.g. proposes writing implementation before tests) or omits any acknowledgment of the process
+entirely.
+
 Output ONLY valid JSON, no preamble, no markdown fences:
 {{
   "iteration": {iteration},
