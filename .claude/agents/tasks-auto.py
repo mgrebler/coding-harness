@@ -47,8 +47,8 @@ from agent_common import (
     format_violations_block,
     write_escalation,
     extend_iterations_if_reviewed,
-    load_local_llm_config,
-    run_critic_subprocess,
+    run_gate,
+    require_spec_files,
 )
 from tasks_critic import build_tasks_critic_prompt
 
@@ -66,9 +66,7 @@ def preflight(spec_dir: Path, feature: str) -> bool:
     Returns True if tasks.md should be regenerated from scratch.
     Exits on unrecoverable conditions.
     """
-    if not (spec_dir / "plan.md").exists():
-        log(f"ERROR: {spec_dir}/plan.md not found. Cannot proceed.")
-        sys.exit(1)
+    require_spec_files(log, spec_dir, "plan.md")
 
     existing_tasks = (spec_dir / "tasks.md").exists()
     existing_results = list(spec_dir.glob(f"{RESULT_PREFIX}-*.json"))
@@ -252,22 +250,9 @@ async def run(feature: str):
             log(f"Running critic agent (iteration {iteration})...")
             tasks = read_file(spec_dir / "tasks.md")
 
-            llm_config = load_local_llm_config("tasks")
-            if llm_config:
-                log(f"Using local LLM ({llm_config['model']}) for tasks critic...")
-                tasks_critic_script = Path(__file__).parent / "tasks_critic.py"
-                returncode = run_critic_subprocess(
-                    [sys.executable, str(tasks_critic_script),
-                     "--feature", feature, "--iteration", str(iteration)],
-                )
-                if returncode == 2:
-                    llm_config = None  # not configured; fall through to Claude
-                elif returncode != 0:
-                    log(f"ERROR: local LLM critic failed for iteration {iteration}. Aborting.")
-                    sys.exit(1)
-
-            if not llm_config:
-                async for message in query(
+            await run_gate(
+                log, "tasks", "tasks_critic.py", feature, iteration, "tasks critic",
+                lambda: query(
                     prompt=(
                         f"Validate tasks.md for feature {feature}. "
                         f"Write result to specs/{feature}/tasks-critic-result-{iteration}.json."
@@ -281,8 +266,8 @@ async def run(feature: str):
                         },
                         setting_sources=["project"],
                     ),
-                ):
-                    log_sdk_message(message, prefix="  ")
+                ),
+            )
 
             if not result_path.exists():
                 log(f"ERROR: critic did not write result file for iteration {iteration}. Aborting.")

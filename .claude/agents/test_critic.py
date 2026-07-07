@@ -14,21 +14,15 @@ Exit codes:
   2 - local LLM not configured (caller should fall back to Claude)
 """
 
-import argparse
-import json
 import re
-import sys
 from pathlib import Path
 
 from agent_common import (
-    call_local_llm,
     get_changed_files,
-    get_feature_from_branch,
-    load_local_llm_config,
-    next_iteration,
     read_changed_files,
-    strip_fences,
-    write_file,
+    read_optional,
+    require_files,
+    run_local_critic_cli,
 )
 
 CRITIC_RESULT_PREFIX = "test-critic-result"
@@ -227,88 +221,37 @@ Rules:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test critic using local LLM")
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
-    parser.add_argument("--iteration", type=int, help="Iteration number (auto-detected if omitted)")
-    args = parser.parse_args()
+    def _build(spec_dir: Path, iteration: int) -> str:
+        feature = spec_dir.name
+        constitution_path = Path(".specify/memory/constitution.md")
+        architecture_path = Path(".specify/memory/architecture.md")
+        test_principles_path = Path(".specify/memory/test-principles.md")
+        spec_path = spec_dir / "spec.md"
+        plan_path = spec_dir / "plan.md"
+        tasks_path = spec_dir / "tasks.md"
 
-    config = load_local_llm_config("test")
-    if config is None:
-        sys.exit(2)
+        require_files("test-critic", constitution_path, spec_path, plan_path, tasks_path)
 
-    feature = args.feature or get_feature_from_branch("test-critic")
-    spec_dir = Path(f"specs/{feature}")
+        constitution = constitution_path.read_text(encoding="utf-8")
+        architecture = read_optional(architecture_path, "(architecture.md not found)")
+        test_principles = read_optional(test_principles_path, "(test-principles.md not found)")
+        spec = spec_path.read_text(encoding="utf-8")
+        plan = plan_path.read_text(encoding="utf-8")
+        tasks = tasks_path.read_text(encoding="utf-8")
 
-    iteration = args.iteration if args.iteration is not None else next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
+        changed_files = get_changed_files()
+        changed_test_files = read_changed_files(changed_files, TEST_DIRS)
+        changed_test_files = _annotate_test_files(changed_test_files)
+        test_results = read_test_results(spec_dir)
 
-    constitution_path = Path(".specify/memory/constitution.md")
-    architecture_path = Path(".specify/memory/architecture.md")
-    test_principles_path = Path(".specify/memory/test-principles.md")
-    spec_path = spec_dir / "spec.md"
-    plan_path = spec_dir / "plan.md"
-    tasks_path = spec_dir / "tasks.md"
+        return build_test_critic_prompt(
+            constitution, spec, plan, tasks, test_principles, feature, iteration,
+            architecture=architecture,
+            changed_files_section=changed_test_files,
+            test_results=test_results,
+        )
 
-    for p in (constitution_path, spec_path, plan_path, tasks_path):
-        if not p.exists():
-            print(f"[test-critic] ERROR: required file not found: {p}", flush=True)
-            sys.exit(1)
-
-    constitution = constitution_path.read_text(encoding="utf-8")
-    architecture = architecture_path.read_text(encoding="utf-8") if architecture_path.exists() else "(architecture.md not found)"
-    test_principles = test_principles_path.read_text(encoding="utf-8") if test_principles_path.exists() else "(test-principles.md not found)"
-    spec = spec_path.read_text(encoding="utf-8")
-    plan = plan_path.read_text(encoding="utf-8")
-    tasks = tasks_path.read_text(encoding="utf-8")
-
-    changed_files = get_changed_files()
-    changed_test_files = read_changed_files(changed_files, TEST_DIRS)
-    changed_test_files = _annotate_test_files(changed_test_files)
-    test_results = read_test_results(spec_dir)
-
-    prompt = build_test_critic_prompt(
-        constitution, spec, plan, tasks, test_principles, feature, iteration,
-        architecture=architecture,
-        changed_files_section=changed_test_files,
-        test_results=test_results,
-    )
-
-    print(f"[test-critic] Running iteration {iteration} via local LLM ({config['model']})...", flush=True)
-
-    def _progress(token_count: int, elapsed_s: float, done: bool = False) -> None:
-        if done:
-            print(f"[test-critic]   done — {token_count} tokens in {elapsed_s:.0f}s", flush=True)
-        else:
-            print(f"[test-critic]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True)
-
-    try:
-        raw = call_local_llm(prompt, config, progress_fn=_progress)
-    except Exception as e:
-        print(f"[test-critic] ERROR: local LLM call failed: {e}", flush=True)
-        sys.exit(1)
-
-    cleaned = strip_fences(raw)
-
-    try:
-        result = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        print(f"[test-critic] ERROR: could not parse LLM response as JSON: {e}", flush=True)
-        print(f"[test-critic] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
-        sys.exit(1)
-
-    result["iteration"] = iteration
-
-    result_path = spec_dir / f"{CRITIC_RESULT_PREFIX}-{iteration}.json"
-    write_file(result_path, json.dumps(result, indent=2))
-
-    status = result.get("status", "FAIL")
-    violations = result.get("violations", [])
-    blocking = sum(1 for v in violations if v.get("severity") == "BLOCKING")
-    warnings = sum(1 for v in violations if v.get("severity") == "WARNING")
-
-    if status == "PASS":
-        print(f"[test-critic] iteration {iteration} → PASS → {result_path}", flush=True)
-    else:
-        print(f"[test-critic] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}", flush=True)
+    run_local_critic_cli("test-critic", "test", CRITIC_RESULT_PREFIX, _build)
 
 
 if __name__ == "__main__":

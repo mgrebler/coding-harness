@@ -39,7 +39,6 @@ from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
 
 from agent_common import (
     get_feature_from_branch,
-    load_local_llm_config,
     read_file,
     write_file,
     next_iteration,
@@ -50,7 +49,8 @@ from agent_common import (
     make_logger,
     log_sdk_message,
     setup_log_file,
-    run_critic_subprocess,
+    run_gate,
+    require_spec_files,
     find_passing_iteration,
     find_two_gate_resume_state,
     format_violations_block,
@@ -75,9 +75,7 @@ def preflight(spec_dir: Path, feature: str) -> bool:
     Returns True if plan.md should be regenerated from scratch.
     Exits on unrecoverable conditions.
     """
-    if not (spec_dir / "spec.md").exists():
-        log(f"ERROR: {spec_dir}/spec.md not found. Cannot proceed.")
-        sys.exit(1)
+    require_spec_files(log, spec_dir, "spec.md")
 
     existing_plan = (spec_dir / "plan.md").exists()
     existing_results = list(spec_dir.glob(f"{CRITIC_RESULT_PREFIX}-*.json"))
@@ -295,22 +293,9 @@ async def run(feature: str):
             log(f"Running plan critic (iteration {iteration})...")
             plan = read_file(spec_dir / "plan.md")
 
-            llm_config = load_local_llm_config("plan")
-            if llm_config:
-                log(f"Using local LLM ({llm_config['model']}) for plan critic...")
-                plan_critic_script = Path(__file__).parent / "plan_critic.py"
-                returncode = run_critic_subprocess(
-                    [sys.executable, str(plan_critic_script),
-                     "--feature", feature, "--iteration", str(iteration)],
-                )
-                if returncode == 2:
-                    llm_config = None  # not configured; fall through to Claude
-                elif returncode != 0:
-                    log(f"ERROR: local LLM critic failed for iteration {iteration}. Aborting.")
-                    sys.exit(1)
-
-            if not llm_config:
-                async for message in query(
+            await run_gate(
+                log, "plan", "plan_critic.py", feature, iteration, "plan critic",
+                lambda: query(
                     prompt=(
                         f"Validate plan.md for feature {feature}. "
                         f"Write result to specs/{feature}/plan-critic-result-{iteration}.json."
@@ -324,8 +309,8 @@ async def run(feature: str):
                         },
                         setting_sources=["project"],
                     ),
-                ):
-                    log_sdk_message(message, prefix="  ")
+                ),
+            )
 
             if not critic_path.exists():
                 log(f"ERROR: critic did not write result file for iteration {iteration}. Aborting.")
@@ -351,22 +336,9 @@ async def run(feature: str):
             log(f"Running architecture review (iteration {iteration})...")
             plan = read_file(spec_dir / "plan.md")
 
-            llm_config = load_local_llm_config("architecture")
-            if llm_config:
-                log(f"Using local LLM ({llm_config['model']}) for architecture review...")
-                arch_critic_script = Path(__file__).parent / "architecture_critic.py"
-                returncode = run_critic_subprocess(
-                    [sys.executable, str(arch_critic_script),
-                     "--feature", feature, "--iteration", str(iteration)],
-                )
-                if returncode == 2:
-                    llm_config = None  # not configured; fall through to Claude
-                elif returncode != 0:
-                    log(f"ERROR: local LLM architecture review failed for iteration {iteration}. Aborting.")
-                    sys.exit(1)
-
-            if not llm_config:
-                async for message in query(
+            await run_gate(
+                log, "architecture", "architecture_critic.py", feature, iteration, "architecture review",
+                lambda: query(
                     prompt=(
                         f"Review plan.md for feature {feature} for architectural quality. "
                         f"Write result to specs/{feature}/architecture-review-result-{iteration}.json."
@@ -380,8 +352,8 @@ async def run(feature: str):
                         },
                         setting_sources=["project"],
                     ),
-                ):
-                    log_sdk_message(message, prefix="  ")
+                ),
+            )
 
             if not arch_path_iter.exists():
                 log(f"ERROR: architecture review did not write result file for iteration {iteration}. Aborting.")

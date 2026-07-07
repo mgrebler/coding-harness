@@ -15,18 +15,12 @@ Exit codes:
   2 - local LLM not configured (caller should fall back to Claude)
 """
 
-import argparse
-import json
-import sys
 from pathlib import Path
 
 from agent_common import (
-    call_local_llm,
-    get_feature_from_branch,
-    load_local_llm_config,
-    next_iteration,
-    strip_fences,
-    write_file,
+    read_optional,
+    require_files,
+    run_local_critic_cli,
 )
 
 CRITIC_RESULT_PREFIX = "plan-critic-result"
@@ -114,74 +108,22 @@ Rules:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plan critic using local LLM")
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
-    parser.add_argument("--iteration", type=int, help="Iteration number (auto-detected if omitted)")
-    args = parser.parse_args()
+    def _build(spec_dir: Path, iteration: int) -> str:
+        constitution_path = Path(".specify/memory/constitution.md")
+        architecture_path = Path(".specify/memory/architecture.md")
+        spec_path = spec_dir / "spec.md"
+        plan_path = spec_dir / "plan.md"
 
-    config = load_local_llm_config("plan")
-    if config is None:
-        sys.exit(2)
+        require_files("plan-critic", constitution_path, spec_path, plan_path)
 
-    feature = args.feature or get_feature_from_branch("plan-critic")
-    spec_dir = Path(f"specs/{feature}")
+        constitution = constitution_path.read_text(encoding="utf-8")
+        architecture = read_optional(architecture_path, "(architecture.md not found)")
+        spec = spec_path.read_text(encoding="utf-8")
+        plan = plan_path.read_text(encoding="utf-8")
 
-    iteration = args.iteration if args.iteration is not None else next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
+        return build_plan_critic_prompt(constitution, architecture, spec, plan, iteration)
 
-    constitution_path = Path(".specify/memory/constitution.md")
-    architecture_path = Path(".specify/memory/architecture.md")
-    spec_path = spec_dir / "spec.md"
-    plan_path = spec_dir / "plan.md"
-
-    for p in (constitution_path, spec_path, plan_path):
-        if not p.exists():
-            print(f"[plan-critic] ERROR: required file not found: {p}", flush=True)
-            sys.exit(1)
-
-    constitution = constitution_path.read_text(encoding="utf-8")
-    architecture = architecture_path.read_text(encoding="utf-8") if architecture_path.exists() else "(architecture.md not found)"
-    spec = spec_path.read_text(encoding="utf-8")
-    plan = plan_path.read_text(encoding="utf-8")
-
-    prompt = build_plan_critic_prompt(constitution, architecture, spec, plan, iteration)
-
-    print(f"[plan-critic] Running iteration {iteration} via local LLM ({config['model']})...", flush=True)
-
-    def _progress(token_count: int, elapsed_s: float, done: bool = False) -> None:
-        if done:
-            print(f"[plan-critic]   done — {token_count} tokens in {elapsed_s:.0f}s", flush=True)
-        else:
-            print(f"[plan-critic]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True)
-
-    try:
-        raw = call_local_llm(prompt, config, progress_fn=_progress)
-    except Exception as e:
-        print(f"[plan-critic] ERROR: local LLM call failed: {e}", flush=True)
-        sys.exit(1)
-
-    cleaned = strip_fences(raw)
-
-    try:
-        result = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        print(f"[plan-critic] ERROR: could not parse LLM response as JSON: {e}", flush=True)
-        print(f"[plan-critic] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
-        sys.exit(1)
-
-    result["iteration"] = iteration
-
-    result_path = spec_dir / f"{CRITIC_RESULT_PREFIX}-{iteration}.json"
-    write_file(result_path, json.dumps(result, indent=2))
-
-    status = result.get("status", "FAIL")
-    violations = result.get("violations", [])
-    blocking = sum(1 for v in violations if v.get("severity") == "BLOCKING")
-    warnings = sum(1 for v in violations if v.get("severity") == "WARNING")
-
-    if status == "PASS":
-        print(f"[plan-critic] iteration {iteration} → PASS → {result_path}", flush=True)
-    else:
-        print(f"[plan-critic] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}", flush=True)
+    run_local_critic_cli("plan-critic", "plan", CRITIC_RESULT_PREFIX, _build)
 
 
 if __name__ == "__main__":

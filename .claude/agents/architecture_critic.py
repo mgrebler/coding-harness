@@ -16,18 +16,12 @@ Exit codes:
   2 - local LLM not configured (caller should fall back to Claude)
 """
 
-import argparse
-import json
-import sys
 from pathlib import Path
 
 from agent_common import (
-    call_local_llm,
-    get_feature_from_branch,
-    load_local_llm_config,
-    next_iteration,
-    strip_fences,
-    write_file,
+    read_optional,
+    require_files,
+    run_local_critic_cli,
 )
 
 RESULT_PREFIX = "architecture-review-result"
@@ -104,75 +98,24 @@ Rules:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Architecture review using local LLM")
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
-    parser.add_argument("--iteration", type=int, help="Iteration number (auto-detected if omitted)")
-    args = parser.parse_args()
+    def _build(spec_dir: Path, iteration: int) -> str:
+        constitution_path = Path(".specify/memory/constitution.md")
+        architecture_path = Path(".specify/memory/architecture.md")
+        arch_principles_path = Path(".specify/memory/architecture-principles.md")
+        spec_path = spec_dir / "spec.md"
+        plan_path = spec_dir / "plan.md"
 
-    config = load_local_llm_config("architecture")
-    if config is None:
-        sys.exit(2)
+        require_files("architecture-review", constitution_path, spec_path, plan_path)
 
-    feature = args.feature or get_feature_from_branch("architecture-review")
-    spec_dir = Path(f"specs/{feature}")
+        constitution = constitution_path.read_text(encoding="utf-8")
+        architecture = read_optional(architecture_path, "(architecture.md not found)")
+        arch_principles = read_optional(arch_principles_path, "(architecture-principles.md not found)")
+        spec = spec_path.read_text(encoding="utf-8")
+        plan = plan_path.read_text(encoding="utf-8")
 
-    iteration = args.iteration if args.iteration is not None else next_iteration(spec_dir, RESULT_PREFIX)
+        return build_architecture_review_prompt(constitution, architecture, spec, plan, arch_principles, iteration)
 
-    constitution_path = Path(".specify/memory/constitution.md")
-    architecture_path = Path(".specify/memory/architecture.md")
-    arch_principles_path = Path(".specify/memory/architecture-principles.md")
-    spec_path = spec_dir / "spec.md"
-    plan_path = spec_dir / "plan.md"
-
-    for p in (constitution_path, spec_path, plan_path):
-        if not p.exists():
-            print(f"[architecture-review] ERROR: required file not found: {p}", flush=True)
-            sys.exit(1)
-
-    constitution = constitution_path.read_text(encoding="utf-8")
-    architecture = architecture_path.read_text(encoding="utf-8") if architecture_path.exists() else "(architecture.md not found)"
-    arch_principles = arch_principles_path.read_text(encoding="utf-8") if arch_principles_path.exists() else "(architecture-principles.md not found)"
-    spec = spec_path.read_text(encoding="utf-8")
-    plan = plan_path.read_text(encoding="utf-8")
-
-    prompt = build_architecture_review_prompt(constitution, architecture, spec, plan, arch_principles, iteration)
-
-    print(f"[architecture-review] Running iteration {iteration} via local LLM ({config['model']})...", flush=True)
-
-    def _progress(token_count: int, elapsed_s: float, done: bool = False) -> None:
-        if done:
-            print(f"[architecture-review]   done — {token_count} tokens in {elapsed_s:.0f}s", flush=True)
-        else:
-            print(f"[architecture-review]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True)
-
-    try:
-        raw = call_local_llm(prompt, config, progress_fn=_progress)
-    except Exception as e:
-        print(f"[architecture-review] ERROR: local LLM call failed: {e}", flush=True)
-        sys.exit(1)
-
-    cleaned = strip_fences(raw)
-
-    try:
-        result = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        print(f"[architecture-review] ERROR: could not parse LLM response as JSON: {e}", flush=True)
-        print(f"[architecture-review] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
-        sys.exit(1)
-
-    result["iteration"] = iteration
-
-    result_path = spec_dir / f"{RESULT_PREFIX}-{iteration}.json"
-    write_file(result_path, json.dumps(result, indent=2))
-
-    status = result.get("status", "FAIL")
-    confidence = result.get("confidence", 0)
-    blocking = len(result.get("blocking_issues", []))
-
-    if status == "PASS":
-        print(f"[architecture-review] iteration {iteration} → PASS (confidence {confidence}/10) → {result_path}", flush=True)
-    else:
-        print(f"[architecture-review] iteration {iteration} → FAIL ({blocking} blocking issue(s), confidence {confidence}/10) → {result_path}", flush=True)
+    run_local_critic_cli("architecture-review", "architecture", RESULT_PREFIX, _build, summary_style="confidence")
 
 
 if __name__ == "__main__":

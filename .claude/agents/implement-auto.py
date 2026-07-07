@@ -56,8 +56,8 @@ from agent_common import (
     format_violations_block,
     write_escalation,
     extend_iterations_if_reviewed,
-    load_local_llm_config,
-    run_critic_subprocess,
+    run_gate,
+    require_spec_files,
 )
 from implement_critic import build_implement_critic_prompt
 from quality_critic import build_quality_review_prompt
@@ -73,11 +73,7 @@ log = make_logger(AGENT_NAME)
 # ---------------------------------------------------------------------------
 
 def preflight(spec_dir: Path, feature: str):
-    required = ["spec.md", "plan.md", "tasks.md"]
-    for f in required:
-        if not (spec_dir / f).exists():
-            log(f"ERROR: {spec_dir}/{f} not found. Cannot proceed.")
-            sys.exit(1)
+    require_spec_files(log, spec_dir, "spec.md", "plan.md", "tasks.md")
 
     # Confirm test phase is complete
     test_critic_results = list(spec_dir.glob("test-critic-result-*.json"))
@@ -530,22 +526,9 @@ async def run(feature: str):
 
             log(f"Running implement critic (iteration {iteration})...")
 
-            llm_config = load_local_llm_config("implement")
-            if llm_config:
-                log(f"Using local LLM ({llm_config['model']}) for implement critic...")
-                implement_critic_script = Path(__file__).parent / "implement_critic.py"
-                returncode = run_critic_subprocess(
-                    [sys.executable, str(implement_critic_script),
-                     "--feature", feature, "--iteration", str(iteration)],
-                )
-                if returncode == 2:
-                    llm_config = None  # not configured; fall through to Claude
-                elif returncode != 0:
-                    log(f"ERROR: local LLM critic failed for iteration {iteration}. Aborting.")
-                    sys.exit(1)
-
-            if not llm_config:
-                async for message in query(
+            await run_gate(
+                log, "implement", "implement_critic.py", feature, iteration, "implement critic",
+                lambda: query(
                     prompt=(
                         f"Validate the implementation for feature {feature}. "
                         f"Write result to specs/{feature}/implement-critic-result-{iteration}.json."
@@ -559,8 +542,8 @@ async def run(feature: str):
                         },
                         setting_sources=["project"],
                     ),
-                ):
-                    log_sdk_message(message, prefix="  ")
+                ),
+            )
 
             if not critic_path.exists():
                 log(f"ERROR: critic did not write result file for iteration {iteration}. Aborting.")
@@ -585,22 +568,9 @@ async def run(feature: str):
         if not quality_path_iter.exists():
             log(f"Running code quality review (iteration {iteration})...")
 
-            llm_config = load_local_llm_config("quality")
-            if llm_config:
-                log(f"Using local LLM ({llm_config['model']}) for code quality review...")
-                quality_critic_script = Path(__file__).parent / "quality_critic.py"
-                returncode = run_critic_subprocess(
-                    [sys.executable, str(quality_critic_script),
-                     "--feature", feature, "--iteration", str(iteration)],
-                )
-                if returncode == 2:
-                    llm_config = None  # not configured; fall through to Claude
-                elif returncode != 0:
-                    log(f"ERROR: local LLM code quality review failed for iteration {iteration}. Aborting.")
-                    sys.exit(1)
-
-            if not llm_config:
-                async for message in query(
+            await run_gate(
+                log, "quality", "quality_critic.py", feature, iteration, "code quality review",
+                lambda: query(
                     prompt=(
                         f"Review the implementation for feature {feature} for code quality. "
                         f"Write result to specs/{feature}/code-quality-review-result-{iteration}.json."
@@ -614,8 +584,8 @@ async def run(feature: str):
                         },
                         setting_sources=["project"],
                     ),
-                ):
-                    log_sdk_message(message, prefix="  ")
+                ),
+            )
 
             if not quality_path_iter.exists():
                 log(f"ERROR: quality review did not write result file for iteration {iteration}. Aborting.")

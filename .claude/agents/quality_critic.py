@@ -16,19 +16,14 @@ Exit codes:
   2 - local LLM not configured (caller should fall back to Claude)
 """
 
-import argparse
-import json
-import sys
 from pathlib import Path
 
 from agent_common import (
-    call_local_llm,
     get_changed_files,
-    get_feature_from_branch,
-    load_local_llm_config,
-    next_iteration,
-    strip_fences,
-    write_file,
+    read_changed_source_files,
+    read_optional,
+    require_files,
+    run_local_critic_cli,
 )
 
 RESULT_PREFIX = "code-quality-review-result"
@@ -130,92 +125,29 @@ Rules:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Code quality review using local LLM")
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
-    parser.add_argument("--iteration", type=int, help="Iteration number (auto-detected if omitted)")
-    args = parser.parse_args()
+    def _build(spec_dir: Path, iteration: int) -> str:
+        constitution_path = Path(".specify/memory/constitution.md")
+        quality_principles_path = Path(".specify/memory/code-quality-principles.md")
+        spec_path = spec_dir / "spec.md"
+        plan_path = spec_dir / "plan.md"
+        tasks_path = spec_dir / "tasks.md"
 
-    config = load_local_llm_config("quality")
-    if config is None:
-        sys.exit(2)
+        require_files("code-quality-review", constitution_path, spec_path, plan_path, tasks_path)
 
-    feature = args.feature or get_feature_from_branch("code-quality-review")
-    spec_dir = Path(f"specs/{feature}")
+        constitution = constitution_path.read_text(encoding="utf-8")
+        quality_principles = read_optional(quality_principles_path, "(code-quality-principles.md not found)")
+        spec = spec_path.read_text(encoding="utf-8")
+        plan = plan_path.read_text(encoding="utf-8")
+        tasks = tasks_path.read_text(encoding="utf-8")
 
-    iteration = args.iteration if args.iteration is not None else next_iteration(spec_dir, RESULT_PREFIX)
+        changed_sources = read_changed_source_files(get_changed_files())
 
-    constitution_path = Path(".specify/memory/constitution.md")
-    quality_principles_path = Path(".specify/memory/code-quality-principles.md")
-    spec_path = spec_dir / "spec.md"
-    plan_path = spec_dir / "plan.md"
-    tasks_path = spec_dir / "tasks.md"
+        return build_quality_review_prompt(
+            constitution, spec, plan, tasks, quality_principles, iteration,
+            changed_files_section=changed_sources,
+        )
 
-    for p in (constitution_path, spec_path, plan_path, tasks_path):
-        if not p.exists():
-            print(f"[code-quality-review] ERROR: required file not found: {p}", flush=True)
-            sys.exit(1)
-
-    constitution = constitution_path.read_text(encoding="utf-8")
-    quality_principles = quality_principles_path.read_text(encoding="utf-8") if quality_principles_path.exists() else "(code-quality-principles.md not found)"
-    spec = spec_path.read_text(encoding="utf-8")
-    plan = plan_path.read_text(encoding="utf-8")
-    tasks = tasks_path.read_text(encoding="utf-8")
-
-    changed_files = get_changed_files()
-    content_parts = []
-    for path_str in changed_files:
-        if path_str.startswith("specs/") or "-result-" in path_str:
-            continue
-        p = Path(path_str)
-        if not p.exists():
-            continue
-        try:
-            content_parts.append(f"--- {path_str} ---\n{p.read_text(encoding='utf-8')}")
-        except Exception:
-            content_parts.append(f"--- {path_str} --- (could not read)")
-    changed_sources = "\n\n".join(content_parts) if content_parts else "(no changed files found)"
-
-    prompt = build_quality_review_prompt(
-        constitution, spec, plan, tasks, quality_principles, iteration,
-        changed_files_section=changed_sources,
-    )
-
-    print(f"[code-quality-review] Running iteration {iteration} via local LLM ({config['model']})...", flush=True)
-
-    def _progress(token_count: int, elapsed_s: float, done: bool = False) -> None:
-        if done:
-            print(f"[code-quality-review]   done — {token_count} tokens in {elapsed_s:.0f}s", flush=True)
-        else:
-            print(f"[code-quality-review]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True)
-
-    try:
-        raw = call_local_llm(prompt, config, progress_fn=_progress)
-    except Exception as e:
-        print(f"[code-quality-review] ERROR: local LLM call failed: {e}", flush=True)
-        sys.exit(1)
-
-    cleaned = strip_fences(raw)
-
-    try:
-        result = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        print(f"[code-quality-review] ERROR: could not parse LLM response as JSON: {e}", flush=True)
-        print(f"[code-quality-review] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
-        sys.exit(1)
-
-    result["iteration"] = iteration
-
-    result_path = spec_dir / f"{RESULT_PREFIX}-{iteration}.json"
-    write_file(result_path, json.dumps(result, indent=2))
-
-    status = result.get("status", "FAIL")
-    confidence = result.get("confidence", 0)
-    blocking = len(result.get("blocking_issues", []))
-
-    if status == "PASS":
-        print(f"[code-quality-review] iteration {iteration} → PASS (confidence {confidence}/10) → {result_path}", flush=True)
-    else:
-        print(f"[code-quality-review] iteration {iteration} → FAIL ({blocking} blocking issue(s), confidence {confidence}/10) → {result_path}", flush=True)
+    run_local_critic_cli("code-quality-review", "quality", RESULT_PREFIX, _build, summary_style="confidence")
 
 
 if __name__ == "__main__":

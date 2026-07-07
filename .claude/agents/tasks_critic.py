@@ -14,19 +14,12 @@ Exit codes:
   2 - local LLM not configured (caller should fall back to Claude)
 """
 
-import argparse
-import json
 import re
-import sys
 from pathlib import Path
 
 from agent_common import (
-    call_local_llm,
-    get_feature_from_branch,
-    load_local_llm_config,
-    next_iteration,
-    strip_fences,
-    write_file,
+    require_files,
+    run_local_critic_cli,
 )
 
 CRITIC_RESULT_PREFIX = "tasks-critic-result"
@@ -183,76 +176,24 @@ Rules:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Tasks critic using local LLM")
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
-    parser.add_argument("--iteration", type=int, help="Iteration number (auto-detected if omitted)")
-    args = parser.parse_args()
+    def _build(spec_dir: Path, iteration: int) -> str:
+        constitution_path = Path(".specify/memory/constitution.md")
+        spec_path = spec_dir / "spec.md"
+        plan_path = spec_dir / "plan.md"
+        tasks_path = spec_dir / "tasks.md"
 
-    config = load_local_llm_config("tasks")
-    if config is None:
-        sys.exit(2)
+        require_files("tasks-critic", constitution_path, spec_path, plan_path, tasks_path)
 
-    feature = args.feature or get_feature_from_branch("tasks-critic")
-    spec_dir = Path(f"specs/{feature}")
+        constitution = constitution_path.read_text(encoding="utf-8")
+        spec = spec_path.read_text(encoding="utf-8")
+        plan = plan_path.read_text(encoding="utf-8")
+        tasks = tasks_path.read_text(encoding="utf-8")
 
-    iteration = args.iteration if args.iteration is not None else next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
+        task_format_analysis = _analyze_task_format(tasks)
+        return build_tasks_critic_prompt(constitution, spec, plan, tasks, iteration,
+                                          task_format_analysis=task_format_analysis)
 
-    constitution_path = Path(".specify/memory/constitution.md")
-    spec_path = spec_dir / "spec.md"
-    plan_path = spec_dir / "plan.md"
-    tasks_path = spec_dir / "tasks.md"
-
-    for p in (constitution_path, spec_path, plan_path, tasks_path):
-        if not p.exists():
-            print(f"[tasks-critic] ERROR: required file not found: {p}", flush=True)
-            sys.exit(1)
-
-    constitution = constitution_path.read_text(encoding="utf-8")
-    spec = spec_path.read_text(encoding="utf-8")
-    plan = plan_path.read_text(encoding="utf-8")
-    tasks = tasks_path.read_text(encoding="utf-8")
-
-    task_format_analysis = _analyze_task_format(tasks)
-    prompt = build_tasks_critic_prompt(constitution, spec, plan, tasks, iteration,
-                                       task_format_analysis=task_format_analysis)
-
-    print(f"[tasks-critic] Running iteration {iteration} via local LLM ({config['model']})...", flush=True)
-
-    def _progress(token_count: int, elapsed_s: float, done: bool = False) -> None:
-        if done:
-            print(f"[tasks-critic]   done — {token_count} tokens in {elapsed_s:.0f}s", flush=True)
-        else:
-            print(f"[tasks-critic]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True)
-
-    try:
-        raw = call_local_llm(prompt, config, progress_fn=_progress)
-    except Exception as e:
-        print(f"[tasks-critic] ERROR: local LLM call failed: {e}", flush=True)
-        sys.exit(1)
-
-    cleaned = strip_fences(raw)
-
-    try:
-        result = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        print(f"[tasks-critic] ERROR: could not parse LLM response as JSON: {e}", flush=True)
-        print(f"[tasks-critic] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
-        sys.exit(1)
-
-    result["iteration"] = iteration
-
-    result_path = spec_dir / f"{CRITIC_RESULT_PREFIX}-{iteration}.json"
-    write_file(result_path, json.dumps(result, indent=2))
-
-    status = result.get("status", "FAIL")
-    violations = result.get("violations", [])
-    blocking = sum(1 for v in violations if v.get("severity") == "BLOCKING")
-    warnings = sum(1 for v in violations if v.get("severity") == "WARNING")
-
-    if status == "PASS":
-        print(f"[tasks-critic] iteration {iteration} → PASS → {result_path}", flush=True)
-    else:
-        print(f"[tasks-critic] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}", flush=True)
+    run_local_critic_cli("tasks-critic", "tasks", CRITIC_RESULT_PREFIX, _build)
 
 
 if __name__ == "__main__":

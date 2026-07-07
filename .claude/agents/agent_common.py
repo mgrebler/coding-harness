@@ -5,6 +5,7 @@ Shared utilities for all spec-kit auto-orchestrator agents.
 Imported by plan-auto.py, tasks-auto.py, and implement-auto.py.
 """
 
+import argparse
 import json
 import re
 import subprocess
@@ -14,7 +15,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Optional
+from typing import Callable, IO, Optional
 
 from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
@@ -49,6 +50,43 @@ def run_critic_subprocess(cmd: list) -> int:
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr, flush=True)
     return result.returncode
+
+
+async def run_gate(
+    log,
+    critic_type: str,
+    script_name: str,
+    feature: str,
+    iteration: int,
+    label: str,
+    claude_fallback: Callable,
+) -> None:
+    """
+    Run one review gate: try the local-LLM subprocess first (if critic_type is
+    configured in .specify/local-llm.json), falling back to Claude when it isn't
+    configured (subprocess exit code 2) or absent entirely. Aborts the whole
+    process (sys.exit(1)) if the local LLM subprocess fails for any other reason.
+
+    claude_fallback: zero-arg callable returning the async iterator of SDK
+    messages to consume on the Claude path, e.g. `lambda: query(prompt=..., options=...)`.
+    Invoked only when falling back — never called if the local LLM path succeeds.
+    """
+    llm_config = load_local_llm_config(critic_type)
+    if llm_config:
+        log(f"Using local LLM ({llm_config['model']}) for {label}...")
+        script = Path(__file__).parent / script_name
+        returncode = run_critic_subprocess(
+            [sys.executable, str(script), "--feature", feature, "--iteration", str(iteration)],
+        )
+        if returncode == 2:
+            llm_config = None  # not configured; fall through to Claude
+        elif returncode != 0:
+            log(f"ERROR: local LLM {label} failed for iteration {iteration}. Aborting.")
+            sys.exit(1)
+
+    if not llm_config:
+        async for message in claude_fallback():
+            log_sdk_message(message, prefix="  ")
 
 
 def setup_log_file(path: Path):
@@ -86,6 +124,27 @@ def read_file(path: Path) -> str:
 def write_file(path: Path, content: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def read_optional(path: Path, fallback: str) -> str:
+    """Read path as UTF-8 text if it exists, else return fallback."""
+    return path.read_text(encoding="utf-8") if path.exists() else fallback
+
+
+def require_files(name: str, *paths: Path) -> None:
+    """Exit(1) with a standard error message if any of paths is missing. Used by standalone critic scripts."""
+    for p in paths:
+        if not p.exists():
+            print(f"[{name}] ERROR: required file not found: {p}", flush=True)
+            sys.exit(1)
+
+
+def require_spec_files(log_fn, spec_dir: Path, *filenames: str) -> None:
+    """Exit(1) via log_fn if any of filenames is missing from spec_dir. Used by *-auto.py preflight checks."""
+    for f in filenames:
+        if not (spec_dir / f).exists():
+            log_fn(f"ERROR: {spec_dir}/{f} not found. Cannot proceed.")
+            sys.exit(1)
 
 
 def next_iteration(spec_dir: Path, result_prefix: str) -> int:
@@ -615,6 +674,90 @@ def strip_fences(text: str) -> str:
     return text.strip()
 
 
+def run_local_critic_cli(
+    name: str,
+    critic_type: str,
+    result_prefix: str,
+    build_prompt: Callable[[Path, int], str],
+    summary_style: str = "violations",
+) -> None:
+    """
+    Shared CLI driver for a standalone local-LLM critic script (plan_critic.py,
+    architecture_critic.py, etc). Handles argument parsing, config loading, calling
+    the model, parsing/writing the result, and the PASS/FAIL summary line — callers
+    only need to supply build_prompt(spec_dir, iteration) -> str, which should read
+    whatever files it needs (via require_files/read_optional) and return the finished
+    prompt.
+
+    summary_style:
+      "violations" — count BLOCKING/WARNING entries in result["violations"] (default;
+                     used by plan/tasks/test/implement critics)
+      "confidence" — report result["confidence"] and len(result["blocking_issues"])
+                     (used by architecture/quality reviews)
+
+    Exit codes: 0 success, 1 runtime error, 2 local LLM not configured.
+    """
+    parser = argparse.ArgumentParser(description=f"{name} using local LLM")
+    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
+    parser.add_argument("--iteration", type=int, help="Iteration number (auto-detected if omitted)")
+    args = parser.parse_args()
+
+    config = load_local_llm_config(critic_type)
+    if config is None:
+        sys.exit(2)
+
+    feature = args.feature or get_feature_from_branch(name)
+    spec_dir = Path(f"specs/{feature}")
+    iteration = args.iteration if args.iteration is not None else next_iteration(spec_dir, result_prefix)
+
+    prompt = build_prompt(spec_dir, iteration)
+
+    print(f"[{name}] Running iteration {iteration} via local LLM ({config['model']})...", flush=True)
+
+    def _progress(token_count: int, elapsed_s: float, done: bool = False) -> None:
+        if done:
+            print(f"[{name}]   done — {token_count} tokens in {elapsed_s:.0f}s", flush=True)
+        else:
+            print(f"[{name}]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True)
+
+    try:
+        raw = call_local_llm(prompt, config, progress_fn=_progress)
+    except Exception as e:
+        print(f"[{name}] ERROR: local LLM call failed: {e}", flush=True)
+        sys.exit(1)
+
+    cleaned = strip_fences(raw)
+
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        print(f"[{name}] ERROR: could not parse LLM response as JSON: {e}", flush=True)
+        print(f"[{name}] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
+        sys.exit(1)
+
+    result["iteration"] = iteration
+
+    result_path = spec_dir / f"{result_prefix}-{iteration}.json"
+    write_file(result_path, json.dumps(result, indent=2))
+
+    status = result.get("status", "FAIL")
+    if summary_style == "confidence":
+        confidence = result.get("confidence", 0)
+        blocking = len(result.get("blocking_issues", []))
+        if status == "PASS":
+            print(f"[{name}] iteration {iteration} → PASS (confidence {confidence}/10) → {result_path}", flush=True)
+        else:
+            print(f"[{name}] iteration {iteration} → FAIL ({blocking} blocking issue(s), confidence {confidence}/10) → {result_path}", flush=True)
+    else:
+        violations = result.get("violations", [])
+        blocking = sum(1 for v in violations if v.get("severity") == "BLOCKING")
+        warnings = sum(1 for v in violations if v.get("severity") == "WARNING")
+        if status == "PASS":
+            print(f"[{name}] iteration {iteration} → PASS → {result_path}", flush=True)
+        else:
+            print(f"[{name}] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}", flush=True)
+
+
 def get_changed_files() -> list[str]:
     """Return list of files changed on this branch relative to main."""
     result = subprocess.run(
@@ -622,6 +765,22 @@ def get_changed_files() -> list[str]:
         capture_output=True, text=True,
     )
     return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+
+
+def read_changed_source_files(changed_files: list[str]) -> str:
+    """Read the contents of changed_files, skipping specs/ paths and critic result files."""
+    content_parts = []
+    for path_str in changed_files:
+        if path_str.startswith("specs/") or "-result-" in path_str:
+            continue
+        p = Path(path_str)
+        if not p.exists():
+            continue
+        try:
+            content_parts.append(f"--- {path_str} ---\n{p.read_text(encoding='utf-8')}")
+        except Exception:
+            content_parts.append(f"--- {path_str} --- (could not read)")
+    return "\n\n".join(content_parts) if content_parts else "(no changed files found)"
 
 
 def read_changed_files(changed_files: list[str], dirs: tuple[str, ...]) -> str:
