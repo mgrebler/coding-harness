@@ -29,31 +29,28 @@ Resume behaviour:
   - If the last arch result was FAIL, revision runs before the next critic
 """
 
-import asyncio
 import sys
-import argparse
 import subprocess
 from pathlib import Path
 
 from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
 
 from agent_common import (
-    get_feature_from_branch,
     read_file,
     write_file,
     next_iteration,
-    run_auto_commit,
-    write_stage_complete,
     stage_is_complete,
     make_logger,
     log_sdk_message,
     setup_log_file,
     require_spec_files,
-    find_passing_iteration,
     find_two_gate_resume_state,
     format_violations_block,
     extend_iterations_if_reviewed,
     run_two_gate_loop,
+    finish_if_already_passing,
+    finish_stage,
+    run_cli,
     GateSpec,
 )
 from plan_critic import build_plan_critic_prompt
@@ -229,12 +226,11 @@ async def run(feature: str):
             sys.exit(1)
 
     # --- Resume guard: done if architecture review already passed ---
-    passing = find_passing_iteration(spec_dir, ARCH_RESULT_PREFIX, MAX_ITERATIONS)
-    if passing is not None:
-        log(f"Already PASS from architecture review iteration {passing}.")
-        log("Plan is ready for human review. No further action taken.")
-        run_auto_commit("after_plan", AGENT_NAME)
-        write_stage_complete(spec_dir, "plan")
+    if finish_if_already_passing(
+        log, spec_dir, AGENT_NAME, ARCH_RESULT_PREFIX, MAX_ITERATIONS, "architecture review",
+        "Plan is ready for human review. No further action taken.",
+        "after_plan", "plan",
+    ):
         return
 
     # --- Resume state: determine where we left off ---
@@ -266,9 +262,10 @@ async def run(feature: str):
             log_sdk_message(message, prefix="  ")
 
     async def on_both_pass(arch_result: dict) -> None:
-        log("Plan is ready for human review. No further action taken.")
-        run_auto_commit("after_plan", AGENT_NAME)
-        write_stage_complete(spec_dir, "plan")
+        finish_stage(
+            log, spec_dir, AGENT_NAME, "after_plan", "plan",
+            "Plan is ready for human review. No further action taken.",
+        )
 
     def build_critic_query(iteration: int, prev_violations):
         plan = read_file(spec_dir / "plan.md")
@@ -343,9 +340,4 @@ async def run(feature: str):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Plan auto-orchestrator")
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
-    args = parser.parse_args()
-
-    feature = args.feature or get_feature_from_branch(AGENT_NAME)
-    asyncio.run(run(feature))
+    run_cli(AGENT_NAME, "Plan auto-orchestrator", run)

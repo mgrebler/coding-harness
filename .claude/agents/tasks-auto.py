@@ -23,31 +23,27 @@ Resume behaviour:
   - If a critic result was already PASS, exits immediately (no work to do)
 """
 
-import asyncio
 import sys
-import argparse
 from pathlib import Path
 
 from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
 
 from agent_common import (
-    get_feature_from_branch,
     read_file,
     write_file,
     next_iteration,
-    read_result,
-    run_auto_commit,
-    write_stage_complete,
-    stage_is_complete,
     make_logger,
     log_sdk_message,
     setup_log_file,
-    find_passing_iteration,
+    stage_is_complete,
     load_prior_violations,
     format_violations_block,
-    write_escalation,
     extend_iterations_if_reviewed,
-    run_gate,
+    run_single_gate_loop,
+    finish_if_already_passing,
+    finish_stage,
+    run_cli,
+    GateSpec,
     require_spec_files,
 )
 from tasks_critic import build_tasks_critic_prompt
@@ -200,118 +196,84 @@ async def run(feature: str):
             sys.exit(1)
 
     # --- Resume guard: exit if a previous run already achieved PASS ---
-    passing = find_passing_iteration(spec_dir, RESULT_PREFIX, MAX_ITERATIONS)
-    if passing is not None:
-        log(f"Already PASS from iteration {passing}.")
-        log("Tasks are ready for human review. No further action taken.")
-        run_auto_commit("after_tasks", AGENT_NAME)
-        write_stage_complete(spec_dir, "tasks")
+    if finish_if_already_passing(
+        log, spec_dir, AGENT_NAME, RESULT_PREFIX, MAX_ITERATIONS, "tasks critic",
+        "Tasks are ready for human review. No further action taken.",
+        "after_tasks", "tasks",
+    ):
         return
 
     # --- Resume state: load violations from last FAIL so revision runs before next critic ---
     iteration = next_iteration(spec_dir, RESULT_PREFIX)
     violations = load_prior_violations(spec_dir, RESULT_PREFIX, iteration)
-    if _skip_fix_agent and violations:
-        log("Escalation review present — skipping revision agent; violations were resolved externally.")
-        violations = None
-    elif violations:
-        log(
-            f"Resuming after FAIL at iteration {iteration - 1} "
-            f"({len(violations)} violation(s)) — revision will run before critic {iteration}."
+
+    async def run_fix(pending_iter: int, pending_violations: list) -> None:
+        log(f"Running revision agent to address {len(pending_violations)} violation(s) from iteration {pending_iter}...")
+        async for message in query(
+            prompt=(
+                f"Revise tasks.md for feature {feature} to fix critic violations. "
+                f"Read specs/{feature}/tasks-critic-result-{pending_iter}.json for the violation list. "
+                f"Write updated tasks.md to specs/{feature}/tasks.md."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
+                },
+                setting_sources=["project"],
+            ),
+        ):
+            log_sdk_message(message, prefix="  ")
+
+    async def on_pass(result: dict) -> None:
+        finish_stage(
+            log, spec_dir, AGENT_NAME, "after_tasks", "tasks",
+            "Tasks are ready for human review. No further action taken.",
+        )
+
+    def build_critic_query(iteration: int, prev_violations):
+        tasks = read_file(spec_dir / "tasks.md")
+        return query(
+            prompt=(
+                f"Validate tasks.md for feature {feature}. "
+                f"Write result to specs/{feature}/tasks-critic-result-{iteration}.json."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "tasks-critic": critic_agent_definition(
+                        constitution, spec, plan, tasks, iteration, prev_violations
+                    )
+                },
+                setting_sources=["project"],
+            ),
         )
 
     # --- Step 2: Critic loop ---
-    while iteration <= MAX_ITERATIONS:
-        result_path = spec_dir / f"{RESULT_PREFIX}-{iteration}.json"
-
-        if not result_path.exists():
-            # Apply revision if we have pending violations from the previous iteration.
-            if violations:
-                log(f"Running revision agent to address {len(violations)} violation(s) from iteration {iteration - 1}...")
-                async for message in query(
-                    prompt=(
-                        f"Revise tasks.md for feature {feature} to fix critic violations. "
-                        f"Read specs/{feature}/tasks-critic-result-{iteration - 1}.json for the violation list. "
-                        f"Write updated tasks.md to specs/{feature}/tasks.md."
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
-                        },
-                        setting_sources=["project"],
-                    ),
-                ):
-                    log_sdk_message(message, prefix="  ")
-
-            prev_violations = violations  # Pass as context to critic (already addressed)
-            violations = None
-
-            log(f"Running critic agent (iteration {iteration})...")
-            tasks = read_file(spec_dir / "tasks.md")
-
-            await run_gate(
-                log, "tasks", "tasks_critic.py", feature, iteration, "tasks critic",
-                lambda: query(
-                    prompt=(
-                        f"Validate tasks.md for feature {feature}. "
-                        f"Write result to specs/{feature}/tasks-critic-result-{iteration}.json."
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "tasks-critic": critic_agent_definition(
-                                constitution, spec, plan, tasks, iteration, prev_violations
-                            )
-                        },
-                        setting_sources=["project"],
-                    ),
-                ),
-            )
-
-            if not result_path.exists():
-                log(f"ERROR: critic did not write result file for iteration {iteration}. Aborting.")
-                sys.exit(1)
-        else:
-            log(f"Critic result for iteration {iteration} already exists — reading status.")
-
-        result = read_result(spec_dir, RESULT_PREFIX, iteration)
-        status = result.get("status", "FAIL")
-        blocking = sum(1 for v in result.get("violations", []) if v.get("severity") == "BLOCKING")
-        warnings = sum(1 for v in result.get("violations", []) if v.get("severity") == "WARNING")
-
-        if status == "PASS":
-            log(f"PASS after {iteration} iteration(s) → {result_path}")
-            log("Tasks are ready for human review. No further action taken.")
-            run_auto_commit("after_tasks", AGENT_NAME)
-            write_stage_complete(spec_dir, "tasks")
-            return
-
-        log(f"FAIL (iteration {iteration}) — {blocking} blocking, {warnings} warning(s).")
-        violations = result.get("violations", [])
-        iteration += 1
-
-    # --- Escalation ---
-    write_escalation(
-        spec_dir=spec_dir,
-        feature=feature,
-        escalation_filename="tasks-critic-escalation.md",
-        log_description="tasks.md failed critic review",
-        review_history_prefixes=[(RESULT_PREFIX, "Tasks Critic")],
-        max_iterations=MAX_ITERATIONS,
-        title="Tasks Critic Escalation",
-        summary=(
-            "The automated tasks-critic loop exhausted its iteration limit without producing\n"
-            "a passing tasks.md. Human review is required to resolve the outstanding violations\n"
-            "before task execution can proceed."
+    await run_single_gate_loop(
+        log, spec_dir, feature, MAX_ITERATIONS,
+        gate=GateSpec(RESULT_PREFIX, "tasks_critic.py", "tasks", "tasks critic", build_critic_query),
+        resume_state=(iteration, violations),
+        skip_fix_agent=_skip_fix_agent,
+        run_fix=run_fix,
+        on_pass=on_pass,
+        escalation_kwargs=dict(
+            escalation_filename="tasks-critic-escalation.md",
+            log_description="tasks.md failed critic review",
+            review_history_prefixes=[(RESULT_PREFIX, "Tasks Critic")],
+            title="Tasks Critic Escalation",
+            summary=(
+                "The automated tasks-critic loop exhausted its iteration limit without producing\n"
+                "a passing tasks.md. Human review is required to resolve the outstanding violations\n"
+                "before task execution can proceed."
+            ),
+            required_action=(
+                f"1. Review the violations above.\n"
+                f"2. Edit specs/{feature}/tasks.md manually to address the BLOCKING violations.\n"
+                f"3. Re-run `python .claude/agents/tasks-auto.py` to restart the automated loop,\n"
+                f"   or run `/speckit-tasks-critic` manually to verify your fixes."
+            ),
         ),
-        required_action=(
-            f"1. Review the violations above.\n"
-            f"2. Edit specs/{feature}/tasks.md manually to address the BLOCKING violations.\n"
-            f"3. Re-run `python .claude/agents/tasks-auto.py` to restart the automated loop,\n"
-            f"   or run `/speckit-tasks-critic` manually to verify your fixes."
-        ),
-        log_fn=log,
     )
 
 
@@ -320,9 +282,4 @@ async def run(feature: str):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Tasks auto-orchestrator")
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
-    args = parser.parse_args()
-
-    feature = args.feature or get_feature_from_branch(AGENT_NAME)
-    asyncio.run(run(feature))
+    run_cli(AGENT_NAME, "Tasks auto-orchestrator", run)

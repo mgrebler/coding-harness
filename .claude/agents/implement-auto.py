@@ -30,22 +30,17 @@ Resume behaviour:
   - Implementation agent is re-run only if unchecked tasks (- [ ]) remain in tasks.md
 """
 
-import asyncio
 import json
 import subprocess
 import sys
-import argparse
 from pathlib import Path
 
 from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
 
 from agent_common import (
-    get_feature_from_branch,
     read_file,
     write_file,
     next_iteration,
-    run_auto_commit,
-    write_stage_complete,
     stage_is_complete,
     make_logger,
     log_sdk_message,
@@ -56,6 +51,8 @@ from agent_common import (
     extend_iterations_if_reviewed,
     require_spec_files,
     run_two_gate_loop,
+    finish_stage,
+    run_cli,
     GateSpec,
 )
 from implement_critic import build_implement_critic_prompt
@@ -437,9 +434,10 @@ async def run(feature: str):
         log("Running CI checks before finalising...")
         ci_passed, ci_failure_summary = run_full_ci_checks()
         if ci_passed:
-            log("All CI checks passed. Implementation is ready for human review.")
-            run_auto_commit("after_implement", AGENT_NAME)
-            write_stage_complete(spec_dir, "implement")
+            finish_stage(
+                log, spec_dir, AGENT_NAME, "after_implement", "implement",
+                "All CI checks passed. Implementation is ready for human review.",
+            )
             return
         log("CI checks failed — running CI fix agent (one attempt)...")
         async for message in query(
@@ -466,9 +464,10 @@ async def run(feature: str):
             log(f"Remaining failures:\n{ci_failure_summary}")
             sys.exit(1)
 
-        log("All CI checks passed. Implementation is ready for human review.")
-        run_auto_commit("after_implement", AGENT_NAME)
-        write_stage_complete(spec_dir, "implement")
+        finish_stage(
+            log, spec_dir, AGENT_NAME, "after_implement", "implement",
+            "All CI checks passed. Implementation is ready for human review.",
+        )
         return
 
     # --- Resume state: determine where we left off ---
@@ -528,9 +527,10 @@ async def run(feature: str):
                 log(f"Remaining failures:\n{ci_failure_summary}")
                 sys.exit(1)
 
-        log("All CI checks passed. Implementation is ready for human review.")
-        run_auto_commit("after_implement", AGENT_NAME)
-        write_stage_complete(spec_dir, "implement")
+        finish_stage(
+            log, spec_dir, AGENT_NAME, "after_implement", "implement",
+            "All CI checks passed. Implementation is ready for human review.",
+        )
 
     def build_critic_query(iteration: int, prev_violations):
         tasks_content = read_file(spec_dir / "tasks.md")
@@ -606,9 +606,4 @@ async def run(feature: str):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Implementation auto-orchestrator")
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
-    args = parser.parse_args()
-
-    feature = args.feature or get_feature_from_branch(AGENT_NAME)
-    asyncio.run(run(feature))
+    run_cli(AGENT_NAME, "Implementation auto-orchestrator", run)

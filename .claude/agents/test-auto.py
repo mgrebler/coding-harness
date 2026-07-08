@@ -30,32 +30,28 @@ Resume behaviour:
   - Test agent is re-run only if unchecked [TEST] tasks remain in tasks.md
 """
 
-import asyncio
 import json
 import sys
-import argparse
 from pathlib import Path
 
 from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
 
 from agent_common import (
-    get_feature_from_branch,
     read_file,
     write_file,
     next_iteration,
-    read_result,
-    run_auto_commit,
-    write_stage_complete,
-    stage_is_complete,
     make_logger,
     log_sdk_message,
     setup_log_file,
-    find_passing_iteration,
+    stage_is_complete,
     load_prior_violations,
     format_violations_block,
-    write_escalation,
     extend_iterations_if_reviewed,
-    run_gate,
+    run_single_gate_loop,
+    finish_if_already_passing,
+    finish_stage,
+    run_cli,
+    GateSpec,
     require_spec_files,
 )
 from test_critic import build_test_critic_prompt
@@ -298,122 +294,88 @@ async def run(feature: str):
         log("All [TEST] tasks already checked off — skipping test agent.")
 
     # --- Resume guard: done if critic already passed ---
-    passing = find_passing_iteration(spec_dir, CRITIC_RESULT_PREFIX, MAX_ITERATIONS)
-    if passing is not None:
-        log(f"Already PASS from test critic iteration {passing}.")
-        log("Test phase is ready for human review. No further action taken.")
-        run_auto_commit("after_test", AGENT_NAME)
-        write_stage_complete(spec_dir, "test")
+    if finish_if_already_passing(
+        log, spec_dir, AGENT_NAME, CRITIC_RESULT_PREFIX, MAX_ITERATIONS, "test critic",
+        "Test phase is ready for human review. No further action taken.",
+        "after_test", "test",
+    ):
         return
 
     # --- Resume state: load violations from last FAIL so fix agent runs before next critic ---
     iteration = next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
     critic_violations = load_prior_violations(spec_dir, CRITIC_RESULT_PREFIX, iteration)
-    if _skip_fix_agent and critic_violations:
-        log("Escalation review present — skipping fix agent; violations were resolved externally.")
-        critic_violations = None
-    elif critic_violations:
-        log(
-            f"Resuming after FAIL at iteration {iteration - 1} "
-            f"({len(critic_violations)} violation(s)) — fix agent will run before critic {iteration}."
+
+    async def run_fix(pending_iter: int, pending_violations: list) -> None:
+        tasks_content = read_file(spec_dir / "tasks.md")
+        log(f"Running fix agent for critic violations from iteration {pending_iter} ({len(pending_violations)} issue(s))...")
+        async for message in query(
+            prompt=(
+                f"Fix test critic violations for feature {feature}. "
+                f"Violations: {json.dumps(pending_violations)}"
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "test-fix-agent": test_fix_agent_definition(
+                        constitution, spec, plan, tasks_content, test_principles, pending_violations
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        ):
+            log_sdk_message(message, prefix="  ")
+
+    async def on_pass(result: dict) -> None:
+        finish_stage(
+            log, spec_dir, AGENT_NAME, "after_test", "test",
+            "Test phase complete. Implementation may now begin.",
         )
 
-    while iteration <= MAX_ITERATIONS:
-        critic_path = spec_dir / f"{CRITIC_RESULT_PREFIX}-{iteration}.json"
+    def build_critic_query(iteration: int, prev_violations):
         tasks_content = read_file(spec_dir / "tasks.md")
+        return query(
+            prompt=(
+                f"Validate the test files for feature {feature}. "
+                f"Write result to specs/{feature}/test-critic-result-{iteration}.json."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "test-critic": test_critic_agent_definition(
+                        constitution, spec, plan, tasks_content, test_principles,
+                        feature, iteration, prev_violations
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        )
 
-        if not critic_path.exists():
-            # Run fix agent first if violations are pending (skip on first pass after escalation review)
-            if critic_violations and not _skip_fix_agent:
-                log(f"Running fix agent for critic violations from iteration {iteration - 1} ({len(critic_violations)} issue(s))...")
-                async for message in query(
-                    prompt=(
-                        f"Fix test critic violations for feature {feature}. "
-                        f"Violations: {json.dumps(critic_violations)}"
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "test-fix-agent": test_fix_agent_definition(
-                                constitution, spec, plan, tasks_content, test_principles, critic_violations
-                            )
-                        },
-                        setting_sources=["project"],
-                    ),
-                ):
-                    log_sdk_message(message, prefix="  ")
-
-            prev_violations = critic_violations
-            critic_violations = None
-            _skip_fix_agent = False  # only skip on first new iteration after escalation review
-
-            log(f"Running test critic (iteration {iteration})...")
-
-            await run_gate(
-                log, "test", "test_critic.py", feature, iteration, "test critic",
-                lambda: query(
-                    prompt=(
-                        f"Validate the test files for feature {feature}. "
-                        f"Write result to specs/{feature}/test-critic-result-{iteration}.json."
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "test-critic": test_critic_agent_definition(
-                                constitution, spec, plan, tasks_content, test_principles,
-                                feature, iteration, prev_violations
-                            )
-                        },
-                        setting_sources=["project"],
-                    ),
-                ),
-            )
-
-            if not critic_path.exists():
-                log(f"ERROR: test critic did not write result file for iteration {iteration}. Aborting.")
-                sys.exit(1)
-        else:
-            log(f"Test critic result for iteration {iteration} already exists — reading status.")
-
-        critic_result = read_result(spec_dir, CRITIC_RESULT_PREFIX, iteration)
-        critic_status = critic_result.get("status", "FAIL")
-        blocking = sum(1 for v in critic_result.get("violations", []) if v.get("severity") == "BLOCKING")
-        warnings = sum(1 for v in critic_result.get("violations", []) if v.get("severity") == "WARNING")
-
-        if critic_status == "FAIL":
-            log(f"Test critic FAIL (iteration {iteration}) — {blocking} blocking, {warnings} warning(s).")
-            critic_violations = critic_result.get("violations", [])
-            iteration += 1
-            continue
-
-        log(f"Test critic PASS (iteration {iteration}) — {warnings} warning(s).")
-        log("Test phase complete. Implementation may now begin.")
-        run_auto_commit("after_test", AGENT_NAME)
-        write_stage_complete(spec_dir, "test")
-        return
-
-    # --- Escalation ---
-    write_escalation(
-        spec_dir=spec_dir,
-        feature=feature,
-        escalation_filename="test-critic-escalation.md",
-        log_description="test phase failed critic",
-        review_history_prefixes=[(CRITIC_RESULT_PREFIX, "Test Critic")],
-        max_iterations=MAX_ITERATIONS,
-        title="Test Critic Escalation",
-        summary=(
-            "The automated test-critic loop exhausted its iteration limit without producing\n"
-            "test files that passed all critic rules. Human review is required to resolve\n"
-            "the outstanding violations before implementation can begin."
+    # --- Step 2: Critic loop ---
+    await run_single_gate_loop(
+        log, spec_dir, feature, MAX_ITERATIONS,
+        gate=GateSpec(CRITIC_RESULT_PREFIX, "test_critic.py", "test", "test critic", build_critic_query),
+        resume_state=(iteration, critic_violations),
+        skip_fix_agent=_skip_fix_agent,
+        run_fix=run_fix,
+        on_pass=on_pass,
+        escalation_kwargs=dict(
+            escalation_filename="test-critic-escalation.md",
+            log_description="test phase failed critic",
+            review_history_prefixes=[(CRITIC_RESULT_PREFIX, "Test Critic")],
+            title="Test Critic Escalation",
+            summary=(
+                "The automated test-critic loop exhausted its iteration limit without producing\n"
+                "test files that passed all critic rules. Human review is required to resolve\n"
+                "the outstanding violations before implementation can begin."
+            ),
+            required_action=(
+                "1. Review the violations above.\n"
+                "2. Fix the BLOCKING violations manually in the test files.\n"
+                f"3. Re-run `python .claude/agents/test-auto.py` to restart the automated loop,\n"
+                f"   or run `/speckit-test-critic` manually to verify your fixes.\n"
+                "4. Once the critic passes, run `/speckit-implement-auto` to start implementation."
+            ),
         ),
-        required_action=(
-            "1. Review the violations above.\n"
-            "2. Fix the BLOCKING violations manually in the test files.\n"
-            f"3. Re-run `python .claude/agents/test-auto.py` to restart the automated loop,\n"
-            f"   or run `/speckit-test-critic` manually to verify your fixes.\n"
-            "4. Once the critic passes, run `/speckit-implement-auto` to start implementation."
-        ),
-        log_fn=log,
     )
 
 
@@ -422,9 +384,4 @@ async def run(feature: str):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test phase auto-orchestrator")
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
-    args = parser.parse_args()
-
-    feature = args.feature or get_feature_from_branch(AGENT_NAME)
-    asyncio.run(run(feature))
+    run_cli(AGENT_NAME, "Test phase auto-orchestrator", run)

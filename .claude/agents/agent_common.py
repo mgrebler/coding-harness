@@ -6,6 +6,7 @@ Imported by plan-auto.py, tasks-auto.py, and implement-auto.py.
 """
 
 import argparse
+import asyncio
 import json
 import re
 import subprocess
@@ -451,6 +452,134 @@ async def run_two_gate_loop(
         log_fn=log,
         **escalation_kwargs,
     )
+
+
+async def run_single_gate_loop(
+    log,
+    spec_dir: Path,
+    feature: str,
+    max_iterations: int,
+    gate: GateSpec,
+    resume_state: tuple[int, Optional[list]],
+    skip_fix_agent: bool,
+    run_fix: Callable[[int, list], Awaitable],
+    on_pass: Callable[[dict], Awaitable],
+    escalation_kwargs: dict,
+) -> None:
+    """
+    Shared driver for a single-gate critic loop (e.g. the tasks critic, or the test
+    critic): one gate must PASS before on_pass fires and the loop returns. The
+    single-gate counterpart to run_two_gate_loop — see its docstring for the shared
+    resume/violation-carrying/escalation semantics.
+
+    resume_state: (iteration, violations) — e.g. (next_iteration(...), load_prior_violations(...)).
+
+    run_fix(pending_iteration, pending_violations): awaited before re-running the gate
+    whenever violations are pending from the previous FAIL.
+
+    on_pass(result): awaited once the gate PASSes, before the loop returns.
+    """
+    iteration, violations = resume_state
+    if skip_fix_agent and violations:
+        log("Escalation review present — skipping fix agent; violations were resolved externally.")
+        violations = None
+    elif violations:
+        log(
+            f"Resuming after FAIL at iteration {iteration - 1} "
+            f"({len(violations)} violation(s)) — fix agent will run before {gate.label} {iteration}."
+        )
+
+    while iteration <= max_iterations:
+        path = spec_dir / f"{gate.result_prefix}-{iteration}.json"
+
+        if not path.exists():
+            if violations:
+                await run_fix(iteration - 1, violations)
+
+            prev_violations = violations
+            violations = None
+
+            log(f"Running {gate.label} (iteration {iteration})...")
+            await run_gate(
+                log, gate.critic_type, gate.script_name, feature, iteration, gate.label,
+                lambda: gate.build_query(iteration, prev_violations),
+            )
+
+            if not path.exists():
+                log(f"ERROR: {gate.label} did not write result file for iteration {iteration}. Aborting.")
+                sys.exit(1)
+        else:
+            log(f"{gate.label} result for iteration {iteration} already exists — reading status.")
+
+        result = read_result(spec_dir, gate.result_prefix, iteration)
+        status = result.get("status", "FAIL")
+        blocking = sum(1 for v in result.get("violations", []) if v.get("severity") == "BLOCKING")
+        warnings = sum(1 for v in result.get("violations", []) if v.get("severity") == "WARNING")
+
+        if status == "FAIL":
+            log(f"{gate.label} FAIL (iteration {iteration}) — {blocking} blocking, {warnings} warning(s).")
+            violations = result.get("violations", [])
+            iteration += 1
+            continue
+
+        log(f"{gate.label} PASS (iteration {iteration}) — {warnings} warning(s).")
+        await on_pass(result)
+        return
+
+    write_escalation(
+        spec_dir=spec_dir,
+        feature=feature,
+        max_iterations=max_iterations,
+        log_fn=log,
+        **escalation_kwargs,
+    )
+
+
+def finish_stage(log, spec_dir: Path, agent_name: str, commit_event: str, stage: str, ready_message: str) -> None:
+    """Log ready_message, commit, and mark stage complete. The common tail of every *-auto.py success path."""
+    log(ready_message)
+    run_auto_commit(commit_event, agent_name)
+    write_stage_complete(spec_dir, stage)
+
+
+def finish_if_already_passing(
+    log,
+    spec_dir: Path,
+    agent_name: str,
+    result_prefix: str,
+    max_iterations: int,
+    label: str,
+    ready_message: str,
+    commit_event: str,
+    stage: str,
+) -> bool:
+    """
+    If a passing result already exists for result_prefix, log it, commit, mark the
+    stage complete, and return True (caller should return immediately). Otherwise
+    return False. Shared by the trivial "already PASS -> finish" resume guards in
+    plan-auto.py, tasks-auto.py, and test-auto.py (implement-auto.py's guard also
+    runs CI checks, so it stays bespoke).
+    """
+    passing = find_passing_iteration(spec_dir, result_prefix, max_iterations)
+    if passing is None:
+        return False
+    log(f"Already PASS from {label} iteration {passing}.")
+    finish_stage(log, spec_dir, agent_name, commit_event, stage, ready_message)
+    return True
+
+
+def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitable]) -> None:
+    """
+    Shared entrypoint for the async *-auto.py orchestrators: parses --feature
+    (falling back to the current git branch), then runs run_coro(feature) via
+    asyncio.run. Callers still need `if __name__ == "__main__": run_cli(...)`.
+    """
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
+    args = parser.parse_args()
+
+    feature = args.feature or get_feature_from_branch(agent_name)
+    asyncio.run(run_coro(feature))
 
 
 # ---------------------------------------------------------------------------
