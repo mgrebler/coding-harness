@@ -38,12 +38,10 @@ from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
 
 from agent_common import (
     read_file,
-    write_file,
     next_iteration,
     make_logger,
     log_sdk_message,
     setup_log_file,
-    stage_is_complete,
     load_prior_violations,
     format_violations_block,
     extend_iterations_if_reviewed,

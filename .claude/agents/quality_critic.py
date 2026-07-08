@@ -59,7 +59,7 @@ def build_quality_review_prompt(
         review_process = f"--- CHANGED SOURCE FILES (git diff main...HEAD) ---\n{changed_files_section}"
 
     tail = (
-        "- status is FAIL if any Critical issue exists, more than 3 High issues exist, or confidence < 7\n"
+        "- status is FAIL if any Critical issue exists, more than 2 High issues exist, or confidence < 7\n"
         "- status is PASS otherwise"
     )
     if output_instructions:
@@ -91,7 +91,7 @@ Inputs already loaded for you:
 Review process:
 {review_process}
 
-FAIL if: any Critical issue exists, more than 3 High severity issues exist, or confidence is below 7/10.
+FAIL if: any Critical issue exists, more than 2 High severity issues exist, or confidence is below 7/10.
 
 Output ONLY valid JSON, no preamble, no markdown fences:
 {{

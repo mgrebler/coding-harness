@@ -30,16 +30,13 @@ Resume behaviour:
 """
 
 import sys
-import subprocess
 from pathlib import Path
 
 from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
 
 from agent_common import (
     read_file,
-    write_file,
     next_iteration,
-    stage_is_complete,
     make_logger,
     log_sdk_message,
     setup_log_file,

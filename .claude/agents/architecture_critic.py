@@ -78,6 +78,7 @@ Output ONLY valid JSON, no preamble, no markdown fences:
       "title": "<short title>",
       "severity": "Critical or High",
       "principle": "<principle name>",
+      "location": "<section in plan.md>",
       "finding": "<specific, citable description>"
     }}
   ],
@@ -86,6 +87,7 @@ Output ONLY valid JSON, no preamble, no markdown fences:
       "title": "<short title>",
       "severity": "Medium or Low",
       "principle": "<principle name>",
+      "location": "<section in plan.md>",
       "finding": "<specific, citable description>"
     }}
   ],
