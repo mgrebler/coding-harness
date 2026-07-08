@@ -148,6 +148,9 @@ class TestArchitectureReviewPrompt(unittest.TestCase):
         self.assertIn('"blocking_issues"', prompt)
         self.assertIn("PASS or FAIL", prompt)
 
+    def test_location_field_present_in_schema(self):
+        self.assertIn('"location"', self._build())
+
 
 class TestQualityReviewPrompt(unittest.TestCase):
     def _build(self, **kwargs):
@@ -180,6 +183,12 @@ class TestQualityReviewPrompt(unittest.TestCase):
         self.assertIn('"status"', prompt)
         self.assertIn('"blocking_issues"', prompt)
         self.assertIn("PASS or FAIL", prompt)
+
+    def test_location_field_present_in_schema(self):
+        self.assertIn('"location"', self._build())
+
+    def test_fail_threshold_is_two_high(self):
+        self.assertIn("more than 2 High", self._build())
 
 
 if __name__ == "__main__":
