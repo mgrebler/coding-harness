@@ -51,6 +51,7 @@ from agent_common import (
     log_sdk_message,
     setup_log_file,
     find_passing_iteration,
+    load_prior_violations,
     format_violations_block,
     write_escalation,
     extend_iterations_if_reviewed,
@@ -305,11 +306,17 @@ async def run(feature: str):
         write_stage_complete(spec_dir, "test")
         return
 
-    # --- Step 2: Test critic loop ---
+    # --- Resume state: load violations from last FAIL so fix agent runs before next critic ---
     iteration = next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
-    critic_violations = None
-    if _skip_fix_agent:
-        log("Escalation review present — fix agent will be skipped for the first new iteration.")
+    critic_violations = load_prior_violations(spec_dir, CRITIC_RESULT_PREFIX, iteration)
+    if _skip_fix_agent and critic_violations:
+        log("Escalation review present — skipping fix agent; violations were resolved externally.")
+        critic_violations = None
+    elif critic_violations:
+        log(
+            f"Resuming after FAIL at iteration {iteration - 1} "
+            f"({len(critic_violations)} violation(s)) — fix agent will run before critic {iteration}."
+        )
 
     while iteration <= MAX_ITERATIONS:
         critic_path = spec_dir / f"{CRITIC_RESULT_PREFIX}-{iteration}.json"

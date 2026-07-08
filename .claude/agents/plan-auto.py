@@ -42,20 +42,19 @@ from agent_common import (
     read_file,
     write_file,
     next_iteration,
-    read_result,
     run_auto_commit,
     write_stage_complete,
     stage_is_complete,
     make_logger,
     log_sdk_message,
     setup_log_file,
-    run_gate,
     require_spec_files,
     find_passing_iteration,
     find_two_gate_resume_state,
     format_violations_block,
-    write_escalation,
     extend_iterations_if_reviewed,
+    run_two_gate_loop,
+    GateSpec,
 )
 from plan_critic import build_plan_critic_prompt
 from architecture_critic import build_architecture_review_prompt
@@ -90,8 +89,8 @@ def preflight(spec_dir: Path, feature: str) -> bool:
         if sys.stdin.isatty():
             response = input(f"[{AGENT_NAME}] Choice [resume]: ").strip().lower()
         else:
-            log("Non-interactive mode: defaulting to 'regen'.")
-            response = "regen"
+            log("Non-interactive mode: defaulting to 'resume'.")
+            response = "resume"
         if response == "abort":
             log("Aborted. No changes made.")
             sys.exit(0)
@@ -241,166 +240,101 @@ async def run(feature: str):
     # --- Resume state: determine where we left off ---
     # Use result files as idempotency markers; carry forward violations from any incomplete gate.
     iteration = next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
-    iteration, critic_violations, arch_violations = find_two_gate_resume_state(
+    resume_state = find_two_gate_resume_state(
         spec_dir, CRITIC_RESULT_PREFIX, ARCH_RESULT_PREFIX, iteration
     )
-    if _skip_fix_agent and (critic_violations or arch_violations):
-        log("Escalation review present — skipping revision agent; violations were resolved externally.")
-        critic_violations = None
-        arch_violations = None
-    elif critic_violations:
-        log(f"Resuming after critic FAIL at iteration {iteration - 1} — revision will run before critic {iteration}.")
-    elif arch_violations:
-        log(f"Resuming after arch FAIL at iteration {iteration - 1} — revision will run before critic {iteration}.")
-    elif iteration < next_iteration(spec_dir, CRITIC_RESULT_PREFIX):
-        log(f"Resuming: critic {iteration} already PASS — architecture review will run for iteration {iteration}.")
+
+    async def run_revision(pending_iter: int, pending_violations: list, pending_label: str) -> None:
+        pending_file = (
+            f"specs/{feature}/plan-critic-result-{pending_iter}.json"
+            if pending_label == "plan critic"
+            else f"specs/{feature}/architecture-review-result-{pending_iter}.json"
+        )
+        log(f"Running plan revision for {pending_label} violations from iteration {pending_iter}...")
+        async for message in query(
+            prompt=(
+                f"Revise plan.md for feature {feature}. "
+                f"Read {pending_file} for the full violation list. "
+                f"Write updated plan.md to specs/{feature}/plan.md."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                agents={"plan-agent": plan_agent_definition(constitution, spec, arch_principles)},
+                setting_sources=["project"],
+            ),
+        ):
+            log_sdk_message(message, prefix="  ")
+
+    async def on_both_pass(arch_result: dict) -> None:
+        log("Plan is ready for human review. No further action taken.")
+        run_auto_commit("after_plan", AGENT_NAME)
+        write_stage_complete(spec_dir, "plan")
+
+    def build_critic_query(iteration: int, prev_violations):
+        plan = read_file(spec_dir / "plan.md")
+        return query(
+            prompt=(
+                f"Validate plan.md for feature {feature}. "
+                f"Write result to specs/{feature}/plan-critic-result-{iteration}.json."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "plan-critic": critic_agent_definition(
+                        constitution, architecture, spec, plan, iteration, prev_violations
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        )
+
+    def build_arch_query(iteration: int, arch_violations):
+        plan = read_file(spec_dir / "plan.md")
+        return query(
+            prompt=(
+                f"Review plan.md for feature {feature} for architectural quality. "
+                f"Write result to specs/{feature}/architecture-review-result-{iteration}.json."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "architecture-review": arch_review_agent_definition(
+                        constitution, architecture, spec, plan, arch_principles, iteration, arch_violations
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        )
 
     # --- Step 2: Two-gate loop (critic → architecture review) ---
-    while iteration <= MAX_ITERATIONS:
-        critic_path = spec_dir / f"{CRITIC_RESULT_PREFIX}-{iteration}.json"
-        arch_path_iter = spec_dir / f"{ARCH_RESULT_PREFIX}-{iteration}.json"
-
-        # --- Gate 1: Plan critic ---
-        if not critic_path.exists():
-            # Apply revision first if violations are pending from a previous gate failure.
-            if critic_violations or arch_violations:
-                pending_label = "critic" if critic_violations else "architecture review"
-                pending_iter = iteration - 1
-                pending_file = (
-                    f"specs/{feature}/plan-critic-result-{pending_iter}.json"
-                    if critic_violations
-                    else f"specs/{feature}/architecture-review-result-{pending_iter}.json"
-                )
-                log(f"Running plan revision for {pending_label} violations from iteration {pending_iter}...")
-                async for message in query(
-                    prompt=(
-                        f"Revise plan.md for feature {feature}. "
-                        f"Read {pending_file} for the full violation list. "
-                        f"Write updated plan.md to specs/{feature}/plan.md."
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                        agents={"plan-agent": plan_agent_definition(constitution, spec, arch_principles)},
-                        setting_sources=["project"],
-                    ),
-                ):
-                    log_sdk_message(message, prefix="  ")
-
-            prev_critic_violations = critic_violations  # Pass as context to critic
-            critic_violations = None
-            arch_violations = None
-
-            log(f"Running plan critic (iteration {iteration})...")
-            plan = read_file(spec_dir / "plan.md")
-
-            await run_gate(
-                log, "plan", "plan_critic.py", feature, iteration, "plan critic",
-                lambda: query(
-                    prompt=(
-                        f"Validate plan.md for feature {feature}. "
-                        f"Write result to specs/{feature}/plan-critic-result-{iteration}.json."
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "plan-critic": critic_agent_definition(
-                                constitution, architecture, spec, plan, iteration, prev_critic_violations
-                            )
-                        },
-                        setting_sources=["project"],
-                    ),
-                ),
-            )
-
-            if not critic_path.exists():
-                log(f"ERROR: critic did not write result file for iteration {iteration}. Aborting.")
-                sys.exit(1)
-        else:
-            log(f"Critic result for iteration {iteration} already exists — reading status.")
-
-        critic_result = read_result(spec_dir, CRITIC_RESULT_PREFIX, iteration)
-        critic_status = critic_result.get("status", "FAIL")
-        blocking = sum(1 for v in critic_result.get("violations", []) if v.get("severity") == "BLOCKING")
-        warnings = sum(1 for v in critic_result.get("violations", []) if v.get("severity") == "WARNING")
-
-        if critic_status == "FAIL":
-            log(f"Critic FAIL (iteration {iteration}) — {blocking} blocking, {warnings} warning(s).")
-            critic_violations = critic_result.get("violations", [])
-            iteration += 1
-            continue
-
-        log(f"Critic PASS (iteration {iteration}) — {warnings} warning(s).")
-
-        # --- Gate 2: Architecture review ---
-        if not arch_path_iter.exists():
-            log(f"Running architecture review (iteration {iteration})...")
-            plan = read_file(spec_dir / "plan.md")
-
-            await run_gate(
-                log, "architecture", "architecture_critic.py", feature, iteration, "architecture review",
-                lambda: query(
-                    prompt=(
-                        f"Review plan.md for feature {feature} for architectural quality. "
-                        f"Write result to specs/{feature}/architecture-review-result-{iteration}.json."
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "architecture-review": arch_review_agent_definition(
-                                constitution, architecture, spec, plan, arch_principles, iteration, arch_violations
-                            )
-                        },
-                        setting_sources=["project"],
-                    ),
-                ),
-            )
-
-            if not arch_path_iter.exists():
-                log(f"ERROR: architecture review did not write result file for iteration {iteration}. Aborting.")
-                sys.exit(1)
-        else:
-            log(f"Architecture review result for iteration {iteration} already exists — reading status.")
-
-        arch_result = read_result(spec_dir, ARCH_RESULT_PREFIX, iteration)
-        arch_status = arch_result.get("status", "FAIL")
-        confidence = arch_result.get("confidence", 0)
-
-        if arch_status == "PASS":
-            log(f"Architecture review PASS (iteration {iteration}, confidence {confidence}/10).")
-            log("Plan is ready for human review. No further action taken.")
-            run_auto_commit("after_plan", AGENT_NAME)
-            write_stage_complete(spec_dir, "plan")
-            return
-
-        blocking_arch = len(arch_result.get("blocking_issues", []))
-        log(f"Architecture review FAIL (iteration {iteration}) — {blocking_arch} blocking issue(s), confidence {confidence}/10.")
-        arch_violations = arch_result.get("blocking_issues", [])
-        iteration += 1
-
-    # --- Escalation ---
-    write_escalation(
-        spec_dir=spec_dir,
-        feature=feature,
-        escalation_filename="plan-critic-escalation.md",
-        log_description="plan.md failed review",
-        review_history_prefixes=[
-            (CRITIC_RESULT_PREFIX, "Plan Critic"),
-            (ARCH_RESULT_PREFIX, "Architecture Review"),
-        ],
-        max_iterations=MAX_ITERATIONS,
-        title="Plan Review Escalation",
-        summary=(
-            "The automated plan review loop exhausted its iteration limit without producing\n"
-            "a plan that passed both the plan critic and the architecture review. Human review\n"
-            "is required to resolve the outstanding violations before planning can proceed."
+    await run_two_gate_loop(
+        log, spec_dir, feature, MAX_ITERATIONS,
+        gate1=GateSpec(CRITIC_RESULT_PREFIX, "plan_critic.py", "plan", "plan critic", build_critic_query),
+        gate2=GateSpec(ARCH_RESULT_PREFIX, "architecture_critic.py", "architecture", "architecture review", build_arch_query),
+        resume_state=resume_state,
+        skip_fix_agent=_skip_fix_agent,
+        run_revision=run_revision,
+        on_both_pass=on_both_pass,
+        escalation_kwargs=dict(
+            escalation_filename="plan-critic-escalation.md",
+            log_description="plan.md failed review",
+            review_history_prefixes=[
+                (CRITIC_RESULT_PREFIX, "Plan Critic"),
+                (ARCH_RESULT_PREFIX, "Architecture Review"),
+            ],
+            title="Plan Review Escalation",
+            summary=(
+                "The automated plan review loop exhausted its iteration limit without producing\n"
+                "a plan that passed both the plan critic and the architecture review. Human review\n"
+                "is required to resolve the outstanding violations before planning can proceed."
+            ),
+            required_action=(
+                f"1. Review the violations above.\n"
+                f"2. Edit specs/{feature}/plan.md manually to address the BLOCKING violations.\n"
+                f"3. Re-run `python .claude/agents/plan-auto.py` to restart the automated loop,\n"
+                f"   or run `/speckit-plan-critic` and `/architecture-review-plan` manually to verify your fixes."
+            ),
         ),
-        required_action=(
-            f"1. Review the violations above.\n"
-            f"2. Edit specs/{feature}/plan.md manually to address the BLOCKING violations.\n"
-            f"3. Re-run `python .claude/agents/plan-auto.py` to restart the automated loop,\n"
-            f"   or run `/speckit-plan-critic` and `/architecture-review-plan` manually to verify your fixes."
-        ),
-        log_fn=log,
     )
 
 

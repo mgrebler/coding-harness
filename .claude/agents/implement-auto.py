@@ -44,7 +44,6 @@ from agent_common import (
     read_file,
     write_file,
     next_iteration,
-    read_result,
     run_auto_commit,
     write_stage_complete,
     stage_is_complete,
@@ -54,10 +53,10 @@ from agent_common import (
     find_passing_iteration,
     find_two_gate_resume_state,
     format_violations_block,
-    write_escalation,
     extend_iterations_if_reviewed,
-    run_gate,
     require_spec_files,
+    run_two_gate_loop,
+    GateSpec,
 )
 from implement_critic import build_implement_critic_prompt
 from quality_critic import build_quality_review_prompt
@@ -475,194 +474,130 @@ async def run(feature: str):
     # --- Resume state: determine where we left off ---
     # Use result files as idempotency markers; carry forward violations from any incomplete gate.
     iteration = next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
-    iteration, critic_violations, quality_violations = find_two_gate_resume_state(
+    resume_state = find_two_gate_resume_state(
         spec_dir, CRITIC_RESULT_PREFIX, QUALITY_RESULT_PREFIX, iteration
     )
-    if _skip_fix_agent and (critic_violations or quality_violations):
-        log("Escalation review present — skipping fix agent; violations were resolved externally.")
-        critic_violations = None
-        quality_violations = None
-    elif critic_violations:
-        log(f"Resuming after critic FAIL at iteration {iteration - 1} — fix agent will run before critic {iteration}.")
-    elif quality_violations:
-        log(f"Resuming after quality FAIL at iteration {iteration - 1} — fix agent will run before critic {iteration}.")
-    elif iteration < next_iteration(spec_dir, CRITIC_RESULT_PREFIX):
-        log(f"Resuming: critic {iteration} already PASS — quality review will run for iteration {iteration}.")
 
-    # --- Step 2: Two-gate loop (implement critic → code quality review) ---
-    while iteration <= MAX_ITERATIONS:
-        critic_path = spec_dir / f"{CRITIC_RESULT_PREFIX}-{iteration}.json"
-        quality_path_iter = spec_dir / f"{QUALITY_RESULT_PREFIX}-{iteration}.json"
+    async def run_revision(pending_iter: int, pending_violations: list, pending_label: str) -> None:
         tasks_content = read_file(spec_dir / "tasks.md")
+        log(f"Running fix agent for {pending_label} violations from iteration {pending_iter} ({len(pending_violations)} issue(s))...")
+        async for message in query(
+            prompt=(
+                f"Fix violations for feature {feature}. "
+                f"Violations: {json.dumps(pending_violations)}"
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "fix-agent": fix_agent_definition(
+                        constitution, spec, plan, tasks_content, pending_violations
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        ):
+            log_sdk_message(message, prefix="  ")
 
-        # --- Gate 1: Implement critic ---
-        if not critic_path.exists():
-            # Apply fix first if violations are pending from a previous gate failure.
-            if critic_violations or quality_violations:
-                pending_violations = critic_violations or quality_violations
-                pending_label = "critic" if critic_violations else "quality review"
-                pending_iter = iteration - 1
-                log(f"Running fix agent for {pending_label} violations from iteration {pending_iter} ({len(pending_violations)} issue(s))...")
-                async for message in query(
-                    prompt=(
-                        f"Fix violations for feature {feature}. "
-                        f"Violations: {json.dumps(pending_violations)}"
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "fix-agent": fix_agent_definition(
-                                constitution, spec, plan, tasks_content, pending_violations
-                            )
-                        },
-                        setting_sources=["project"],
-                    ),
-                ):
-                    log_sdk_message(message, prefix="  ")
-
-            prev_critic_violations = critic_violations  # Pass as context to critic
-            critic_violations = None
-            quality_violations = None
-
-            log(f"Running implement critic (iteration {iteration})...")
-
-            await run_gate(
-                log, "implement", "implement_critic.py", feature, iteration, "implement critic",
-                lambda: query(
-                    prompt=(
-                        f"Validate the implementation for feature {feature}. "
-                        f"Write result to specs/{feature}/implement-critic-result-{iteration}.json."
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "implement-critic": critic_agent_definition(
-                                constitution, spec, plan, tasks_content, iteration, prev_critic_violations
-                            )
-                        },
-                        setting_sources=["project"],
-                    ),
+    async def on_both_pass(quality_result: dict) -> None:
+        log("Running CI checks before finalising...")
+        ci_passed, ci_failure_summary = run_full_ci_checks()
+        if not ci_passed:
+            log("CI checks failed — running CI fix agent (one attempt)...")
+            tasks_content = read_file(spec_dir / "tasks.md")
+            async for message in query(
+                prompt=(
+                    f"Fix CI failures for feature {feature}. "
+                    f"Failures:\n{ci_failure_summary}"
                 ),
-            )
-
-            if not critic_path.exists():
-                log(f"ERROR: critic did not write result file for iteration {iteration}. Aborting.")
-                sys.exit(1)
-        else:
-            log(f"Critic result for iteration {iteration} already exists — reading status.")
-
-        critic_result = read_result(spec_dir, CRITIC_RESULT_PREFIX, iteration)
-        critic_status = critic_result.get("status", "FAIL")
-        blocking = sum(1 for v in critic_result.get("violations", []) if v.get("severity") == "BLOCKING")
-        warnings = sum(1 for v in critic_result.get("violations", []) if v.get("severity") == "WARNING")
-
-        if critic_status == "FAIL":
-            log(f"Critic FAIL (iteration {iteration}) — {blocking} blocking, {warnings} warning(s).")
-            critic_violations = critic_result.get("violations", [])
-            iteration += 1
-            continue
-
-        log(f"Critic PASS (iteration {iteration}) — {warnings} warning(s).")
-
-        # --- Gate 2: Code quality review ---
-        if not quality_path_iter.exists():
-            log(f"Running code quality review (iteration {iteration})...")
-
-            await run_gate(
-                log, "quality", "quality_critic.py", feature, iteration, "code quality review",
-                lambda: query(
-                    prompt=(
-                        f"Review the implementation for feature {feature} for code quality. "
-                        f"Write result to specs/{feature}/code-quality-review-result-{iteration}.json."
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "quality-review": quality_review_agent_definition(
-                                constitution, spec, plan, tasks_content, quality_principles, iteration, quality_violations
-                            )
-                        },
-                        setting_sources=["project"],
-                    ),
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "ci-fix-agent": ci_fix_agent_definition(
+                            constitution, spec, plan, tasks_content, ci_failure_summary
+                        )
+                    },
+                    setting_sources=["project"],
                 ),
-            )
+            ):
+                log_sdk_message(message, prefix="  ")
 
-            if not quality_path_iter.exists():
-                log(f"ERROR: quality review did not write result file for iteration {iteration}. Aborting.")
-                sys.exit(1)
-        else:
-            log(f"Quality review result for iteration {iteration} already exists — reading status.")
-
-        quality_result = read_result(spec_dir, QUALITY_RESULT_PREFIX, iteration)
-        quality_status = quality_result.get("status", "FAIL")
-        confidence = quality_result.get("confidence", 0)
-
-        if quality_status == "PASS":
-            log(f"Quality review PASS (iteration {iteration}, confidence {confidence}/10).")
-            log("Running CI checks before finalising...")
+            log("Re-running CI checks after fix attempt...")
             ci_passed, ci_failure_summary = run_full_ci_checks()
             if not ci_passed:
-                log("CI checks failed — running CI fix agent (one attempt)...")
-                tasks_content = read_file(spec_dir / "tasks.md")
-                async for message in query(
-                    prompt=(
-                        f"Fix CI failures for feature {feature}. "
-                        f"Failures:\n{ci_failure_summary}"
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "ci-fix-agent": ci_fix_agent_definition(
-                                constitution, spec, plan, tasks_content, ci_failure_summary
-                            )
-                        },
-                        setting_sources=["project"],
-                    ),
-                ):
-                    log_sdk_message(message, prefix="  ")
+                log("FAIL: CI checks still failing after fix attempt. Human review required.")
+                log(f"Remaining failures:\n{ci_failure_summary}")
+                sys.exit(1)
 
-                log("Re-running CI checks after fix attempt...")
-                ci_passed, ci_failure_summary = run_full_ci_checks()
-                if not ci_passed:
-                    log("FAIL: CI checks still failing after fix attempt. Human review required.")
-                    log(f"Remaining failures:\n{ci_failure_summary}")
-                    sys.exit(1)
+        log("All CI checks passed. Implementation is ready for human review.")
+        run_auto_commit("after_implement", AGENT_NAME)
+        write_stage_complete(spec_dir, "implement")
 
-            log("All CI checks passed. Implementation is ready for human review.")
-            run_auto_commit("after_implement", AGENT_NAME)
-            write_stage_complete(spec_dir, "implement")
-            return
+    def build_critic_query(iteration: int, prev_violations):
+        tasks_content = read_file(spec_dir / "tasks.md")
+        return query(
+            prompt=(
+                f"Validate the implementation for feature {feature}. "
+                f"Write result to specs/{feature}/implement-critic-result-{iteration}.json."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "implement-critic": critic_agent_definition(
+                        constitution, spec, plan, tasks_content, iteration, prev_violations
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        )
 
-        blocking_quality = len(quality_result.get("blocking_issues", []))
-        log(f"Quality review FAIL (iteration {iteration}) — {blocking_quality} blocking issue(s), confidence {confidence}/10.")
-        quality_violations = quality_result.get("blocking_issues", [])
-        iteration += 1
+    def build_quality_query(iteration: int, quality_violations):
+        tasks_content = read_file(spec_dir / "tasks.md")
+        return query(
+            prompt=(
+                f"Review the implementation for feature {feature} for code quality. "
+                f"Write result to specs/{feature}/code-quality-review-result-{iteration}.json."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "quality-review": quality_review_agent_definition(
+                        constitution, spec, plan, tasks_content, quality_principles, iteration, quality_violations
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        )
 
-    # --- Escalation ---
-    write_escalation(
-        spec_dir=spec_dir,
-        feature=feature,
-        escalation_filename="implement-critic-escalation.md",
-        log_description="implementation failed review",
-        review_history_prefixes=[
-            (CRITIC_RESULT_PREFIX, "Implement Critic"),
-            (QUALITY_RESULT_PREFIX, "Code Quality Review"),
-        ],
-        max_iterations=MAX_ITERATIONS,
-        title="Implement Critic Escalation",
-        summary=(
-            "The automated implement-critic loop exhausted its iteration limit without producing\n"
-            "an implementation that passed both the implement critic and the code quality review.\n"
-            "Human review is required to resolve the outstanding violations before the branch can\n"
-            "be merged."
+    # --- Step 2: Two-gate loop (implement critic → code quality review) ---
+    await run_two_gate_loop(
+        log, spec_dir, feature, MAX_ITERATIONS,
+        gate1=GateSpec(CRITIC_RESULT_PREFIX, "implement_critic.py", "implement", "implement critic", build_critic_query),
+        gate2=GateSpec(QUALITY_RESULT_PREFIX, "quality_critic.py", "quality", "code quality review", build_quality_query),
+        resume_state=resume_state,
+        skip_fix_agent=_skip_fix_agent,
+        run_revision=run_revision,
+        on_both_pass=on_both_pass,
+        escalation_kwargs=dict(
+            escalation_filename="implement-critic-escalation.md",
+            log_description="implementation failed review",
+            review_history_prefixes=[
+                (CRITIC_RESULT_PREFIX, "Implement Critic"),
+                (QUALITY_RESULT_PREFIX, "Code Quality Review"),
+            ],
+            title="Implement Critic Escalation",
+            summary=(
+                "The automated implement-critic loop exhausted its iteration limit without producing\n"
+                "an implementation that passed both the implement critic and the code quality review.\n"
+                "Human review is required to resolve the outstanding violations before the branch can\n"
+                "be merged."
+            ),
+            required_action=(
+                "1. Review the violations above.\n"
+                "2. Fix the BLOCKING violations manually in the relevant source files.\n"
+                f"3. Re-run `python .claude/agents/implement-auto.py` to restart the automated loop,\n"
+                f"   or run `/speckit-implement-critic` and `/code-quality-review` manually to verify your fixes."
+            ),
         ),
-        required_action=(
-            "1. Review the violations above.\n"
-            "2. Fix the BLOCKING violations manually in the relevant source files.\n"
-            f"3. Re-run `python .claude/agents/implement-auto.py` to restart the automated loop,\n"
-            f"   or run `/speckit-implement-critic` and `/code-quality-review` manually to verify your fixes."
-        ),
-        log_fn=log,
     )
 
 

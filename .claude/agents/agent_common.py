@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, IO, Optional
+from typing import Awaitable, Callable, IO, NamedTuple, Optional
 
 from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
@@ -308,6 +308,149 @@ def find_two_gate_resume_state(
 
     # Both gates passed — the resume guard should have caught this already.
     return iteration, None, None
+
+
+# ---------------------------------------------------------------------------
+# Two-gate critic loop
+# ---------------------------------------------------------------------------
+
+class GateSpec(NamedTuple):
+    """
+    Describes one gate of a two-gate critic loop (e.g. the plan critic, or the
+    architecture review that follows it).
+
+    result_prefix: result file prefix, e.g. "plan-critic-result"
+    script_name: standalone critic script passed to run_gate, e.g. "plan_critic.py"
+    critic_type: local-LLM critic_type key in .specify/local-llm.json, e.g. "plan"
+    label: display label used in log lines and passed to run_gate, e.g. "plan critic"
+    build_query: (iteration, prior_violations) -> the query(...) call to run via run_gate
+    """
+    result_prefix: str
+    script_name: str
+    critic_type: str
+    label: str
+    build_query: Callable[[int, Optional[list]], object]
+
+
+async def run_two_gate_loop(
+    log,
+    spec_dir: Path,
+    feature: str,
+    max_iterations: int,
+    gate1: GateSpec,
+    gate2: GateSpec,
+    resume_state: tuple[int, Optional[list], Optional[list]],
+    skip_fix_agent: bool,
+    run_revision: Callable[[int, list, str], Awaitable],
+    on_both_pass: Callable[[dict], Awaitable],
+    escalation_kwargs: dict,
+) -> None:
+    """
+    Shared driver for a two-gate critic loop: gate1 (e.g. plan critic / implement
+    critic) must PASS before gate2 (e.g. architecture review / code quality review)
+    runs; both must PASS in the same iteration before on_both_pass fires and the loop
+    returns. Mirrors the per-gate result-file idempotency and violation-carrying
+    behaviour of find_two_gate_resume_state.
+
+    resume_state: (iteration, gate1_violations, gate2_violations) as returned by
+    find_two_gate_resume_state.
+
+    run_revision(pending_iteration, pending_violations, pending_label): awaited before
+    re-running gate1 whenever violations are pending from either gate's previous FAIL.
+    pending_label is gate1.label or gate2.label, whichever gate produced the violations.
+
+    on_both_pass(gate2_result): awaited once gate2 PASSes, before the loop returns.
+    Callers do their own commit / stage-complete / CI-check work here.
+
+    escalation_kwargs: forwarded to write_escalation() if the loop exhausts
+    max_iterations (spec_dir, feature, max_iterations, and log_fn are supplied here).
+    """
+    iteration, violations1, violations2 = resume_state
+    if skip_fix_agent and (violations1 or violations2):
+        log("Escalation review present — skipping revision agent; violations were resolved externally.")
+        violations1 = None
+        violations2 = None
+    elif violations1:
+        log(f"Resuming after {gate1.label} FAIL at iteration {iteration - 1} — revision will run before {gate1.label} {iteration}.")
+    elif violations2:
+        log(f"Resuming after {gate2.label} FAIL at iteration {iteration - 1} — revision will run before {gate1.label} {iteration}.")
+    elif iteration < next_iteration(spec_dir, gate1.result_prefix):
+        log(f"Resuming: {gate1.label} {iteration} already PASS — {gate2.label} will run for iteration {iteration}.")
+
+    while iteration <= max_iterations:
+        path1 = spec_dir / f"{gate1.result_prefix}-{iteration}.json"
+        path2 = spec_dir / f"{gate2.result_prefix}-{iteration}.json"
+
+        # --- Gate 1 ---
+        if not path1.exists():
+            if violations1 or violations2:
+                pending_label = gate1.label if violations1 else gate2.label
+                pending_violations = violations1 if violations1 else violations2
+                await run_revision(iteration - 1, pending_violations, pending_label)
+
+            prev_violations1 = violations1
+            violations1 = None
+            violations2 = None
+
+            log(f"Running {gate1.label} (iteration {iteration})...")
+            await run_gate(
+                log, gate1.critic_type, gate1.script_name, feature, iteration, gate1.label,
+                lambda: gate1.build_query(iteration, prev_violations1),
+            )
+
+            if not path1.exists():
+                log(f"ERROR: {gate1.label} did not write result file for iteration {iteration}. Aborting.")
+                sys.exit(1)
+        else:
+            log(f"{gate1.label} result for iteration {iteration} already exists — reading status.")
+
+        result1 = read_result(spec_dir, gate1.result_prefix, iteration)
+        status1 = result1.get("status", "FAIL")
+        blocking1 = sum(1 for v in result1.get("violations", []) if v.get("severity") == "BLOCKING")
+        warnings1 = sum(1 for v in result1.get("violations", []) if v.get("severity") == "WARNING")
+
+        if status1 == "FAIL":
+            log(f"{gate1.label} FAIL (iteration {iteration}) — {blocking1} blocking, {warnings1} warning(s).")
+            violations1 = result1.get("violations", [])
+            iteration += 1
+            continue
+
+        log(f"{gate1.label} PASS (iteration {iteration}) — {warnings1} warning(s).")
+
+        # --- Gate 2 ---
+        if not path2.exists():
+            log(f"Running {gate2.label} (iteration {iteration})...")
+            await run_gate(
+                log, gate2.critic_type, gate2.script_name, feature, iteration, gate2.label,
+                lambda: gate2.build_query(iteration, violations2),
+            )
+            if not path2.exists():
+                log(f"ERROR: {gate2.label} did not write result file for iteration {iteration}. Aborting.")
+                sys.exit(1)
+        else:
+            log(f"{gate2.label} result for iteration {iteration} already exists — reading status.")
+
+        result2 = read_result(spec_dir, gate2.result_prefix, iteration)
+        status2 = result2.get("status", "FAIL")
+        confidence = result2.get("confidence", 0)
+
+        if status2 == "PASS":
+            log(f"{gate2.label} PASS (iteration {iteration}, confidence {confidence}/10).")
+            await on_both_pass(result2)
+            return
+
+        blocking2 = len(result2.get("blocking_issues", []))
+        log(f"{gate2.label} FAIL (iteration {iteration}) — {blocking2} blocking issue(s), confidence {confidence}/10.")
+        violations2 = result2.get("blocking_issues", [])
+        iteration += 1
+
+    write_escalation(
+        spec_dir=spec_dir,
+        feature=feature,
+        max_iterations=max_iterations,
+        log_fn=log,
+        **escalation_kwargs,
+    )
 
 
 # ---------------------------------------------------------------------------
