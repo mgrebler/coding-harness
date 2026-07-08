@@ -921,6 +921,8 @@ def call_local_llm(
     Send prompt to Ollama via the native /api/chat endpoint.
     Uses streaming so the socket stays alive during generation (avoids read timeout).
     Thinking mode disabled — reduces latency for rule-checking tasks.
+    format="json" grammar-constrains decoding to syntactically valid JSON, preventing
+    the malformed output (e.g. a dropped comma) that smaller models occasionally produce.
     Per-chunk read timeout: 300s.
 
     Uses the native endpoint (not /v1/chat/completions) because the OpenAI-compatible
@@ -948,6 +950,7 @@ def call_local_llm(
         "messages": [{"role": "user", "content": prompt}],
         "stream": True,
         "think": False,
+        "format": "json",
         "options": options,
     }
     if "keep_alive" in config:
