@@ -36,8 +36,8 @@ def build_plan_critic_prompt(
     output_instructions: str = "",
 ) -> str:
     tail = (
-        f"- status is FAIL if any violation is BLOCKING\n"
-        f"- status is PASS only if zero BLOCKING violations"
+        "- status is FAIL if any violation is BLOCKING\n"
+        "- status is PASS only if zero BLOCKING violations"
     )
     if output_instructions:
         tail += f"\n{output_instructions}"

@@ -27,8 +27,20 @@ from agent_common import (
 
 CRITIC_RESULT_PREFIX = "implement-critic-result"
 
-_PROHIBITED_PACKAGES = ("'express'", '"express"', "'fastify'", '"fastify"', "'koa'", '"koa"',
-                        "'jest'", '"jest"', "'mocha'", '"mocha"', "'jasmine'", '"jasmine"')
+_PROHIBITED_PACKAGES = (
+    "'express'",
+    '"express"',
+    "'fastify'",
+    '"fastify"',
+    "'koa'",
+    '"koa"',
+    "'jest'",
+    '"jest"',
+    "'mocha'",
+    '"mocha"',
+    "'jasmine'",
+    '"jasmine"',
+)
 
 _ROUTE_METHOD_PATTERNS = (".get(", ".post(", ".put(", ".delete(", ".patch(", ".options(", ".head(")
 
@@ -68,7 +80,8 @@ def _annotate_source_files(file_section: str) -> str:
             annotations = []
             if imports:
                 annotations.append(
-                    "Imports in this file (pre-extracted for §2 Stack Constraints check):\n" + imports
+                    "Imports in this file (pre-extracted for §2 Stack Constraints check):\n"
+                    + imports
                 )
             if routes:
                 annotations.append(
@@ -149,8 +162,8 @@ def build_implement_critic_prompt(
         file_input = f"--- CHANGED SOURCE FILES (git diff main...HEAD) ---\n{changed_files_section}"
 
     tail = (
-        f"- status is FAIL if any violation is BLOCKING\n"
-        f"- status is PASS only if zero BLOCKING violations"
+        "- status is FAIL if any violation is BLOCKING\n"
+        "- status is PASS only if zero BLOCKING violations"
     )
     if output_instructions:
         tail += f"\n{output_instructions}"
@@ -251,7 +264,11 @@ def main():
         changed_sources = _annotate_source_files(changed_sources)
 
         return build_implement_critic_prompt(
-            constitution, spec, plan, tasks, iteration,
+            constitution,
+            spec,
+            plan,
+            tasks,
+            iteration,
             architecture=architecture,
             contracts=contracts,
             data_model=data_model,

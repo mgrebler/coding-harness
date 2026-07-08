@@ -1,6 +1,5 @@
 """Unit tests for agent_common.py pure functions. No LLM or network calls."""
 
-import asyncio
 import json
 import os
 import sys
@@ -92,58 +91,90 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         self.assertIsNone(agent_common.load_local_llm_config("plan"))
 
     def test_default_disabled_returns_none(self):
-        self._write_config({"ollama_url": "http://localhost:11434",
-                            "default": {"enabled": False, "model": ""},
-                            "critics": {}})
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"enabled": False, "model": ""},
+                "critics": {},
+            }
+        )
         self.assertIsNone(agent_common.load_local_llm_config("plan"))
 
     def test_critic_override_enabled_returns_config(self):
-        self._write_config({"ollama_url": "http://localhost:11434",
-                            "default": {"enabled": False, "model": ""},
-                            "critics": {"plan": {"enabled": True, "model": "qwen3:4b"}}})
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"enabled": False, "model": ""},
+                "critics": {"plan": {"enabled": True, "model": "qwen3:4b"}},
+            }
+        )
         result = agent_common.load_local_llm_config("plan")
         self.assertIsNotNone(result)
         self.assertEqual(result["model"], "qwen3:4b")
         self.assertIn("ollama_url", result)
 
     def test_num_ctx_top_level_passed_through(self):
-        self._write_config({"ollama_url": "http://localhost:11434",
-                            "num_ctx": 8192,
-                            "default": {"enabled": True, "model": "llama3.2"}})
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "num_ctx": 8192,
+                "default": {"enabled": True, "model": "llama3.2"},
+            }
+        )
         result = agent_common.load_local_llm_config("plan")
         self.assertEqual(result["num_ctx"], 8192)
 
     def test_num_ctx_absent_when_not_set(self):
-        self._write_config({"ollama_url": "http://localhost:11434",
-                            "default": {"enabled": True, "model": "llama3.2"}})
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"enabled": True, "model": "llama3.2"},
+            }
+        )
         result = agent_common.load_local_llm_config("plan")
         self.assertNotIn("num_ctx", result)
 
     def test_num_gpu_defaults_to_full_offload_when_unset(self):
-        self._write_config({"ollama_url": "http://localhost:11434",
-                            "default": {"enabled": True, "model": "llama3.2"}})
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"enabled": True, "model": "llama3.2"},
+            }
+        )
         result = agent_common.load_local_llm_config("plan")
         self.assertEqual(result["num_gpu"], agent_common._FULL_GPU_OFFLOAD)
 
     def test_num_gpu_explicit_value_respected(self):
-        self._write_config({"ollama_url": "http://localhost:11434",
-                            "num_gpu": 20,
-                            "default": {"enabled": True, "model": "llama3.2"}})
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "num_gpu": 20,
+                "default": {"enabled": True, "model": "llama3.2"},
+            }
+        )
         result = agent_common.load_local_llm_config("plan")
         self.assertEqual(result["num_gpu"], 20)
 
     def test_default_enabled_returns_config(self):
-        self._write_config({"ollama_url": "http://localhost:11434",
-                            "default": {"enabled": True, "model": "llama3.2"},
-                            "critics": {}})
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"enabled": True, "model": "llama3.2"},
+                "critics": {},
+            }
+        )
         result = agent_common.load_local_llm_config("plan")
         self.assertIsNotNone(result)
         self.assertEqual(result["model"], "llama3.2")
 
     def test_empty_model_returns_none(self):
-        self._write_config({"ollama_url": "http://localhost:11434",
-                            "default": {"enabled": True, "model": ""},
-                            "critics": {}})
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"enabled": True, "model": ""},
+                "critics": {},
+            }
+        )
         self.assertIsNone(agent_common.load_local_llm_config("plan"))
 
     def test_corrupt_json_returns_none(self):
@@ -230,8 +261,10 @@ class TestCallLocalLlmEnsuresContext(unittest.TestCase):
         fake_resp = MagicMock()
         fake_resp.__enter__.return_value = iter([json.dumps({"done": True}).encode("utf-8")])
 
-        with patch.object(agent_common, "_ensure_model_context") as mock_ensure, \
-             patch.object(agent_common.urllib.request, "urlopen", return_value=fake_resp):
+        with (
+            patch.object(agent_common, "_ensure_model_context") as mock_ensure,
+            patch.object(agent_common.urllib.request, "urlopen", return_value=fake_resp),
+        ):
             agent_common.call_local_llm("hello", config)
 
         mock_ensure.assert_called_once_with(
@@ -253,8 +286,10 @@ class TestCallLocalLlmEnsuresContext(unittest.TestCase):
             fake_resp.__enter__.return_value = iter([json.dumps({"done": True}).encode("utf-8")])
             return fake_resp
 
-        with patch.object(agent_common, "_ensure_model_context"), \
-             patch.object(agent_common.urllib.request, "urlopen", side_effect=fake_urlopen):
+        with (
+            patch.object(agent_common, "_ensure_model_context"),
+            patch.object(agent_common.urllib.request, "urlopen", side_effect=fake_urlopen),
+        ):
             agent_common.call_local_llm("hello", config)
 
         self.assertNotIn("num_gpu", bodies[0]["options"])
@@ -430,10 +465,12 @@ class TestReadChangedSourceFiles(unittest.TestCase):
                 os.chdir(old_cwd)
 
     def test_skips_specs_and_result_files(self):
-        result = agent_common.read_changed_source_files([
-            "specs/001-feature/plan.md",
-            "specs/001-feature/plan-critic-result-1.json",
-        ])
+        result = agent_common.read_changed_source_files(
+            [
+                "specs/001-feature/plan.md",
+                "specs/001-feature/plan-critic-result-1.json",
+            ]
+        )
         self.assertEqual(result, "(no changed files found)")
 
     def test_no_changed_files_returns_placeholder(self):
@@ -446,7 +483,9 @@ class TestFinishStage(unittest.TestCase):
             spec_dir = Path(d)
             log = MagicMock()
             with patch.object(agent_common, "run_auto_commit") as mock_commit:
-                agent_common.finish_stage(log, spec_dir, "plan-auto", "after_plan", "plan", "Ready for review.")
+                agent_common.finish_stage(
+                    log, spec_dir, "plan-auto", "after_plan", "plan", "Ready for review."
+                )
 
             log.assert_called_once_with("Ready for review.")
             mock_commit.assert_called_once_with("after_plan", "plan-auto")
@@ -460,8 +499,15 @@ class TestFinishIfAlreadyPassing(unittest.TestCase):
             log = MagicMock()
             with patch.object(agent_common, "run_auto_commit") as mock_commit:
                 result = agent_common.finish_if_already_passing(
-                    log, spec_dir, "plan-auto", "plan-critic-result", 3, "plan critic",
-                    "Ready for review.", "after_plan", "plan",
+                    log,
+                    spec_dir,
+                    "plan-auto",
+                    "plan-critic-result",
+                    3,
+                    "plan critic",
+                    "Ready for review.",
+                    "after_plan",
+                    "plan",
                 )
             self.assertFalse(result)
             log.assert_not_called()
@@ -475,8 +521,15 @@ class TestFinishIfAlreadyPassing(unittest.TestCase):
             log = MagicMock()
             with patch.object(agent_common, "run_auto_commit") as mock_commit:
                 result = agent_common.finish_if_already_passing(
-                    log, spec_dir, "plan-auto", "plan-critic-result", 3, "plan critic",
-                    "Ready for review.", "after_plan", "plan",
+                    log,
+                    spec_dir,
+                    "plan-auto",
+                    "plan-critic-result",
+                    3,
+                    "plan critic",
+                    "Ready for review.",
+                    "after_plan",
+                    "plan",
                 )
             self.assertTrue(result)
             log.assert_any_call("Already PASS from plan critic iteration 1.")
@@ -488,9 +541,11 @@ class TestFinishIfAlreadyPassing(unittest.TestCase):
 class TestRunCli(unittest.TestCase):
     def test_explicit_feature_bypasses_branch_lookup(self):
         run_coro = MagicMock()
-        with patch.object(sys, "argv", ["plan-auto.py", "--feature", "foo"]), \
-             patch.object(agent_common, "get_feature_from_branch") as mock_branch, \
-             patch.object(agent_common.asyncio, "run") as mock_run:
+        with (
+            patch.object(sys, "argv", ["plan-auto.py", "--feature", "foo"]),
+            patch.object(agent_common, "get_feature_from_branch") as mock_branch,
+            patch.object(agent_common.asyncio, "run") as mock_run,
+        ):
             agent_common.run_cli("plan-auto", "Plan auto-orchestrator", run_coro)
 
         mock_branch.assert_not_called()
@@ -499,9 +554,13 @@ class TestRunCli(unittest.TestCase):
 
     def test_omitted_feature_falls_back_to_branch(self):
         run_coro = MagicMock()
-        with patch.object(sys, "argv", ["plan-auto.py"]), \
-             patch.object(agent_common, "get_feature_from_branch", return_value="017-my-feature") as mock_branch, \
-             patch.object(agent_common.asyncio, "run") as mock_run:
+        with (
+            patch.object(sys, "argv", ["plan-auto.py"]),
+            patch.object(
+                agent_common, "get_feature_from_branch", return_value="017-my-feature"
+            ) as mock_branch,
+            patch.object(agent_common.asyncio, "run") as mock_run,
+        ):
             agent_common.run_cli("plan-auto", "Plan auto-orchestrator", run_coro)
 
         mock_branch.assert_called_once_with("plan-auto")
@@ -525,11 +584,17 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             build_query_calls.append((iteration, prev_violations))
             return "query-object"
 
-        async def fake_run_gate(log, critic_type, script_name, feature, iteration, label, claude_fallback):
+        async def fake_run_gate(
+            log, critic_type, script_name, feature, iteration, label, claude_fallback
+        ):
             status, violations = results[iteration]
-            _write_result(spec_dir, "tasks-critic-result", iteration, status, violations=violations or [])
+            _write_result(
+                spec_dir, "tasks-critic-result", iteration, status, violations=violations or []
+            )
 
-        gate = GateSpec("tasks-critic-result", "tasks_critic.py", "tasks", "tasks critic", build_query)
+        gate = GateSpec(
+            "tasks-critic-result", "tasks_critic.py", "tasks", "tasks critic", build_query
+        )
         return gate, fake_run_gate, build_query_calls
 
     async def test_pass_on_first_try(self):
@@ -539,12 +604,21 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             run_fix = AsyncMock()
             on_pass = AsyncMock()
 
-            with patch.object(agent_common, "run_gate", side_effect=fake_run_gate), \
-                 patch.object(agent_common, "write_escalation") as mock_escalate:
+            with (
+                patch.object(agent_common, "run_gate", side_effect=fake_run_gate),
+                patch.object(agent_common, "write_escalation") as mock_escalate,
+            ):
                 await agent_common.run_single_gate_loop(
-                    MagicMock(), spec_dir, "feat", 3, gate,
-                    resume_state=(1, None), skip_fix_agent=False,
-                    run_fix=run_fix, on_pass=on_pass, escalation_kwargs={},
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    3,
+                    gate,
+                    resume_state=(1, None),
+                    skip_fix_agent=False,
+                    run_fix=run_fix,
+                    on_pass=on_pass,
+                    escalation_kwargs={},
                 )
 
             run_fix.assert_not_called()
@@ -555,19 +629,31 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
             viols = [{"rule": "§T1", "severity": "BLOCKING"}]
-            gate, fake_run_gate, _ = self._make_gate(spec_dir, {
-                1: ("FAIL", viols),
-                2: ("PASS", []),
-            })
+            gate, fake_run_gate, _ = self._make_gate(
+                spec_dir,
+                {
+                    1: ("FAIL", viols),
+                    2: ("PASS", []),
+                },
+            )
             run_fix = AsyncMock()
             on_pass = AsyncMock()
 
-            with patch.object(agent_common, "run_gate", side_effect=fake_run_gate), \
-                 patch.object(agent_common, "write_escalation") as mock_escalate:
+            with (
+                patch.object(agent_common, "run_gate", side_effect=fake_run_gate),
+                patch.object(agent_common, "write_escalation") as mock_escalate,
+            ):
                 await agent_common.run_single_gate_loop(
-                    MagicMock(), spec_dir, "feat", 3, gate,
-                    resume_state=(1, None), skip_fix_agent=False,
-                    run_fix=run_fix, on_pass=on_pass, escalation_kwargs={},
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    3,
+                    gate,
+                    resume_state=(1, None),
+                    skip_fix_agent=False,
+                    run_fix=run_fix,
+                    on_pass=on_pass,
+                    escalation_kwargs={},
                 )
 
             run_fix.assert_awaited_once_with(1, viols)
@@ -578,21 +664,40 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
             viols = [{"rule": "§T1", "severity": "BLOCKING"}]
-            gate, fake_run_gate, _ = self._make_gate(spec_dir, {
-                1: ("FAIL", viols), 2: ("FAIL", viols), 3: ("FAIL", viols),
-            })
+            gate, fake_run_gate, _ = self._make_gate(
+                spec_dir,
+                {
+                    1: ("FAIL", viols),
+                    2: ("FAIL", viols),
+                    3: ("FAIL", viols),
+                },
+            )
             run_fix = AsyncMock()
             on_pass = AsyncMock()
-            escalation_kwargs = {"escalation_filename": "x.md", "log_description": "d",
-                                 "review_history_prefixes": [], "title": "T",
-                                 "summary": "S", "required_action": "R"}
+            escalation_kwargs = {
+                "escalation_filename": "x.md",
+                "log_description": "d",
+                "review_history_prefixes": [],
+                "title": "T",
+                "summary": "S",
+                "required_action": "R",
+            }
 
-            with patch.object(agent_common, "run_gate", side_effect=fake_run_gate), \
-                 patch.object(agent_common, "write_escalation") as mock_escalate:
+            with (
+                patch.object(agent_common, "run_gate", side_effect=fake_run_gate),
+                patch.object(agent_common, "write_escalation") as mock_escalate,
+            ):
                 await agent_common.run_single_gate_loop(
-                    MagicMock(), spec_dir, "feat", 3, gate,
-                    resume_state=(1, None), skip_fix_agent=False,
-                    run_fix=run_fix, on_pass=on_pass, escalation_kwargs=escalation_kwargs,
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    3,
+                    gate,
+                    resume_state=(1, None),
+                    skip_fix_agent=False,
+                    run_fix=run_fix,
+                    on_pass=on_pass,
+                    escalation_kwargs=escalation_kwargs,
                 )
 
             on_pass.assert_not_called()
@@ -616,12 +721,21 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             run_fix = AsyncMock()
             on_pass = AsyncMock()
 
-            with patch.object(agent_common, "run_gate", side_effect=fake_run_gate), \
-                 patch.object(agent_common, "write_escalation") as mock_escalate:
+            with (
+                patch.object(agent_common, "run_gate", side_effect=fake_run_gate),
+                patch.object(agent_common, "write_escalation") as mock_escalate,
+            ):
                 await agent_common.run_single_gate_loop(
-                    MagicMock(), spec_dir, "feat", 6, gate,
-                    resume_state=(2, viols), skip_fix_agent=True,
-                    run_fix=run_fix, on_pass=on_pass, escalation_kwargs={},
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    6,
+                    gate,
+                    resume_state=(2, viols),
+                    skip_fix_agent=True,
+                    run_fix=run_fix,
+                    on_pass=on_pass,
+                    escalation_kwargs={},
                 )
 
             run_fix.assert_not_called()
@@ -637,35 +751,64 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
         def build_query2(iteration, prev_violations):
             return "gate2-query"
 
-        async def fake_run_gate(log, critic_type, script_name, feature, iteration, label, claude_fallback):
+        async def fake_run_gate(
+            log, critic_type, script_name, feature, iteration, label, claude_fallback
+        ):
             if critic_type == "plan":
                 status, violations = gate1_results[iteration]
-                _write_result(spec_dir, "plan-critic-result", iteration, status, violations=violations or [])
+                _write_result(
+                    spec_dir, "plan-critic-result", iteration, status, violations=violations or []
+                )
             else:
                 status, blocking_issues = gate2_results[iteration]
-                _write_result(spec_dir, "architecture-review-result", iteration, status,
-                               confidence=8, blocking_issues=blocking_issues or [])
+                _write_result(
+                    spec_dir,
+                    "architecture-review-result",
+                    iteration,
+                    status,
+                    confidence=8,
+                    blocking_issues=blocking_issues or [],
+                )
 
-        gate1 = GateSpec("plan-critic-result", "plan_critic.py", "plan", "plan critic", build_query1)
-        gate2 = GateSpec("architecture-review-result", "architecture_critic.py", "architecture",
-                          "architecture review", build_query2)
+        gate1 = GateSpec(
+            "plan-critic-result", "plan_critic.py", "plan", "plan critic", build_query1
+        )
+        gate2 = GateSpec(
+            "architecture-review-result",
+            "architecture_critic.py",
+            "architecture",
+            "architecture review",
+            build_query2,
+        )
         return gate1, gate2, fake_run_gate
 
     async def test_both_gates_pass_on_first_try(self):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
             gate1, gate2, fake_run_gate = self._make_gates(
-                spec_dir, {1: ("PASS", [])}, {1: ("PASS", [])},
+                spec_dir,
+                {1: ("PASS", [])},
+                {1: ("PASS", [])},
             )
             run_revision = AsyncMock()
             on_both_pass = AsyncMock()
 
-            with patch.object(agent_common, "run_gate", side_effect=fake_run_gate), \
-                 patch.object(agent_common, "write_escalation") as mock_escalate:
+            with (
+                patch.object(agent_common, "run_gate", side_effect=fake_run_gate),
+                patch.object(agent_common, "write_escalation") as mock_escalate,
+            ):
                 await agent_common.run_two_gate_loop(
-                    MagicMock(), spec_dir, "feat", 3, gate1, gate2,
-                    resume_state=(1, None, None), skip_fix_agent=False,
-                    run_revision=run_revision, on_both_pass=on_both_pass, escalation_kwargs={},
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    3,
+                    gate1,
+                    gate2,
+                    resume_state=(1, None, None),
+                    skip_fix_agent=False,
+                    run_revision=run_revision,
+                    on_both_pass=on_both_pass,
+                    escalation_kwargs={},
                 )
 
             run_revision.assert_not_called()
@@ -686,12 +829,22 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
             run_revision = AsyncMock()
             on_both_pass = AsyncMock()
 
-            with patch.object(agent_common, "run_gate", side_effect=fake_run_gate), \
-                 patch.object(agent_common, "write_escalation") as mock_escalate:
+            with (
+                patch.object(agent_common, "run_gate", side_effect=fake_run_gate),
+                patch.object(agent_common, "write_escalation") as mock_escalate,
+            ):
                 await agent_common.run_two_gate_loop(
-                    MagicMock(), spec_dir, "feat", 3, gate1, gate2,
-                    resume_state=(1, None, None), skip_fix_agent=False,
-                    run_revision=run_revision, on_both_pass=on_both_pass, escalation_kwargs={},
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    3,
+                    gate1,
+                    gate2,
+                    resume_state=(1, None, None),
+                    skip_fix_agent=False,
+                    run_revision=run_revision,
+                    on_both_pass=on_both_pass,
+                    escalation_kwargs={},
                 )
 
             run_revision.assert_awaited_once_with(1, viols, "plan critic")
@@ -711,12 +864,22 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
             run_revision = AsyncMock()
             on_both_pass = AsyncMock()
 
-            with patch.object(agent_common, "run_gate", side_effect=fake_run_gate), \
-                 patch.object(agent_common, "write_escalation") as mock_escalate:
+            with (
+                patch.object(agent_common, "run_gate", side_effect=fake_run_gate),
+                patch.object(agent_common, "write_escalation") as mock_escalate,
+            ):
                 await agent_common.run_two_gate_loop(
-                    MagicMock(), spec_dir, "feat", 3, gate1, gate2,
-                    resume_state=(1, None, None), skip_fix_agent=False,
-                    run_revision=run_revision, on_both_pass=on_both_pass, escalation_kwargs={},
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    3,
+                    gate1,
+                    gate2,
+                    resume_state=(1, None, None),
+                    skip_fix_agent=False,
+                    run_revision=run_revision,
+                    on_both_pass=on_both_pass,
+                    escalation_kwargs={},
                 )
 
             run_revision.assert_awaited_once_with(1, issues, "architecture review")
@@ -734,16 +897,31 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
             )
             run_revision = AsyncMock()
             on_both_pass = AsyncMock()
-            escalation_kwargs = {"escalation_filename": "x.md", "log_description": "d",
-                                 "review_history_prefixes": [], "title": "T",
-                                 "summary": "S", "required_action": "R"}
+            escalation_kwargs = {
+                "escalation_filename": "x.md",
+                "log_description": "d",
+                "review_history_prefixes": [],
+                "title": "T",
+                "summary": "S",
+                "required_action": "R",
+            }
 
-            with patch.object(agent_common, "run_gate", side_effect=fake_run_gate), \
-                 patch.object(agent_common, "write_escalation") as mock_escalate:
+            with (
+                patch.object(agent_common, "run_gate", side_effect=fake_run_gate),
+                patch.object(agent_common, "write_escalation") as mock_escalate,
+            ):
                 await agent_common.run_two_gate_loop(
-                    MagicMock(), spec_dir, "feat", 3, gate1, gate2,
-                    resume_state=(1, None, None), skip_fix_agent=False,
-                    run_revision=run_revision, on_both_pass=on_both_pass, escalation_kwargs=escalation_kwargs,
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    3,
+                    gate1,
+                    gate2,
+                    resume_state=(1, None, None),
+                    skip_fix_agent=False,
+                    run_revision=run_revision,
+                    on_both_pass=on_both_pass,
+                    escalation_kwargs=escalation_kwargs,
                 )
 
             on_both_pass.assert_not_called()

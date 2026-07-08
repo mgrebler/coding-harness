@@ -232,6 +232,15 @@ OLLAMA_URL=http://host.docker.internal:11434 bash tests/run_tests.sh
 
 The eval tests configure Ollama via a `.specify/local-llm.json` written into each test's temp directory — no changes to your local config needed. If Ollama is unreachable or the model isn't pulled, tests skip with a clear message rather than erroring.
 
+## Linting
+
+The harness's own Python source (`.claude/agents/`, `tests/`) is linted and formatted with [Ruff](https://docs.astral.sh/ruff/), config in `pyproject.toml`. Enforced in CI (`.github/workflows/ruff.yml`).
+
+```bash
+ruff check .
+ruff format .
+```
+
 ---
 
 ## What This Repo Contains

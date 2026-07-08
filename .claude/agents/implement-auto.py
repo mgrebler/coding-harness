@@ -35,27 +35,27 @@ import subprocess
 import sys
 from pathlib import Path
 
-from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
-
-from agent_common import (
-    read_file,
-    next_iteration,
-    stage_is_complete,
-    make_logger,
-    log_sdk_message,
-    setup_log_file,
-    find_passing_iteration,
-    find_two_gate_resume_state,
-    format_violations_block,
-    extend_iterations_if_reviewed,
-    require_spec_files,
-    run_two_gate_loop,
-    finish_stage,
-    run_cli,
-    GateSpec,
-)
+from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
 from implement_critic import build_implement_critic_prompt
 from quality_critic import build_quality_review_prompt
+
+from agent_common import (
+    GateSpec,
+    extend_iterations_if_reviewed,
+    find_passing_iteration,
+    find_two_gate_resume_state,
+    finish_stage,
+    format_violations_block,
+    log_sdk_message,
+    make_logger,
+    next_iteration,
+    read_file,
+    require_spec_files,
+    run_cli,
+    run_two_gate_loop,
+    setup_log_file,
+    stage_is_complete,
+)
 
 AGENT_NAME = "implement-auto"
 CRITIC_RESULT_PREFIX = "implement-critic-result"
@@ -66,6 +66,7 @@ log = make_logger(AGENT_NAME)
 # ---------------------------------------------------------------------------
 # Pre-flight checks
 # ---------------------------------------------------------------------------
+
 
 def preflight(spec_dir: Path, feature: str):
     require_spec_files(log, spec_dir, "spec.md", "plan.md", "tasks.md")
@@ -86,10 +87,14 @@ def preflight(spec_dir: Path, feature: str):
 
     if all_done and not existing_results:
         if sys.stdin.isatty():
-            response = input(
-                f"[{AGENT_NAME}] WARNING: All tasks in tasks.md appear complete but no critic result exists. "
-                f"Run critic on existing implementation? (yes/no): "
-            ).strip().lower()
+            response = (
+                input(
+                    f"[{AGENT_NAME}] WARNING: All tasks in tasks.md appear complete but no critic result exists. "
+                    f"Run critic on existing implementation? (yes/no): "
+                )
+                .strip()
+                .lower()
+            )
         else:
             log("Non-interactive mode: defaulting to running critic on existing implementation.")
             response = "yes"
@@ -102,7 +107,10 @@ def preflight(spec_dir: Path, feature: str):
 # Subagent definitions
 # ---------------------------------------------------------------------------
 
-def impl_agent_definition(constitution: str, spec: str, plan: str, tasks: str, quality_principles: str) -> AgentDefinition:
+
+def impl_agent_definition(
+    constitution: str, spec: str, plan: str, tasks: str, quality_principles: str
+) -> AgentDefinition:
     return AgentDefinition(
         description="Implements all unchecked [IMPL] tasks in tasks.md.",
         prompt=f"""You are the Implementation Agent for a spec-kit project.
@@ -171,7 +179,11 @@ def critic_agent_definition(
     return AgentDefinition(
         description="Validates implemented code against tasks.md, plan.md, spec.md, and constitution.md.",
         prompt=build_implement_critic_prompt(
-            constitution, spec, plan, tasks, iteration,
+            constitution,
+            spec,
+            plan,
+            tasks,
+            iteration,
             violations_block=violations_block,
             output_instructions=output_instructions,
         ),
@@ -276,7 +288,9 @@ def quality_review_agent_definition(
     iteration: int,
     quality_violations: list | None = None,
 ) -> AgentDefinition:
-    violations_block = format_violations_block(quality_violations, iteration, "quality violations (already addressed by the fix agent)")
+    violations_block = format_violations_block(
+        quality_violations, iteration, "quality violations (already addressed by the fix agent)"
+    )
 
     output_instructions = (
         f"- After producing JSON, write it to specs/$FEATURE/code-quality-review-result-{iteration}.json using Bash\n"
@@ -285,7 +299,12 @@ def quality_review_agent_definition(
     return AgentDefinition(
         description="Reviews implemented code for quality, maintainability, and operational safety.",
         prompt=build_quality_review_prompt(
-            constitution, spec, plan, tasks, quality_principles, iteration,
+            constitution,
+            spec,
+            plan,
+            tasks,
+            quality_principles,
+            iteration,
             violations_block=violations_block,
             output_instructions=output_instructions,
         ),
@@ -344,6 +363,7 @@ def run_full_ci_checks() -> tuple[bool, str]:
 # Main orchestration loop
 # ---------------------------------------------------------------------------
 
+
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -361,7 +381,11 @@ async def run(feature: str):
     tasks = read_file(spec_dir / "tasks.md")
 
     quality_principles_path = Path(".specify/memory/code-quality-principles.md")
-    quality_principles = read_file(quality_principles_path) if quality_principles_path.exists() else "(code-quality-principles.md not found)"
+    quality_principles = (
+        read_file(quality_principles_path)
+        if quality_principles_path.exists()
+        else "(code-quality-principles.md not found)"
+    )
 
     MAX_ITERATIONS, _skip_fix_agent = extend_iterations_if_reviewed(
         spec_dir, "implement-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
@@ -379,7 +403,9 @@ async def run(feature: str):
             options=ClaudeAgentOptions(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                 agents={
-                    "impl-agent": impl_agent_definition(constitution, spec, plan, tasks, quality_principles)
+                    "impl-agent": impl_agent_definition(
+                        constitution, spec, plan, tasks, quality_principles
+                    )
                 },
                 setting_sources=["project"],
             ),
@@ -388,7 +414,9 @@ async def run(feature: str):
 
         tasks = read_file(spec_dir / "tasks.md")
         if "- [ ]" in tasks:
-            log("WARNING: implementation agent did not complete all tasks. Proceeding to critic anyway.")
+            log(
+                "WARNING: implementation agent did not complete all tasks. Proceeding to critic anyway."
+            )
     else:
         log("All tasks already checked off — skipping implementation agent.")
 
@@ -399,11 +427,12 @@ async def run(feature: str):
         log("Running quick CI checks (typecheck + unit tests) before critic loop...")
         quick_passed, quick_failure_summary = run_quick_ci_checks()
         if not quick_passed:
-            log("Quick CI failed — running CI fix agent (one attempt) before entering critic loop...")
+            log(
+                "Quick CI failed — running CI fix agent (one attempt) before entering critic loop..."
+            )
             async for message in query(
                 prompt=(
-                    f"Fix CI failures for feature {feature}. "
-                    f"Failures:\n{quick_failure_summary}"
+                    f"Fix CI failures for feature {feature}. Failures:\n{quick_failure_summary}"
                 ),
                 options=ClaudeAgentOptions(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
@@ -434,16 +463,17 @@ async def run(feature: str):
         ci_passed, ci_failure_summary = run_full_ci_checks()
         if ci_passed:
             finish_stage(
-                log, spec_dir, AGENT_NAME, "after_implement", "implement",
+                log,
+                spec_dir,
+                AGENT_NAME,
+                "after_implement",
+                "implement",
                 "All CI checks passed. Implementation is ready for human review.",
             )
             return
         log("CI checks failed — running CI fix agent (one attempt)...")
         async for message in query(
-            prompt=(
-                f"Fix CI failures for feature {feature}. "
-                f"Failures:\n{ci_failure_summary}"
-            ),
+            prompt=(f"Fix CI failures for feature {feature}. Failures:\n{ci_failure_summary}"),
             options=ClaudeAgentOptions(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                 agents={
@@ -464,7 +494,11 @@ async def run(feature: str):
             sys.exit(1)
 
         finish_stage(
-            log, spec_dir, AGENT_NAME, "after_implement", "implement",
+            log,
+            spec_dir,
+            AGENT_NAME,
+            "after_implement",
+            "implement",
             "All CI checks passed. Implementation is ready for human review.",
         )
         return
@@ -478,7 +512,9 @@ async def run(feature: str):
 
     async def run_revision(pending_iter: int, pending_violations: list, pending_label: str) -> None:
         tasks_content = read_file(spec_dir / "tasks.md")
-        log(f"Running fix agent for {pending_label} violations from iteration {pending_iter} ({len(pending_violations)} issue(s))...")
+        log(
+            f"Running fix agent for {pending_label} violations from iteration {pending_iter} ({len(pending_violations)} issue(s))..."
+        )
         async for message in query(
             prompt=(
                 f"Fix violations for feature {feature}. "
@@ -503,10 +539,7 @@ async def run(feature: str):
             log("CI checks failed — running CI fix agent (one attempt)...")
             tasks_content = read_file(spec_dir / "tasks.md")
             async for message in query(
-                prompt=(
-                    f"Fix CI failures for feature {feature}. "
-                    f"Failures:\n{ci_failure_summary}"
-                ),
+                prompt=(f"Fix CI failures for feature {feature}. Failures:\n{ci_failure_summary}"),
                 options=ClaudeAgentOptions(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                     agents={
@@ -527,7 +560,11 @@ async def run(feature: str):
                 sys.exit(1)
 
         finish_stage(
-            log, spec_dir, AGENT_NAME, "after_implement", "implement",
+            log,
+            spec_dir,
+            AGENT_NAME,
+            "after_implement",
+            "implement",
             "All CI checks passed. Implementation is ready for human review.",
         )
 
@@ -560,7 +597,13 @@ async def run(feature: str):
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "quality-review": quality_review_agent_definition(
-                        constitution, spec, plan, tasks_content, quality_principles, iteration, quality_violations
+                        constitution,
+                        spec,
+                        plan,
+                        tasks_content,
+                        quality_principles,
+                        iteration,
+                        quality_violations,
                     )
                 },
                 setting_sources=["project"],
@@ -569,34 +612,49 @@ async def run(feature: str):
 
     # --- Step 2: Two-gate loop (implement critic → code quality review) ---
     await run_two_gate_loop(
-        log, spec_dir, feature, MAX_ITERATIONS,
-        gate1=GateSpec(CRITIC_RESULT_PREFIX, "implement_critic.py", "implement", "implement critic", build_critic_query),
-        gate2=GateSpec(QUALITY_RESULT_PREFIX, "quality_critic.py", "quality", "code quality review", build_quality_query),
+        log,
+        spec_dir,
+        feature,
+        MAX_ITERATIONS,
+        gate1=GateSpec(
+            CRITIC_RESULT_PREFIX,
+            "implement_critic.py",
+            "implement",
+            "implement critic",
+            build_critic_query,
+        ),
+        gate2=GateSpec(
+            QUALITY_RESULT_PREFIX,
+            "quality_critic.py",
+            "quality",
+            "code quality review",
+            build_quality_query,
+        ),
         resume_state=resume_state,
         skip_fix_agent=_skip_fix_agent,
         run_revision=run_revision,
         on_both_pass=on_both_pass,
-        escalation_kwargs=dict(
-            escalation_filename="implement-critic-escalation.md",
-            log_description="implementation failed review",
-            review_history_prefixes=[
+        escalation_kwargs={
+            "escalation_filename": "implement-critic-escalation.md",
+            "log_description": "implementation failed review",
+            "review_history_prefixes": [
                 (CRITIC_RESULT_PREFIX, "Implement Critic"),
                 (QUALITY_RESULT_PREFIX, "Code Quality Review"),
             ],
-            title="Implement Critic Escalation",
-            summary=(
+            "title": "Implement Critic Escalation",
+            "summary": (
                 "The automated implement-critic loop exhausted its iteration limit without producing\n"
                 "an implementation that passed both the implement critic and the code quality review.\n"
                 "Human review is required to resolve the outstanding violations before the branch can\n"
                 "be merged."
             ),
-            required_action=(
+            "required_action": (
                 "1. Review the violations above.\n"
                 "2. Fix the BLOCKING violations manually in the relevant source files.\n"
-                f"3. Re-run `python .claude/agents/implement-auto.py` to restart the automated loop,\n"
-                f"   or run `/speckit-implement-critic` and `/code-quality-review` manually to verify your fixes."
+                "3. Re-run `python .claude/agents/implement-auto.py` to restart the automated loop,\n"
+                "   or run `/speckit-implement-critic` and `/code-quality-review` manually to verify your fixes."
             ),
-        ),
+        },
     )
 
 

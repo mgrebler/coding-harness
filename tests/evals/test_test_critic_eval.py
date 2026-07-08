@@ -49,8 +49,9 @@ def _setup_tmpdir(test_fixture: Path) -> Path:
 
     (tmpdir / ".specify" / "local-llm.json").write_text(json.dumps(LOCAL_LLM_CONFIG))
 
-    setup_git_repo(tmpdir, {TEST_FILE_IN_REPO: test_fixture},
-                   commit_message="Add health endpoint tests")
+    setup_git_repo(
+        tmpdir, {TEST_FILE_IN_REPO: test_fixture}, commit_message="Add health endpoint tests"
+    )
     return tmpdir
 
 
@@ -62,8 +63,11 @@ class TestTestCriticGoodTests(unittest.TestCase):
     def test_good_tests_pass(self):
         tmpdir = _setup_tmpdir(FIXTURES / "good" / "health.test.ts")
         result = run_critic(tmpdir, "test")
-        self.assertEqual(result["status"], "PASS",
-                         f"Expected PASS but got FAIL. Violations: {result.get('violations')}")
+        self.assertEqual(
+            result["status"],
+            "PASS",
+            f"Expected PASS but got FAIL. Violations: {result.get('violations')}",
+        )
 
 
 class TestTestCriticTestOnly(unittest.TestCase):
@@ -74,10 +78,13 @@ class TestTestCriticTestOnly(unittest.TestCase):
     def test_test_with_only_directive_fails(self):
         tmpdir = _setup_tmpdir(FIXTURES / "bad" / "health-test-with-only.ts")
         result = run_critic(tmpdir, "test")
-        self.assertEqual(result["status"], "FAIL",
-                         "Expected FAIL for test file using it.only")
-        assert_violations_match(self, result, r"only|§tq9|ci|spec.cover|sc-00",
-                                "Expected a CI readiness or spec coverage violation")
+        self.assertEqual(result["status"], "FAIL", "Expected FAIL for test file using it.only")
+        assert_violations_match(
+            self,
+            result,
+            r"only|§tq9|ci|spec.cover|sc-00",
+            "Expected a CI readiness or spec coverage violation",
+        )
 
 
 if __name__ == "__main__":

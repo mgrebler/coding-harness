@@ -32,26 +32,26 @@ Resume behaviour:
 import sys
 from pathlib import Path
 
-from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
+from architecture_critic import build_architecture_review_prompt
+from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
+from plan_critic import build_plan_critic_prompt
 
 from agent_common import (
-    read_file,
-    next_iteration,
-    make_logger,
-    log_sdk_message,
-    setup_log_file,
-    require_spec_files,
-    find_two_gate_resume_state,
-    format_violations_block,
+    GateSpec,
     extend_iterations_if_reviewed,
-    run_two_gate_loop,
+    find_two_gate_resume_state,
     finish_if_already_passing,
     finish_stage,
+    format_violations_block,
+    log_sdk_message,
+    make_logger,
+    next_iteration,
+    read_file,
+    require_spec_files,
     run_cli,
-    GateSpec,
+    run_two_gate_loop,
+    setup_log_file,
 )
-from plan_critic import build_plan_critic_prompt
-from architecture_critic import build_architecture_review_prompt
 
 AGENT_NAME = "plan-auto"
 CRITIC_RESULT_PREFIX = "plan-critic-result"
@@ -62,6 +62,7 @@ log = make_logger(AGENT_NAME)
 # ---------------------------------------------------------------------------
 # Pre-flight checks
 # ---------------------------------------------------------------------------
+
 
 def preflight(spec_dir: Path, feature: str) -> bool:
     """
@@ -96,6 +97,7 @@ def preflight(spec_dir: Path, feature: str) -> bool:
 # ---------------------------------------------------------------------------
 # Subagent definitions
 # ---------------------------------------------------------------------------
+
 
 def plan_agent_definition(constitution: str, spec: str, arch_principles: str) -> AgentDefinition:
     return AgentDefinition(
@@ -138,7 +140,9 @@ def critic_agent_definition(
     iteration: int,
     violations: list | None = None,
 ) -> AgentDefinition:
-    violations_block = format_violations_block(violations, iteration, "violations (already addressed by the plan agent)")
+    violations_block = format_violations_block(
+        violations, iteration, "violations (already addressed by the plan agent)"
+    )
 
     output_instructions = (
         f"- After producing JSON, write it to specs/$FEATURE/plan-critic-result-{iteration}.json using Bash\n"
@@ -147,7 +151,11 @@ def critic_agent_definition(
     return AgentDefinition(
         description="Validates plan.md against constitution.md, architecture.md, and spec.md. Returns structured JSON.",
         prompt=build_plan_critic_prompt(
-            constitution, architecture, spec, plan, iteration,
+            constitution,
+            architecture,
+            spec,
+            plan,
+            iteration,
             violations_block=violations_block,
             output_instructions=output_instructions,
         ),
@@ -164,7 +172,9 @@ def arch_review_agent_definition(
     iteration: int,
     arch_violations: list | None = None,
 ) -> AgentDefinition:
-    violations_block = format_violations_block(arch_violations, iteration, "architecture violations (already addressed by the plan agent)")
+    violations_block = format_violations_block(
+        arch_violations, iteration, "architecture violations (already addressed by the plan agent)"
+    )
 
     output_instructions = (
         f"- After producing JSON, write it to specs/$FEATURE/architecture-review-result-{iteration}.json using Bash\n"
@@ -173,7 +183,12 @@ def arch_review_agent_definition(
     return AgentDefinition(
         description="Reviews plan.md for architecture quality, best practices, and operational safety.",
         prompt=build_architecture_review_prompt(
-            constitution, architecture, spec, plan, arch_principles, iteration,
+            constitution,
+            architecture,
+            spec,
+            plan,
+            arch_principles,
+            iteration,
             violations_block=violations_block,
             output_instructions=output_instructions,
         ),
@@ -184,6 +199,7 @@ def arch_review_agent_definition(
 # ---------------------------------------------------------------------------
 # Main orchestration loop
 # ---------------------------------------------------------------------------
+
 
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
@@ -199,7 +215,11 @@ async def run(feature: str):
     architecture = read_file(arch_path) if arch_path.exists() else "(architecture.md not found)"
 
     arch_principles_path = Path(".specify/memory/architecture-principles.md")
-    arch_principles = read_file(arch_principles_path) if arch_principles_path.exists() else "(architecture-principles.md not found)"
+    arch_principles = (
+        read_file(arch_principles_path)
+        if arch_principles_path.exists()
+        else "(architecture-principles.md not found)"
+    )
 
     MAX_ITERATIONS, _skip_fix_agent = extend_iterations_if_reviewed(
         spec_dir, "plan-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
@@ -224,9 +244,15 @@ async def run(feature: str):
 
     # --- Resume guard: done if architecture review already passed ---
     if finish_if_already_passing(
-        log, spec_dir, AGENT_NAME, ARCH_RESULT_PREFIX, MAX_ITERATIONS, "architecture review",
+        log,
+        spec_dir,
+        AGENT_NAME,
+        ARCH_RESULT_PREFIX,
+        MAX_ITERATIONS,
+        "architecture review",
         "Plan is ready for human review. No further action taken.",
-        "after_plan", "plan",
+        "after_plan",
+        "plan",
     ):
         return
 
@@ -243,7 +269,9 @@ async def run(feature: str):
             if pending_label == "plan critic"
             else f"specs/{feature}/architecture-review-result-{pending_iter}.json"
         )
-        log(f"Running plan revision for {pending_label} violations from iteration {pending_iter}...")
+        log(
+            f"Running plan revision for {pending_label} violations from iteration {pending_iter}..."
+        )
         async for message in query(
             prompt=(
                 f"Revise plan.md for feature {feature}. "
@@ -260,7 +288,11 @@ async def run(feature: str):
 
     async def on_both_pass(arch_result: dict) -> None:
         finish_stage(
-            log, spec_dir, AGENT_NAME, "after_plan", "plan",
+            log,
+            spec_dir,
+            AGENT_NAME,
+            "after_plan",
+            "plan",
             "Plan is ready for human review. No further action taken.",
         )
 
@@ -293,7 +325,13 @@ async def run(feature: str):
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "architecture-review": arch_review_agent_definition(
-                        constitution, architecture, spec, plan, arch_principles, iteration, arch_violations
+                        constitution,
+                        architecture,
+                        spec,
+                        plan,
+                        arch_principles,
+                        iteration,
+                        arch_violations,
                     )
                 },
                 setting_sources=["project"],
@@ -302,33 +340,44 @@ async def run(feature: str):
 
     # --- Step 2: Two-gate loop (critic → architecture review) ---
     await run_two_gate_loop(
-        log, spec_dir, feature, MAX_ITERATIONS,
-        gate1=GateSpec(CRITIC_RESULT_PREFIX, "plan_critic.py", "plan", "plan critic", build_critic_query),
-        gate2=GateSpec(ARCH_RESULT_PREFIX, "architecture_critic.py", "architecture", "architecture review", build_arch_query),
+        log,
+        spec_dir,
+        feature,
+        MAX_ITERATIONS,
+        gate1=GateSpec(
+            CRITIC_RESULT_PREFIX, "plan_critic.py", "plan", "plan critic", build_critic_query
+        ),
+        gate2=GateSpec(
+            ARCH_RESULT_PREFIX,
+            "architecture_critic.py",
+            "architecture",
+            "architecture review",
+            build_arch_query,
+        ),
         resume_state=resume_state,
         skip_fix_agent=_skip_fix_agent,
         run_revision=run_revision,
         on_both_pass=on_both_pass,
-        escalation_kwargs=dict(
-            escalation_filename="plan-critic-escalation.md",
-            log_description="plan.md failed review",
-            review_history_prefixes=[
+        escalation_kwargs={
+            "escalation_filename": "plan-critic-escalation.md",
+            "log_description": "plan.md failed review",
+            "review_history_prefixes": [
                 (CRITIC_RESULT_PREFIX, "Plan Critic"),
                 (ARCH_RESULT_PREFIX, "Architecture Review"),
             ],
-            title="Plan Review Escalation",
-            summary=(
+            "title": "Plan Review Escalation",
+            "summary": (
                 "The automated plan review loop exhausted its iteration limit without producing\n"
                 "a plan that passed both the plan critic and the architecture review. Human review\n"
                 "is required to resolve the outstanding violations before planning can proceed."
             ),
-            required_action=(
+            "required_action": (
                 f"1. Review the violations above.\n"
                 f"2. Edit specs/{feature}/plan.md manually to address the BLOCKING violations.\n"
                 f"3. Re-run `python .claude/agents/plan-auto.py` to restart the automated loop,\n"
                 f"   or run `/speckit-plan-critic` and `/architecture-review-plan` manually to verify your fixes."
             ),
-        ),
+        },
     )
 
 

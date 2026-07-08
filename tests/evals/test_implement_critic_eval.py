@@ -46,11 +46,15 @@ def _setup_tmpdir(impl_fixture: Path) -> Path:
 
     (tmpdir / ".specify" / "local-llm.json").write_text(json.dumps(LOCAL_LLM_CONFIG))
 
-    setup_git_repo(tmpdir, {
-        IMPL_FILE_IN_REPO: impl_fixture,
-        INDEX_FILE_IN_REPO: FIXTURES / "good" / "index.ts",
-        TEST_FILE_IN_REPO: FIXTURES / "good" / "health.test.ts",
-    }, commit_message="Implement health endpoint")
+    setup_git_repo(
+        tmpdir,
+        {
+            IMPL_FILE_IN_REPO: impl_fixture,
+            INDEX_FILE_IN_REPO: FIXTURES / "good" / "index.ts",
+            TEST_FILE_IN_REPO: FIXTURES / "good" / "health.test.ts",
+        },
+        commit_message="Implement health endpoint",
+    )
     return tmpdir
 
 
@@ -62,8 +66,11 @@ class TestImplementCriticGoodImpl(unittest.TestCase):
     def test_correct_implementation_passes(self):
         tmpdir = _setup_tmpdir(FIXTURES / "good" / "health.ts")
         result = run_critic(tmpdir, "implement")
-        self.assertEqual(result["status"], "PASS",
-                         f"Expected PASS but got FAIL. Violations: {result.get('violations')}")
+        self.assertEqual(
+            result["status"],
+            "PASS",
+            f"Expected PASS but got FAIL. Violations: {result.get('violations')}",
+        )
 
 
 class TestImplementCriticWrongResponse(unittest.TestCase):
@@ -74,10 +81,17 @@ class TestImplementCriticWrongResponse(unittest.TestCase):
     def test_implementation_with_wrong_path_and_response_fails(self):
         tmpdir = _setup_tmpdir(FIXTURES / "bad" / "health-wrong-response.ts")
         result = run_critic(tmpdir, "implement")
-        self.assertEqual(result["status"], "FAIL",
-                         "Expected FAIL for implementation using /status instead of /health and wrong response shape")
-        assert_violations_match(self, result, r"spec|fr-001|§i7|health|status|compliance",
-                                "Expected a spec compliance violation")
+        self.assertEqual(
+            result["status"],
+            "FAIL",
+            "Expected FAIL for implementation using /status instead of /health and wrong response shape",
+        )
+        assert_violations_match(
+            self,
+            result,
+            r"spec|fr-001|§i7|health|status|compliance",
+            "Expected a spec compliance violation",
+        )
 
 
 if __name__ == "__main__":

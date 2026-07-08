@@ -66,6 +66,7 @@ def setup_git_repo(
 
     files: mapping of repo-relative path (str) → source fixture path (Path or str)
     """
+
     def git(*args):
         subprocess.run(["git", *args], cwd=tmpdir, check=True, capture_output=True)
 
@@ -89,7 +90,6 @@ def assert_violations_match(
 ) -> None:
     """Assert that at least one violation's rule+finding matches the regex pattern."""
     rule_texts = " ".join(
-        v.get("rule", "") + " " + v.get("finding", "")
-        for v in result.get("violations", [])
+        v.get("rule", "") + " " + v.get("finding", "") for v in result.get("violations", [])
     )
     tc.assertRegex(rule_texts.lower(), pattern, msg)

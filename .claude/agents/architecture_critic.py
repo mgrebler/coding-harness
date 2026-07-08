@@ -111,13 +111,19 @@ def main():
 
         constitution = constitution_path.read_text(encoding="utf-8")
         architecture = read_optional(architecture_path, "(architecture.md not found)")
-        arch_principles = read_optional(arch_principles_path, "(architecture-principles.md not found)")
+        arch_principles = read_optional(
+            arch_principles_path, "(architecture-principles.md not found)"
+        )
         spec = spec_path.read_text(encoding="utf-8")
         plan = plan_path.read_text(encoding="utf-8")
 
-        return build_architecture_review_prompt(constitution, architecture, spec, plan, arch_principles, iteration)
+        return build_architecture_review_prompt(
+            constitution, architecture, spec, plan, arch_principles, iteration
+        )
 
-    run_local_critic_cli("architecture-review", "architecture", RESULT_PREFIX, _build, summary_style="confidence")
+    run_local_critic_cli(
+        "architecture-review", "architecture", RESULT_PREFIX, _build, summary_style="confidence"
+    )
 
 
 if __name__ == "__main__":

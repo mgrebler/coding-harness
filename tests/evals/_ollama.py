@@ -16,11 +16,14 @@ def require_ollama(ollama_url: str, model: str):
         with urllib.request.urlopen(tags_url, timeout=5) as resp:
             data = json.loads(resp.read())
     except Exception as e:
-        raise unittest.SkipTest(f"Ollama not reachable at {ollama_url}: {e}")
+        raise unittest.SkipTest(f"Ollama not reachable at {ollama_url}: {e}") from e
 
     available = [m["name"] for m in data.get("models", [])]
     # Allow both "name" and "name:tag" matches
-    if not any(m == model or m.startswith(model + ":") or model.startswith(m.split(":")[0]) for m in available):
+    if not any(
+        m == model or m.startswith(model + ":") or model.startswith(m.split(":")[0])
+        for m in available
+    ):
         raise unittest.SkipTest(
             f"Model '{model}' not available in Ollama. "
             f"Available: {available}. "

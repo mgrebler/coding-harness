@@ -47,8 +47,11 @@ class TestPlanCriticGoodPlan(unittest.TestCase):
     def test_good_plan_passes(self):
         tmpdir = _setup_tmpdir(FIXTURES / "good" / "plan.md")
         result = run_critic(tmpdir, "plan")
-        self.assertEqual(result["status"], "PASS",
-                         f"Expected PASS but got FAIL. Violations: {result.get('violations')}")
+        self.assertEqual(
+            result["status"],
+            "PASS",
+            f"Expected PASS but got FAIL. Violations: {result.get('violations')}",
+        )
 
 
 class TestPlanCriticMissingTraceability(unittest.TestCase):
@@ -59,10 +62,17 @@ class TestPlanCriticMissingTraceability(unittest.TestCase):
     def test_plan_without_spec_references_fails(self):
         tmpdir = _setup_tmpdir(FIXTURES / "bad" / "plan-missing-traceability.md")
         result = run_critic(tmpdir, "plan")
-        self.assertEqual(result["status"], "FAIL",
-                         "Expected FAIL for plan that doesn't reference spec requirements")
-        assert_violations_match(self, result, r"traceab|fr-001|sc-001|acceptance",
-                                "Expected a traceability violation citing spec requirements")
+        self.assertEqual(
+            result["status"],
+            "FAIL",
+            "Expected FAIL for plan that doesn't reference spec requirements",
+        )
+        assert_violations_match(
+            self,
+            result,
+            r"traceab|fr-001|sc-001|acceptance",
+            "Expected a traceability violation citing spec requirements",
+        )
 
 
 class TestPlanCriticStackViolation(unittest.TestCase):
@@ -73,10 +83,17 @@ class TestPlanCriticStackViolation(unittest.TestCase):
     def test_plan_using_banned_framework_fails(self):
         tmpdir = _setup_tmpdir(FIXTURES / "bad" / "plan-stack-violation.md")
         result = run_critic(tmpdir, "plan")
-        self.assertEqual(result["status"], "FAIL",
-                         "Expected FAIL for plan proposing Express (banned by constitution)")
-        assert_violations_match(self, result, r"express|stack|constitution|prohibit|hono",
-                                "Expected a stack constraint violation mentioning Express or Hono")
+        self.assertEqual(
+            result["status"],
+            "FAIL",
+            "Expected FAIL for plan proposing Express (banned by constitution)",
+        )
+        assert_violations_match(
+            self,
+            result,
+            r"express|stack|constitution|prohibit|hono",
+            "Expected a stack constraint violation mentioning Express or Hono",
+        )
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Repo Is
 
-**coding-harness** is a spec-driven, AI-assisted feature development harness that gets installed into other projects. It is not a runnable application — there are no build or test commands for the harness itself. The primary operation is `install.sh`.
+**coding-harness** is a spec-driven, AI-assisted feature development harness that gets installed into other projects. It is not a runnable application — there are no build or test commands for the harness itself. The primary operation is `install.sh`. The one exception is linting/formatting the harness's own Python source (`.claude/agents/`, `tests/`): `ruff check .` and `ruff format .`, config in `pyproject.toml`.
 
 **Install into a project:**
 ```bash

@@ -56,7 +56,9 @@ def build_quality_review_prompt(
             "5. Evaluate against all automatic fail conditions, severity rules, core principles, and heuristics in the CODE QUALITY PRINCIPLES section above"
         )
     else:
-        review_process = f"--- CHANGED SOURCE FILES (git diff main...HEAD) ---\n{changed_files_section}"
+        review_process = (
+            f"--- CHANGED SOURCE FILES (git diff main...HEAD) ---\n{changed_files_section}"
+        )
 
     tail = (
         "- status is FAIL if any Critical issue exists, more than 2 High issues exist, or confidence < 7\n"
@@ -135,7 +137,9 @@ def main():
         require_files("code-quality-review", constitution_path, spec_path, plan_path, tasks_path)
 
         constitution = constitution_path.read_text(encoding="utf-8")
-        quality_principles = read_optional(quality_principles_path, "(code-quality-principles.md not found)")
+        quality_principles = read_optional(
+            quality_principles_path, "(code-quality-principles.md not found)"
+        )
         spec = spec_path.read_text(encoding="utf-8")
         plan = plan_path.read_text(encoding="utf-8")
         tasks = tasks_path.read_text(encoding="utf-8")
@@ -143,11 +147,18 @@ def main():
         changed_sources = read_changed_source_files(get_changed_files())
 
         return build_quality_review_prompt(
-            constitution, spec, plan, tasks, quality_principles, iteration,
+            constitution,
+            spec,
+            plan,
+            tasks,
+            quality_principles,
+            iteration,
             changed_files_section=changed_sources,
         )
 
-    run_local_critic_cli("code-quality-review", "quality", RESULT_PREFIX, _build, summary_style="confidence")
+    run_local_critic_cli(
+        "code-quality-review", "quality", RESULT_PREFIX, _build, summary_style="confidence"
+    )
 
 
 if __name__ == "__main__":

@@ -34,25 +34,25 @@ import json
 import sys
 from pathlib import Path
 
-from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
+from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
+from test_critic import build_test_critic_prompt
 
 from agent_common import (
-    read_file,
-    next_iteration,
-    make_logger,
-    log_sdk_message,
-    setup_log_file,
-    load_prior_violations,
-    format_violations_block,
+    GateSpec,
     extend_iterations_if_reviewed,
-    run_single_gate_loop,
     finish_if_already_passing,
     finish_stage,
-    run_cli,
-    GateSpec,
+    format_violations_block,
+    load_prior_violations,
+    log_sdk_message,
+    make_logger,
+    next_iteration,
+    read_file,
     require_spec_files,
+    run_cli,
+    run_single_gate_loop,
+    setup_log_file,
 )
-from test_critic import build_test_critic_prompt
 
 AGENT_NAME = "test-auto"
 CRITIC_RESULT_PREFIX = "test-critic-result"
@@ -62,6 +62,7 @@ log = make_logger(AGENT_NAME)
 # ---------------------------------------------------------------------------
 # Pre-flight checks
 # ---------------------------------------------------------------------------
+
 
 def preflight(spec_dir: Path, feature: str):
     require_spec_files(log, spec_dir, "spec.md", "plan.md", "tasks.md")
@@ -81,10 +82,14 @@ def preflight(spec_dir: Path, feature: str):
 
     if test_tasks_done and not existing_results:
         if sys.stdin.isatty():
-            response = input(
-                f"[{AGENT_NAME}] WARNING: All [TEST] tasks appear complete but no critic result exists. "
-                f"Run critic on existing test files? (yes/no): "
-            ).strip().lower()
+            response = (
+                input(
+                    f"[{AGENT_NAME}] WARNING: All [TEST] tasks appear complete but no critic result exists. "
+                    f"Run critic on existing test files? (yes/no): "
+                )
+                .strip()
+                .lower()
+            )
         else:
             log("Non-interactive mode: defaulting to running critic on existing test files.")
             response = "yes"
@@ -96,6 +101,7 @@ def preflight(spec_dir: Path, feature: str):
 # ---------------------------------------------------------------------------
 # Subagent definitions
 # ---------------------------------------------------------------------------
+
 
 def test_agent_definition(
     constitution: str,
@@ -177,7 +183,13 @@ def test_critic_agent_definition(
     return AgentDefinition(
         description="Validates test files against test-principles.md, spec.md, and constitution.md.",
         prompt=build_test_critic_prompt(
-            constitution, spec, plan, tasks, test_principles, feature, iteration,
+            constitution,
+            spec,
+            plan,
+            tasks,
+            test_principles,
+            feature,
+            iteration,
             violations_block=violations_block,
             output_instructions=output_instructions,
         ),
@@ -235,6 +247,7 @@ Key rules:
 # Main orchestration loop
 # ---------------------------------------------------------------------------
 
+
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -248,17 +261,18 @@ async def run(feature: str):
     tasks = read_file(spec_dir / "tasks.md")
 
     test_principles_path = Path(".specify/memory/test-principles.md")
-    test_principles = read_file(test_principles_path) if test_principles_path.exists() else "(test-principles.md not found)"
+    test_principles = (
+        read_file(test_principles_path)
+        if test_principles_path.exists()
+        else "(test-principles.md not found)"
+    )
 
     MAX_ITERATIONS, _skip_fix_agent = extend_iterations_if_reviewed(
         spec_dir, "test-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
     )
 
     # --- Step 1: Run test agent if unchecked [TEST] tasks remain ---
-    has_unchecked_tests = any(
-        "- [ ]" in line and "[TEST]" in line
-        for line in tasks.splitlines()
-    )
+    has_unchecked_tests = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
 
     if has_unchecked_tests:
         log("Running test agent...")
@@ -282,20 +296,25 @@ async def run(feature: str):
             log_sdk_message(message, prefix="  ")
 
         tasks = read_file(spec_dir / "tasks.md")
-        still_unchecked = any(
-            "- [ ]" in line and "[TEST]" in line
-            for line in tasks.splitlines()
-        )
+        still_unchecked = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
         if still_unchecked:
-            log("WARNING: test agent did not complete all [TEST] tasks. Proceeding to critic anyway.")
+            log(
+                "WARNING: test agent did not complete all [TEST] tasks. Proceeding to critic anyway."
+            )
     else:
         log("All [TEST] tasks already checked off — skipping test agent.")
 
     # --- Resume guard: done if critic already passed ---
     if finish_if_already_passing(
-        log, spec_dir, AGENT_NAME, CRITIC_RESULT_PREFIX, MAX_ITERATIONS, "test critic",
+        log,
+        spec_dir,
+        AGENT_NAME,
+        CRITIC_RESULT_PREFIX,
+        MAX_ITERATIONS,
+        "test critic",
         "Test phase is ready for human review. No further action taken.",
-        "after_test", "test",
+        "after_test",
+        "test",
     ):
         return
 
@@ -305,7 +324,9 @@ async def run(feature: str):
 
     async def run_fix(pending_iter: int, pending_violations: list) -> None:
         tasks_content = read_file(spec_dir / "tasks.md")
-        log(f"Running fix agent for critic violations from iteration {pending_iter} ({len(pending_violations)} issue(s))...")
+        log(
+            f"Running fix agent for critic violations from iteration {pending_iter} ({len(pending_violations)} issue(s))..."
+        )
         async for message in query(
             prompt=(
                 f"Fix test critic violations for feature {feature}. "
@@ -325,7 +346,11 @@ async def run(feature: str):
 
     async def on_pass(result: dict) -> None:
         finish_stage(
-            log, spec_dir, AGENT_NAME, "after_test", "test",
+            log,
+            spec_dir,
+            AGENT_NAME,
+            "after_test",
+            "test",
             "Test phase complete. Implementation may now begin.",
         )
 
@@ -340,8 +365,14 @@ async def run(feature: str):
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "test-critic": test_critic_agent_definition(
-                        constitution, spec, plan, tasks_content, test_principles,
-                        feature, iteration, prev_violations
+                        constitution,
+                        spec,
+                        plan,
+                        tasks_content,
+                        test_principles,
+                        feature,
+                        iteration,
+                        prev_violations,
                     )
                 },
                 setting_sources=["project"],
@@ -350,30 +381,35 @@ async def run(feature: str):
 
     # --- Step 2: Critic loop ---
     await run_single_gate_loop(
-        log, spec_dir, feature, MAX_ITERATIONS,
-        gate=GateSpec(CRITIC_RESULT_PREFIX, "test_critic.py", "test", "test critic", build_critic_query),
+        log,
+        spec_dir,
+        feature,
+        MAX_ITERATIONS,
+        gate=GateSpec(
+            CRITIC_RESULT_PREFIX, "test_critic.py", "test", "test critic", build_critic_query
+        ),
         resume_state=(iteration, critic_violations),
         skip_fix_agent=_skip_fix_agent,
         run_fix=run_fix,
         on_pass=on_pass,
-        escalation_kwargs=dict(
-            escalation_filename="test-critic-escalation.md",
-            log_description="test phase failed critic",
-            review_history_prefixes=[(CRITIC_RESULT_PREFIX, "Test Critic")],
-            title="Test Critic Escalation",
-            summary=(
+        escalation_kwargs={
+            "escalation_filename": "test-critic-escalation.md",
+            "log_description": "test phase failed critic",
+            "review_history_prefixes": [(CRITIC_RESULT_PREFIX, "Test Critic")],
+            "title": "Test Critic Escalation",
+            "summary": (
                 "The automated test-critic loop exhausted its iteration limit without producing\n"
                 "test files that passed all critic rules. Human review is required to resolve\n"
                 "the outstanding violations before implementation can begin."
             ),
-            required_action=(
+            "required_action": (
                 "1. Review the violations above.\n"
                 "2. Fix the BLOCKING violations manually in the test files.\n"
-                f"3. Re-run `python .claude/agents/test-auto.py` to restart the automated loop,\n"
-                f"   or run `/speckit-test-critic` manually to verify your fixes.\n"
+                "3. Re-run `python .claude/agents/test-auto.py` to restart the automated loop,\n"
+                "   or run `/speckit-test-critic` manually to verify your fixes.\n"
                 "4. Once the critic passes, run `/speckit-implement-auto` to start implementation."
             ),
-        ),
+        },
     )
 
 

@@ -30,8 +30,16 @@ CRITIC_RESULT_PREFIX = "test-critic-result"
 TEST_DIRS = ("backend/tests/", "frontend/tests/")
 
 _ASSERTION_KEYWORDS = (
-    "expect(", "assert.", "toBe(", "toEqual(", "toContain(", "toMatch(",
-    "toBeTruthy", "toBeFalsy", "toHaveLength", "toHaveBeenCalled",
+    "expect(",
+    "assert.",
+    "toBe(",
+    "toEqual(",
+    "toContain(",
+    "toMatch(",
+    "toBeTruthy",
+    "toBeFalsy",
+    "toHaveLength",
+    "toHaveBeenCalled",
 )
 
 
@@ -140,12 +148,16 @@ def build_test_critic_prompt(
             "6. Validate against every rule below"
         )
     else:
-        test_results_block = f"\n--- RED-STATE ARTIFACTS (specs/{feature}/test-results/) ---\n{test_results or '(none)'}" if test_results is not None else ""
+        test_results_block = (
+            f"\n--- RED-STATE ARTIFACTS (specs/{feature}/test-results/) ---\n{test_results or '(none)'}"
+            if test_results is not None
+            else ""
+        )
         file_input = f"--- CHANGED TEST FILES (git diff main...HEAD, test paths only) ---\n{changed_files_section}{test_results_block}"
 
     tail = (
-        f"- status is FAIL if any violation is BLOCKING\n"
-        f"- status is PASS only if zero BLOCKING violations"
+        "- status is FAIL if any violation is BLOCKING\n"
+        "- status is PASS only if zero BLOCKING violations"
     )
     if output_instructions:
         tail += f"\n{output_instructions}"
@@ -245,7 +257,13 @@ def main():
         test_results = read_test_results(spec_dir)
 
         return build_test_critic_prompt(
-            constitution, spec, plan, tasks, test_principles, feature, iteration,
+            constitution,
+            spec,
+            plan,
+            tasks,
+            test_principles,
+            feature,
+            iteration,
             architecture=architecture,
             changed_files_section=changed_test_files,
             test_results=test_results,

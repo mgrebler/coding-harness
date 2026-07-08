@@ -46,11 +46,15 @@ def _setup_tmpdir(impl_fixture: Path) -> Path:
 
     (tmpdir / ".specify" / "local-llm.json").write_text(json.dumps(LOCAL_LLM_CONFIG))
 
-    setup_git_repo(tmpdir, {
-        IMPL_FILE_IN_REPO: impl_fixture,
-        INDEX_FILE_IN_REPO: FIXTURES / "good" / "index.ts",
-        TEST_FILE_IN_REPO: FIXTURES / "good" / "health.test.ts",
-    }, commit_message="Implement health endpoint")
+    setup_git_repo(
+        tmpdir,
+        {
+            IMPL_FILE_IN_REPO: impl_fixture,
+            INDEX_FILE_IN_REPO: FIXTURES / "good" / "index.ts",
+            TEST_FILE_IN_REPO: FIXTURES / "good" / "health.test.ts",
+        },
+        commit_message="Implement health endpoint",
+    )
     return tmpdir
 
 
@@ -62,8 +66,11 @@ class TestQualityReviewGoodImpl(unittest.TestCase):
     def test_clean_implementation_passes(self):
         tmpdir = _setup_tmpdir(FIXTURES / "good" / "health.ts")
         result = run_critic(tmpdir, "quality", result_prefix=RESULT_PREFIX)
-        self.assertEqual(result["status"], "PASS",
-                         f"Expected PASS but got FAIL. Blocking issues: {result.get('blocking_issues')}")
+        self.assertEqual(
+            result["status"],
+            "PASS",
+            f"Expected PASS but got FAIL. Blocking issues: {result.get('blocking_issues')}",
+        )
 
 
 class TestQualityReviewSwallowedException(unittest.TestCase):
@@ -74,14 +81,20 @@ class TestQualityReviewSwallowedException(unittest.TestCase):
     def test_swallowed_exception_fails(self):
         tmpdir = _setup_tmpdir(FIXTURES / "bad" / "health-swallowed-exception.ts")
         result = run_critic(tmpdir, "quality", result_prefix=RESULT_PREFIX)
-        self.assertEqual(result["status"], "FAIL",
-                         "Expected FAIL for a handler with an empty catch block that swallows errors")
+        self.assertEqual(
+            result["status"],
+            "FAIL",
+            "Expected FAIL for a handler with an empty catch block that swallows errors",
+        )
         rule_texts = " ".join(
             issue.get("title", "") + " " + issue.get("finding", "")
             for issue in result.get("blocking_issues", [])
         )
-        self.assertRegex(rule_texts.lower(), r"swallow|catch|silent|exception|error handling",
-                         "Expected a blocking issue citing the swallowed exception")
+        self.assertRegex(
+            rule_texts.lower(),
+            r"swallow|catch|silent|exception|error handling",
+            "Expected a blocking issue citing the swallowed exception",
+        )
 
 
 if __name__ == "__main__":

@@ -64,7 +64,10 @@ def _analyze_task_format(tasks: str) -> str:
 
     parts = []
     if complete_tasks:
-        parts.append("Complete machine-readable tasks ([Txxx] [TEST|IMPL] [PX] [USX] format):\n" + "\n".join(complete_tasks))
+        parts.append(
+            "Complete machine-readable tasks ([Txxx] [TEST|IMPL] [PX] [USX] format):\n"
+            + "\n".join(complete_tasks)
+        )
     if incomplete_tasks:
         parts.append(
             "Incomplete [Txxx] tasks — VIOLATE §T5 (required components missing):\n"
@@ -98,8 +101,8 @@ def build_tasks_critic_prompt(
     task_format_analysis: str = "",
 ) -> str:
     tail = (
-        f"- status is FAIL if any violation is BLOCKING\n"
-        f"- status is PASS only if zero BLOCKING violations"
+        "- status is FAIL if any violation is BLOCKING\n"
+        "- status is PASS only if zero BLOCKING violations"
     )
     if output_instructions:
         tail += f"\n{output_instructions}"
@@ -190,8 +193,9 @@ def main():
         tasks = tasks_path.read_text(encoding="utf-8")
 
         task_format_analysis = _analyze_task_format(tasks)
-        return build_tasks_critic_prompt(constitution, spec, plan, tasks, iteration,
-                                          task_format_analysis=task_format_analysis)
+        return build_tasks_critic_prompt(
+            constitution, spec, plan, tasks, iteration, task_format_analysis=task_format_analysis
+        )
 
     run_local_critic_cli("tasks-critic", "tasks", CRITIC_RESULT_PREFIX, _build)
 

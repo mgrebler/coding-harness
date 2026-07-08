@@ -26,25 +26,25 @@ Resume behaviour:
 import sys
 from pathlib import Path
 
-from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
+from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
+from tasks_critic import build_tasks_critic_prompt
 
 from agent_common import (
-    read_file,
-    next_iteration,
-    make_logger,
-    log_sdk_message,
-    setup_log_file,
-    load_prior_violations,
-    format_violations_block,
+    GateSpec,
     extend_iterations_if_reviewed,
-    run_single_gate_loop,
     finish_if_already_passing,
     finish_stage,
-    run_cli,
-    GateSpec,
+    format_violations_block,
+    load_prior_violations,
+    log_sdk_message,
+    make_logger,
+    next_iteration,
+    read_file,
     require_spec_files,
+    run_cli,
+    run_single_gate_loop,
+    setup_log_file,
 )
-from tasks_critic import build_tasks_critic_prompt
 
 AGENT_NAME = "tasks-auto"
 RESULT_PREFIX = "tasks-critic-result"
@@ -54,6 +54,7 @@ log = make_logger(AGENT_NAME)
 # ---------------------------------------------------------------------------
 # Pre-flight checks
 # ---------------------------------------------------------------------------
+
 
 def preflight(spec_dir: Path, feature: str) -> bool:
     """
@@ -89,7 +90,10 @@ def preflight(spec_dir: Path, feature: str) -> bool:
 # Subagent definitions
 # ---------------------------------------------------------------------------
 
-def tasks_agent_definition(constitution: str, spec: str, plan: str, data_model: str) -> AgentDefinition:
+
+def tasks_agent_definition(
+    constitution: str, spec: str, plan: str, data_model: str
+) -> AgentDefinition:
     data_model_block = f"\n--- DATA MODEL ---\n{data_model}" if data_model else ""
     return AgentDefinition(
         description="Generates tasks.md for the current feature from plan.md, spec.md, and supporting artifacts.",
@@ -135,7 +139,9 @@ def critic_agent_definition(
     iteration: int,
     violations: list | None = None,
 ) -> AgentDefinition:
-    violations_block = format_violations_block(violations, iteration, "violations (already addressed by the tasks agent)")
+    violations_block = format_violations_block(
+        violations, iteration, "violations (already addressed by the tasks agent)"
+    )
 
     output_instructions = (
         f"- After producing JSON, write it to specs/$FEATURE/tasks-critic-result-{iteration}.json using Bash\n"
@@ -144,7 +150,11 @@ def critic_agent_definition(
     return AgentDefinition(
         description="Validates tasks.md against plan.md, spec.md, and constitution.md. Returns structured JSON.",
         prompt=build_tasks_critic_prompt(
-            constitution, spec, plan, tasks, iteration,
+            constitution,
+            spec,
+            plan,
+            tasks,
+            iteration,
             violations_block=violations_block,
             output_instructions=output_instructions,
         ),
@@ -155,6 +165,7 @@ def critic_agent_definition(
 # ---------------------------------------------------------------------------
 # Main orchestration loop
 # ---------------------------------------------------------------------------
+
 
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
@@ -195,9 +206,15 @@ async def run(feature: str):
 
     # --- Resume guard: exit if a previous run already achieved PASS ---
     if finish_if_already_passing(
-        log, spec_dir, AGENT_NAME, RESULT_PREFIX, MAX_ITERATIONS, "tasks critic",
+        log,
+        spec_dir,
+        AGENT_NAME,
+        RESULT_PREFIX,
+        MAX_ITERATIONS,
+        "tasks critic",
         "Tasks are ready for human review. No further action taken.",
-        "after_tasks", "tasks",
+        "after_tasks",
+        "tasks",
     ):
         return
 
@@ -206,7 +223,9 @@ async def run(feature: str):
     violations = load_prior_violations(spec_dir, RESULT_PREFIX, iteration)
 
     async def run_fix(pending_iter: int, pending_violations: list) -> None:
-        log(f"Running revision agent to address {len(pending_violations)} violation(s) from iteration {pending_iter}...")
+        log(
+            f"Running revision agent to address {len(pending_violations)} violation(s) from iteration {pending_iter}..."
+        )
         async for message in query(
             prompt=(
                 f"Revise tasks.md for feature {feature} to fix critic violations. "
@@ -225,7 +244,11 @@ async def run(feature: str):
 
     async def on_pass(result: dict) -> None:
         finish_stage(
-            log, spec_dir, AGENT_NAME, "after_tasks", "tasks",
+            log,
+            spec_dir,
+            AGENT_NAME,
+            "after_tasks",
+            "tasks",
             "Tasks are ready for human review. No further action taken.",
         )
 
@@ -249,29 +272,34 @@ async def run(feature: str):
 
     # --- Step 2: Critic loop ---
     await run_single_gate_loop(
-        log, spec_dir, feature, MAX_ITERATIONS,
-        gate=GateSpec(RESULT_PREFIX, "tasks_critic.py", "tasks", "tasks critic", build_critic_query),
+        log,
+        spec_dir,
+        feature,
+        MAX_ITERATIONS,
+        gate=GateSpec(
+            RESULT_PREFIX, "tasks_critic.py", "tasks", "tasks critic", build_critic_query
+        ),
         resume_state=(iteration, violations),
         skip_fix_agent=_skip_fix_agent,
         run_fix=run_fix,
         on_pass=on_pass,
-        escalation_kwargs=dict(
-            escalation_filename="tasks-critic-escalation.md",
-            log_description="tasks.md failed critic review",
-            review_history_prefixes=[(RESULT_PREFIX, "Tasks Critic")],
-            title="Tasks Critic Escalation",
-            summary=(
+        escalation_kwargs={
+            "escalation_filename": "tasks-critic-escalation.md",
+            "log_description": "tasks.md failed critic review",
+            "review_history_prefixes": [(RESULT_PREFIX, "Tasks Critic")],
+            "title": "Tasks Critic Escalation",
+            "summary": (
                 "The automated tasks-critic loop exhausted its iteration limit without producing\n"
                 "a passing tasks.md. Human review is required to resolve the outstanding violations\n"
                 "before task execution can proceed."
             ),
-            required_action=(
+            "required_action": (
                 f"1. Review the violations above.\n"
                 f"2. Edit specs/{feature}/tasks.md manually to address the BLOCKING violations.\n"
                 f"3. Re-run `python .claude/agents/tasks-auto.py` to restart the automated loop,\n"
                 f"   or run `/speckit-tasks-critic` manually to verify your fixes."
             ),
-        ),
+        },
     )
 
 

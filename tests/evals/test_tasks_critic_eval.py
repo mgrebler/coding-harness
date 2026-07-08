@@ -47,8 +47,11 @@ class TestTasksCriticGoodTasks(unittest.TestCase):
     def test_good_tasks_passes(self):
         tmpdir = _setup_tmpdir(FIXTURES / "good" / "tasks.md")
         result = run_critic(tmpdir, "tasks")
-        self.assertEqual(result["status"], "PASS",
-                         f"Expected PASS but got FAIL. Violations: {result.get('violations')}")
+        self.assertEqual(
+            result["status"],
+            "PASS",
+            f"Expected PASS but got FAIL. Violations: {result.get('violations')}",
+        )
 
 
 class TestTasksCriticWrongFormat(unittest.TestCase):
@@ -59,10 +62,12 @@ class TestTasksCriticWrongFormat(unittest.TestCase):
     def test_tasks_without_required_format_fails(self):
         tmpdir = _setup_tmpdir(FIXTURES / "bad" / "tasks-wrong-format.md")
         result = run_critic(tmpdir, "tasks")
-        self.assertEqual(result["status"], "FAIL",
-                         "Expected FAIL for tasks without [TEST]/[IMPL] format")
-        assert_violations_match(self, result, r"test|impl|format|§t",
-                                "Expected a format/structure violation")
+        self.assertEqual(
+            result["status"], "FAIL", "Expected FAIL for tasks without [TEST]/[IMPL] format"
+        )
+        assert_violations_match(
+            self, result, r"test|impl|format|§t", "Expected a format/structure violation"
+        )
 
 
 class TestTasksCriticNoStoryLabels(unittest.TestCase):
@@ -73,10 +78,12 @@ class TestTasksCriticNoStoryLabels(unittest.TestCase):
     def test_tasks_without_story_labels_fails(self):
         tmpdir = _setup_tmpdir(FIXTURES / "bad" / "tasks-no-story-labels.md")
         result = run_critic(tmpdir, "tasks")
-        self.assertEqual(result["status"], "FAIL",
-                         "Expected FAIL for tasks missing US story labels")
-        assert_violations_match(self, result, r"story|us1|label|traceab|§t",
-                                "Expected a story traceability violation")
+        self.assertEqual(
+            result["status"], "FAIL", "Expected FAIL for tasks missing US story labels"
+        )
+        assert_violations_match(
+            self, result, r"story|us1|label|traceab|§t", "Expected a story traceability violation"
+        )
 
 
 if __name__ == "__main__":

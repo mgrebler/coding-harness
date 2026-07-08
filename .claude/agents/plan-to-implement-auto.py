@@ -45,10 +45,10 @@ import sys
 from pathlib import Path
 
 from agent_common import (
+    find_passing_iteration,
     get_feature_from_branch,
     make_logger,
     setup_log_file,
-    find_passing_iteration,
     stage_is_complete,
 )
 
@@ -64,6 +64,7 @@ IMPL_QUALITY_PREFIX = "code-quality-review-result"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def stream_subprocess(cmd: list[str]) -> int:
     """
@@ -87,7 +88,9 @@ def stream_subprocess(cmd: list[str]) -> int:
 def get_current_branch() -> str:
     result = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -95,6 +98,7 @@ def get_current_branch() -> str:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
@@ -113,52 +117,56 @@ def run(feature: str):
     log("Stages: plan-auto → tasks-auto → test-auto → implement-auto")
 
     # --- Stage 1: Plan ---
-    if stage_is_complete(spec_dir, "plan") or find_passing_iteration(spec_dir, PLAN_ARCH_PREFIX) is not None:
+    if (
+        stage_is_complete(spec_dir, "plan")
+        or find_passing_iteration(spec_dir, PLAN_ARCH_PREFIX) is not None
+    ):
         log("Stage 1/4 (plan): already complete — skipping.")
     else:
         log("Stage 1/4 (plan): running plan-auto...")
-        rc = stream_subprocess(
-            ["python", ".claude/agents/plan-auto.py", "--feature", feature]
-        )
+        rc = stream_subprocess(["python", ".claude/agents/plan-auto.py", "--feature", feature])
         if rc != 0:
             log("Stage 1/4 (plan): FAILED. Review plan-critic-escalation.md and re-run.")
             sys.exit(1)
         log("Stage 1/4 (plan): PASSED.")
 
     # --- Stage 2: Tasks ---
-    if stage_is_complete(spec_dir, "tasks") or find_passing_iteration(spec_dir, TASKS_CRITIC_PREFIX) is not None:
+    if (
+        stage_is_complete(spec_dir, "tasks")
+        or find_passing_iteration(spec_dir, TASKS_CRITIC_PREFIX) is not None
+    ):
         log("Stage 2/4 (tasks): already complete — skipping.")
     else:
         log("Stage 2/4 (tasks): running tasks-auto...")
-        rc = stream_subprocess(
-            ["python", ".claude/agents/tasks-auto.py", "--feature", feature]
-        )
+        rc = stream_subprocess(["python", ".claude/agents/tasks-auto.py", "--feature", feature])
         if rc != 0:
             log("Stage 2/4 (tasks): FAILED. Review tasks-critic-escalation.md and re-run.")
             sys.exit(1)
         log("Stage 2/4 (tasks): PASSED.")
 
     # --- Stage 3: Test ---
-    if stage_is_complete(spec_dir, "test") or find_passing_iteration(spec_dir, TEST_CRITIC_PREFIX) is not None:
+    if (
+        stage_is_complete(spec_dir, "test")
+        or find_passing_iteration(spec_dir, TEST_CRITIC_PREFIX) is not None
+    ):
         log("Stage 3/4 (test): already complete — skipping.")
     else:
         log("Stage 3/4 (test): running test-auto...")
-        rc = stream_subprocess(
-            ["python", ".claude/agents/test-auto.py", "--feature", feature]
-        )
+        rc = stream_subprocess(["python", ".claude/agents/test-auto.py", "--feature", feature])
         if rc != 0:
             log("Stage 3/4 (test): FAILED. Review test-critic-escalation.md and re-run.")
             sys.exit(1)
         log("Stage 3/4 (test): PASSED.")
 
     # --- Stage 4: Implement ---
-    if stage_is_complete(spec_dir, "implement") or find_passing_iteration(spec_dir, IMPL_QUALITY_PREFIX) is not None:
+    if (
+        stage_is_complete(spec_dir, "implement")
+        or find_passing_iteration(spec_dir, IMPL_QUALITY_PREFIX) is not None
+    ):
         log("Stage 4/4 (implement): already complete — skipping.")
     else:
         log("Stage 4/4 (implement): running implement-auto...")
-        rc = stream_subprocess(
-            ["python", ".claude/agents/implement-auto.py", "--feature", feature]
-        )
+        rc = stream_subprocess(["python", ".claude/agents/implement-auto.py", "--feature", feature])
         if rc != 0:
             log("Stage 4/4 (implement): FAILED. Review implement-critic-escalation.md and re-run.")
             sys.exit(1)
@@ -173,7 +181,9 @@ def run(feature: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Full plan-to-implement pipeline orchestrator")
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
+    parser.add_argument(
+        "--feature", help="Feature folder name (derived from git branch if omitted)"
+    )
     args = parser.parse_args()
 
     feature = args.feature or get_feature_from_branch(AGENT_NAME)

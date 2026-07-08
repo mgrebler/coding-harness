@@ -7,6 +7,7 @@ Imported by plan-auto.py, tasks-auto.py, and implement-auto.py.
 
 import argparse
 import asyncio
+import contextlib
 import json
 import re
 import subprocess
@@ -14,15 +15,17 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Awaitable, Callable, IO, NamedTuple, Optional
+from typing import IO, NamedTuple
 
 from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
 
 class _Tee:
     """Write to multiple file-like objects simultaneously."""
+
     def __init__(self, *files: IO):
         self._files = files
 
@@ -98,8 +101,8 @@ def setup_log_file(path: Path):
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(path, "a", encoding="utf-8")  # noqa: SIM115 (kept open for process lifetime)
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    log_fh.write(f"\n{'='*60}\n[run started {ts}]\n{'='*60}\n")
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    log_fh.write(f"\n{'=' * 60}\n[run started {ts}]\n{'=' * 60}\n")
     log_fh.flush()
     sys.stdout = _Tee(sys.__stdout__, log_fh)  # type: ignore[assignment]
     sys.stderr = _Tee(sys.__stderr__, log_fh)  # type: ignore[assignment]
@@ -108,8 +111,7 @@ def setup_log_file(path: Path):
 def get_feature_from_branch(agent_name: str) -> str:
     """Derive the feature folder name from the current git branch."""
     result = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True, text=True, check=True
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, check=True
     )
     branch = result.stdout.strip()
     if branch == "main":
@@ -170,8 +172,10 @@ def run_auto_commit(event: str, agent_name: str):
 
 def make_logger(agent_name: str):
     """Return a log function prefixed with the agent name."""
+
     def log(msg: str):
         print(f"[{agent_name}] {msg}", flush=True)
+
     return log
 
 
@@ -193,11 +197,12 @@ def log_sdk_message(message, prefix: str = ""):
 # Resume helpers
 # ---------------------------------------------------------------------------
 
+
 def find_passing_iteration(
     spec_dir: Path,
     result_prefix: str,
     max_iterations: int = 3,
-) -> Optional[int]:
+) -> int | None:
     """Return the first iteration number whose result has status PASS, or None."""
     for i in range(1, max_iterations + 1):
         rp = spec_dir / f"{result_prefix}-{i}.json"
@@ -237,7 +242,9 @@ def extend_iterations_if_reviewed(
         return max_iterations, False
     _log = log_fn or print
     review_text = review_path.read_text(encoding="utf-8")
-    _log(f"Human escalation review found ({review_filename}) — extending iteration limit by {max_iterations}.")
+    _log(
+        f"Human escalation review found ({review_filename}) — extending iteration limit by {max_iterations}."
+    )
     _log(f"Review:\n{review_text.strip()}")
     return max_iterations + max_iterations, True
 
@@ -246,7 +253,7 @@ def load_prior_violations(
     spec_dir: Path,
     result_prefix: str,
     iteration: int,
-) -> Optional[list]:
+) -> list | None:
     """
     Single-gate resume helper: if the result at (iteration - 1) was FAIL,
     return its violations list so the revision/fix runs before the next critic.
@@ -269,7 +276,7 @@ def find_two_gate_resume_state(
     gate1_prefix: str,
     gate2_prefix: str,
     iteration: int,
-) -> tuple[int, Optional[list], Optional[list]]:
+) -> tuple[int, list | None, list | None]:
     """
     Two-gate resume helper: inspect existing result files and return the state
     needed to continue correctly after an interruption.
@@ -315,6 +322,7 @@ def find_two_gate_resume_state(
 # Two-gate critic loop
 # ---------------------------------------------------------------------------
 
+
 class GateSpec(NamedTuple):
     """
     Describes one gate of a two-gate critic loop (e.g. the plan critic, or the
@@ -326,11 +334,12 @@ class GateSpec(NamedTuple):
     label: display label used in log lines and passed to run_gate, e.g. "plan critic"
     build_query: (iteration, prior_violations) -> the query(...) call to run via run_gate
     """
+
     result_prefix: str
     script_name: str
     critic_type: str
     label: str
-    build_query: Callable[[int, Optional[list]], object]
+    build_query: Callable[[int, list | None], object]
 
 
 async def run_two_gate_loop(
@@ -340,7 +349,7 @@ async def run_two_gate_loop(
     max_iterations: int,
     gate1: GateSpec,
     gate2: GateSpec,
-    resume_state: tuple[int, Optional[list], Optional[list]],
+    resume_state: tuple[int, list | None, list | None],
     skip_fix_agent: bool,
     run_revision: Callable[[int, list, str], Awaitable],
     on_both_pass: Callable[[dict], Awaitable],
@@ -368,15 +377,23 @@ async def run_two_gate_loop(
     """
     iteration, violations1, violations2 = resume_state
     if skip_fix_agent and (violations1 or violations2):
-        log("Escalation review present — skipping revision agent; violations were resolved externally.")
+        log(
+            "Escalation review present — skipping revision agent; violations were resolved externally."
+        )
         violations1 = None
         violations2 = None
     elif violations1:
-        log(f"Resuming after {gate1.label} FAIL at iteration {iteration - 1} — revision will run before {gate1.label} {iteration}.")
+        log(
+            f"Resuming after {gate1.label} FAIL at iteration {iteration - 1} — revision will run before {gate1.label} {iteration}."
+        )
     elif violations2:
-        log(f"Resuming after {gate2.label} FAIL at iteration {iteration - 1} — revision will run before {gate1.label} {iteration}.")
+        log(
+            f"Resuming after {gate2.label} FAIL at iteration {iteration - 1} — revision will run before {gate1.label} {iteration}."
+        )
     elif iteration < next_iteration(spec_dir, gate1.result_prefix):
-        log(f"Resuming: {gate1.label} {iteration} already PASS — {gate2.label} will run for iteration {iteration}.")
+        log(
+            f"Resuming: {gate1.label} {iteration} already PASS — {gate2.label} will run for iteration {iteration}."
+        )
 
     while iteration <= max_iterations:
         path1 = spec_dir / f"{gate1.result_prefix}-{iteration}.json"
@@ -395,12 +412,21 @@ async def run_two_gate_loop(
 
             log(f"Running {gate1.label} (iteration {iteration})...")
             await run_gate(
-                log, gate1.critic_type, gate1.script_name, feature, iteration, gate1.label,
-                lambda: gate1.build_query(iteration, prev_violations1),
+                log,
+                gate1.critic_type,
+                gate1.script_name,
+                feature,
+                iteration,
+                gate1.label,
+                lambda iteration=iteration, prev_violations1=prev_violations1: gate1.build_query(
+                    iteration, prev_violations1
+                ),
             )
 
             if not path1.exists():
-                log(f"ERROR: {gate1.label} did not write result file for iteration {iteration}. Aborting.")
+                log(
+                    f"ERROR: {gate1.label} did not write result file for iteration {iteration}. Aborting."
+                )
                 sys.exit(1)
         else:
             log(f"{gate1.label} result for iteration {iteration} already exists — reading status.")
@@ -411,7 +437,9 @@ async def run_two_gate_loop(
         warnings1 = sum(1 for v in result1.get("violations", []) if v.get("severity") == "WARNING")
 
         if status1 == "FAIL":
-            log(f"{gate1.label} FAIL (iteration {iteration}) — {blocking1} blocking, {warnings1} warning(s).")
+            log(
+                f"{gate1.label} FAIL (iteration {iteration}) — {blocking1} blocking, {warnings1} warning(s)."
+            )
             violations1 = result1.get("violations", [])
             iteration += 1
             continue
@@ -422,11 +450,20 @@ async def run_two_gate_loop(
         if not path2.exists():
             log(f"Running {gate2.label} (iteration {iteration})...")
             await run_gate(
-                log, gate2.critic_type, gate2.script_name, feature, iteration, gate2.label,
-                lambda: gate2.build_query(iteration, violations2),
+                log,
+                gate2.critic_type,
+                gate2.script_name,
+                feature,
+                iteration,
+                gate2.label,
+                lambda iteration=iteration, violations2=violations2: gate2.build_query(
+                    iteration, violations2
+                ),
             )
             if not path2.exists():
-                log(f"ERROR: {gate2.label} did not write result file for iteration {iteration}. Aborting.")
+                log(
+                    f"ERROR: {gate2.label} did not write result file for iteration {iteration}. Aborting."
+                )
                 sys.exit(1)
         else:
             log(f"{gate2.label} result for iteration {iteration} already exists — reading status.")
@@ -441,7 +478,9 @@ async def run_two_gate_loop(
             return
 
         blocking2 = len(result2.get("blocking_issues", []))
-        log(f"{gate2.label} FAIL (iteration {iteration}) — {blocking2} blocking issue(s), confidence {confidence}/10.")
+        log(
+            f"{gate2.label} FAIL (iteration {iteration}) — {blocking2} blocking issue(s), confidence {confidence}/10."
+        )
         violations2 = result2.get("blocking_issues", [])
         iteration += 1
 
@@ -460,7 +499,7 @@ async def run_single_gate_loop(
     feature: str,
     max_iterations: int,
     gate: GateSpec,
-    resume_state: tuple[int, Optional[list]],
+    resume_state: tuple[int, list | None],
     skip_fix_agent: bool,
     run_fix: Callable[[int, list], Awaitable],
     on_pass: Callable[[dict], Awaitable],
@@ -501,12 +540,21 @@ async def run_single_gate_loop(
 
             log(f"Running {gate.label} (iteration {iteration})...")
             await run_gate(
-                log, gate.critic_type, gate.script_name, feature, iteration, gate.label,
-                lambda: gate.build_query(iteration, prev_violations),
+                log,
+                gate.critic_type,
+                gate.script_name,
+                feature,
+                iteration,
+                gate.label,
+                lambda iteration=iteration, prev_violations=prev_violations: gate.build_query(
+                    iteration, prev_violations
+                ),
             )
 
             if not path.exists():
-                log(f"ERROR: {gate.label} did not write result file for iteration {iteration}. Aborting.")
+                log(
+                    f"ERROR: {gate.label} did not write result file for iteration {iteration}. Aborting."
+                )
                 sys.exit(1)
         else:
             log(f"{gate.label} result for iteration {iteration} already exists — reading status.")
@@ -517,7 +565,9 @@ async def run_single_gate_loop(
         warnings = sum(1 for v in result.get("violations", []) if v.get("severity") == "WARNING")
 
         if status == "FAIL":
-            log(f"{gate.label} FAIL (iteration {iteration}) — {blocking} blocking, {warnings} warning(s).")
+            log(
+                f"{gate.label} FAIL (iteration {iteration}) — {blocking} blocking, {warnings} warning(s)."
+            )
             violations = result.get("violations", [])
             iteration += 1
             continue
@@ -535,7 +585,9 @@ async def run_single_gate_loop(
     )
 
 
-def finish_stage(log, spec_dir: Path, agent_name: str, commit_event: str, stage: str, ready_message: str) -> None:
+def finish_stage(
+    log, spec_dir: Path, agent_name: str, commit_event: str, stage: str, ready_message: str
+) -> None:
     """Log ready_message, commit, and mark stage complete. The common tail of every *-auto.py success path."""
     log(ready_message)
     run_auto_commit(commit_event, agent_name)
@@ -575,7 +627,9 @@ def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitab
     asyncio.run. Callers still need `if __name__ == "__main__": run_cli(...)`.
     """
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
+    parser.add_argument(
+        "--feature", help="Feature folder name (derived from git branch if omitted)"
+    )
     args = parser.parse_args()
 
     feature = args.feature or get_feature_from_branch(agent_name)
@@ -585,6 +639,7 @@ def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitab
 # ---------------------------------------------------------------------------
 # Local LLM support
 # ---------------------------------------------------------------------------
+
 
 def format_violations_block(
     violations: list | None,
@@ -620,7 +675,7 @@ def write_escalation(
     content = (
         f"# {title}\n\n"
         f"Feature: {feature}\n"
-        f"Date: {datetime.now(timezone.utc).isoformat()}\n"
+        f"Date: {datetime.now(UTC).isoformat()}\n"
         f"Status: FAILED after {max_iterations} iterations\n\n"
         f"## Summary\n\n{summary}\n\n"
         f"## Review History\n\n{history}\n\n"
@@ -655,7 +710,7 @@ def write_escalation(
 
 def write_stage_complete(spec_dir: Path, stage: str) -> None:
     """Write a completion marker file for the given pipeline stage."""
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     marker = spec_dir / f"{stage}-auto-complete"
     marker.write_text(f"completed: true\nstage: {stage}\ntimestamp: {ts}\n", encoding="utf-8")
 
@@ -668,7 +723,7 @@ def stage_is_complete(spec_dir: Path, stage: str) -> bool:
 _FULL_GPU_OFFLOAD = 999  # sentinel > any real model's layer count; llama.cpp clamps to actual max
 
 
-def load_local_llm_config(critic_type: str) -> Optional[dict]:
+def load_local_llm_config(critic_type: str) -> dict | None:
     """
     Read .specify/local-llm.json and resolve config for the given critic_type.
     Merges the 'default' block with the per-critic override.
@@ -717,12 +772,16 @@ def load_local_llm_config(critic_type: str) -> Optional[dict]:
     result["num_gpu"] = int(num_gpu) if num_gpu is not None else _FULL_GPU_OFFLOAD
     # num_predict caps total generated tokens (thinking + response). For reasoning models
     # like deepseek-r1, runaway thinking causes hallucinations; this is the safety cap.
-    num_predict = resolved.get("num_predict") if "num_predict" in resolved else raw.get("num_predict")
+    num_predict = (
+        resolved.get("num_predict") if "num_predict" in resolved else raw.get("num_predict")
+    )
     if num_predict is not None:
         result["num_predict"] = int(num_predict)
     # temperature controls generation randomness. Default 0.1; use 0.0 for fully
     # deterministic output (greedy decoding) — useful for reproducible eval runs.
-    temperature = resolved.get("temperature") if "temperature" in resolved else raw.get("temperature")
+    temperature = (
+        resolved.get("temperature") if "temperature" in resolved else raw.get("temperature")
+    )
     if temperature is not None:
         result["temperature"] = float(temperature)
     return result
@@ -736,7 +795,7 @@ def _fmt_bytes(b: int) -> str:
     return f"{b} B"
 
 
-def _get_ps_entry(ollama_url: str, model: str) -> Optional[dict]:
+def _get_ps_entry(ollama_url: str, model: str) -> dict | None:
     """Return the /api/ps entry for model, or None if not loaded / unreachable."""
     try:
         with urllib.request.urlopen(f"{ollama_url}/api/ps", timeout=3) as resp:
@@ -769,7 +828,9 @@ def _log_vram_state(ollama_url: str, model: str) -> None:
     )
 
 
-def _ensure_model_context(ollama_url: str, model: str, num_ctx: Optional[int] = None, keep_alive=None, num_gpu=None) -> None:
+def _ensure_model_context(
+    ollama_url: str, model: str, num_ctx: int | None = None, keep_alive=None, num_gpu=None
+) -> None:
     """
     Ensure the model is loaded with the requested num_ctx (if any) and num_gpu (if any).
 
@@ -813,7 +874,10 @@ def _ensure_model_context(ollama_url: str, model: str, num_ctx: Optional[int] = 
         except Exception:
             pass
     else:
-        print(f"[ollama] preloading {model}" + (f" at ctx={num_ctx}" if num_ctx is not None else ""), flush=True)
+        print(
+            f"[ollama] preloading {model}" + (f" at ctx={num_ctx}" if num_ctx is not None else ""),
+            flush=True,
+        )
 
     # Preload via the native endpoint, which respects options.num_ctx at model-load
     # time (unlike /v1/chat/completions).
@@ -841,15 +905,18 @@ def _ensure_model_context(ollama_url: str, model: str, num_ctx: Optional[int] = 
         _preload(options)
     except Exception:
         if num_gpu is not None:
-            print(f"[ollama] num_gpu={num_gpu} failed to load — falling back to auto GPU split", flush=True)
-            try:
+            print(
+                f"[ollama] num_gpu={num_gpu} failed to load — falling back to auto GPU split",
+                flush=True,
+            )
+            with contextlib.suppress(Exception):
                 _preload({"num_ctx": num_ctx} if num_ctx is not None else {})
-            except Exception:
-                pass  # best-effort; inference will still proceed
         # else: best-effort; inference will still proceed
 
 
-def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interval: int = 250) -> str:
+def call_local_llm(
+    prompt: str, config: dict, progress_fn=None, progress_interval: int = 250
+) -> str:
     """
     Send prompt to Ollama via the native /api/chat endpoint.
     Uses streaming so the socket stays alive during generation (avoids read timeout).
@@ -889,8 +956,11 @@ def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interva
 
     if config.get("num_ctx") or config.get("num_gpu") is not None:
         _ensure_model_context(
-            config["ollama_url"], config["model"],
-            config.get("num_ctx"), config.get("keep_alive"), config.get("num_gpu")
+            config["ollama_url"],
+            config["model"],
+            config.get("num_ctx"),
+            config.get("keep_alive"),
+            config.get("num_gpu"),
         )
 
     req = urllib.request.Request(
@@ -920,7 +990,10 @@ def call_local_llm(prompt: str, config: dict, progress_fn=None, progress_interva
                 if thinking:
                     thinking_count += len(thinking.split())
                     if thinking_count % progress_interval == 0:
-                        print(f"[ollama] thinking... {thinking_count} tokens ({time.monotonic() - start:.0f}s elapsed)", flush=True)
+                        print(
+                            f"[ollama] thinking... {thinking_count} tokens ({time.monotonic() - start:.0f}s elapsed)",
+                            flush=True,
+                        )
                 token = msg.get("content", "")
                 if token:
                     content_parts.append(token)
@@ -970,7 +1043,9 @@ def run_local_critic_cli(
     Exit codes: 0 success, 1 runtime error, 2 local LLM not configured.
     """
     parser = argparse.ArgumentParser(description=f"{name} using local LLM")
-    parser.add_argument("--feature", help="Feature folder name (derived from git branch if omitted)")
+    parser.add_argument(
+        "--feature", help="Feature folder name (derived from git branch if omitted)"
+    )
     parser.add_argument("--iteration", type=int, help="Iteration number (auto-detected if omitted)")
     args = parser.parse_args()
 
@@ -980,11 +1055,15 @@ def run_local_critic_cli(
 
     feature = args.feature or get_feature_from_branch(name)
     spec_dir = Path(f"specs/{feature}")
-    iteration = args.iteration if args.iteration is not None else next_iteration(spec_dir, result_prefix)
+    iteration = (
+        args.iteration if args.iteration is not None else next_iteration(spec_dir, result_prefix)
+    )
 
     prompt = build_prompt(spec_dir, iteration)
 
-    print(f"[{name}] Running iteration {iteration} via local LLM ({config['model']})...", flush=True)
+    print(
+        f"[{name}] Running iteration {iteration} via local LLM ({config['model']})...", flush=True
+    )
 
     def _progress(token_count: int, elapsed_s: float, done: bool = False) -> None:
         if done:
@@ -1017,9 +1096,15 @@ def run_local_critic_cli(
         confidence = result.get("confidence", 0)
         blocking = len(result.get("blocking_issues", []))
         if status == "PASS":
-            print(f"[{name}] iteration {iteration} → PASS (confidence {confidence}/10) → {result_path}", flush=True)
+            print(
+                f"[{name}] iteration {iteration} → PASS (confidence {confidence}/10) → {result_path}",
+                flush=True,
+            )
         else:
-            print(f"[{name}] iteration {iteration} → FAIL ({blocking} blocking issue(s), confidence {confidence}/10) → {result_path}", flush=True)
+            print(
+                f"[{name}] iteration {iteration} → FAIL ({blocking} blocking issue(s), confidence {confidence}/10) → {result_path}",
+                flush=True,
+            )
     else:
         violations = result.get("violations", [])
         blocking = sum(1 for v in violations if v.get("severity") == "BLOCKING")
@@ -1027,14 +1112,18 @@ def run_local_critic_cli(
         if status == "PASS":
             print(f"[{name}] iteration {iteration} → PASS → {result_path}", flush=True)
         else:
-            print(f"[{name}] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}", flush=True)
+            print(
+                f"[{name}] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}",
+                flush=True,
+            )
 
 
 def get_changed_files() -> list[str]:
     """Return list of files changed on this branch relative to main."""
     result = subprocess.run(
         ["git", "diff", "main...HEAD", "--name-only"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     return [f.strip() for f in result.stdout.splitlines() if f.strip()]
 
@@ -1069,7 +1158,9 @@ def read_changed_files(changed_files: list[str], dirs: tuple[str, ...]) -> str:
             sections.append(f"--- {path_str} ---\n{content}")
         except Exception:
             sections.append(f"--- {path_str} --- (could not read)")
-    return "\n\n".join(sections) if sections else "(no changed files found in specified directories)"
+    return (
+        "\n\n".join(sections) if sections else "(no changed files found in specified directories)"
+    )
 
 
 def build_review_history(

@@ -26,7 +26,9 @@ class TestPlanAutoPreflight(unittest.TestCase):
         if with_plan:
             (spec_dir / "plan.md").write_text("plan", encoding="utf-8")
         if with_result:
-            (spec_dir / "plan-critic-result-1.json").write_text('{"status": "FAIL"}', encoding="utf-8")
+            (spec_dir / "plan-critic-result-1.json").write_text(
+                '{"status": "FAIL"}', encoding="utf-8"
+            )
         return spec_dir
 
     def test_no_existing_plan_returns_false(self):
@@ -51,22 +53,28 @@ class TestPlanAutoPreflight(unittest.TestCase):
     def test_existing_plan_no_results_interactive_regen_response(self):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = self._make_spec_dir(d, with_plan=True)
-            with patch.object(plan_auto.sys, "stdin", MagicMock(isatty=lambda: True)), \
-                 patch("builtins.input", return_value="regen"):
+            with (
+                patch.object(plan_auto.sys, "stdin", MagicMock(isatty=lambda: True)),
+                patch("builtins.input", return_value="regen"),
+            ):
                 self.assertTrue(plan_auto.preflight(spec_dir, "feat"))
 
     def test_existing_plan_no_results_interactive_resume_response(self):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = self._make_spec_dir(d, with_plan=True)
-            with patch.object(plan_auto.sys, "stdin", MagicMock(isatty=lambda: True)), \
-                 patch("builtins.input", return_value="resume"):
+            with (
+                patch.object(plan_auto.sys, "stdin", MagicMock(isatty=lambda: True)),
+                patch("builtins.input", return_value="resume"),
+            ):
                 self.assertFalse(plan_auto.preflight(spec_dir, "feat"))
 
     def test_abort_response_exits(self):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = self._make_spec_dir(d, with_plan=True)
-            with patch.object(plan_auto.sys, "stdin", MagicMock(isatty=lambda: True)), \
-                 patch("builtins.input", return_value="abort"):
+            with (
+                patch.object(plan_auto.sys, "stdin", MagicMock(isatty=lambda: True)),
+                patch("builtins.input", return_value="abort"),
+            ):
                 with self.assertRaises(SystemExit) as ctx:
                     plan_auto.preflight(spec_dir, "feat")
                 self.assertEqual(ctx.exception.code, 0)

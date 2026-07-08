@@ -16,7 +16,6 @@ from common import (
     FIXTURES,
     OLLAMA_MODEL,
     OLLAMA_URL,
-    assert_violations_match,
     make_llm_config,
     run_critic,
 )
@@ -49,8 +48,11 @@ class TestArchitectureReviewGoodPlan(unittest.TestCase):
     def test_good_plan_passes(self):
         tmpdir = _setup_tmpdir(FIXTURES / "good" / "plan.md")
         result = run_critic(tmpdir, "architecture", result_prefix=RESULT_PREFIX)
-        self.assertEqual(result["status"], "PASS",
-                         f"Expected PASS but got FAIL. Blocking issues: {result.get('blocking_issues')}")
+        self.assertEqual(
+            result["status"],
+            "PASS",
+            f"Expected PASS but got FAIL. Blocking issues: {result.get('blocking_issues')}",
+        )
 
 
 class TestArchitectureReviewViolation(unittest.TestCase):
@@ -61,15 +63,21 @@ class TestArchitectureReviewViolation(unittest.TestCase):
     def test_plan_with_unjustified_microservice_fails(self):
         tmpdir = _setup_tmpdir(FIXTURES / "bad" / "plan-architecture-violation.md")
         result = run_critic(tmpdir, "architecture", result_prefix=RESULT_PREFIX)
-        self.assertEqual(result["status"], "FAIL",
-                         "Expected FAIL for a plan introducing an unjustified microservice, "
-                         "shared mutable Redis cache, and non-idempotent retries")
+        self.assertEqual(
+            result["status"],
+            "FAIL",
+            "Expected FAIL for a plan introducing an unjustified microservice, "
+            "shared mutable Redis cache, and non-idempotent retries",
+        )
         rule_texts = " ".join(
             issue.get("title", "") + " " + issue.get("finding", "")
             for issue in result.get("blocking_issues", [])
         )
-        self.assertRegex(rule_texts.lower(), r"microservice|idempoten|shared|distributed|coupling|scalab",
-                         "Expected a blocking issue citing the unjustified distributed-systems complexity")
+        self.assertRegex(
+            rule_texts.lower(),
+            r"microservice|idempoten|shared|distributed|coupling|scalab",
+            "Expected a blocking issue citing the unjustified distributed-systems complexity",
+        )
 
 
 if __name__ == "__main__":

@@ -5,12 +5,12 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
+from architecture_critic import build_architecture_review_prompt
+from implement_critic import build_implement_critic_prompt
 from plan_critic import build_plan_critic_prompt
+from quality_critic import build_quality_review_prompt
 from tasks_critic import build_tasks_critic_prompt
 from test_critic import build_test_critic_prompt
-from implement_critic import build_implement_critic_prompt
-from architecture_critic import build_architecture_review_prompt
-from quality_critic import build_quality_review_prompt
 
 
 class PromptBuilderCommonTests:
@@ -34,7 +34,13 @@ class PromptBuilderCommonTests:
 
 class TestPlanCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
     def _build(self, **kwargs):
-        defaults = dict(constitution="CONST", architecture="ARCH", spec="SPEC", plan="PLAN", iteration=1)
+        defaults = {
+            "constitution": "CONST",
+            "architecture": "ARCH",
+            "spec": "SPEC",
+            "plan": "PLAN",
+            "iteration": 1,
+        }
         defaults.update(kwargs)
         return build_plan_critic_prompt(**defaults)
 
@@ -53,7 +59,13 @@ class TestPlanCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
 
 class TestTasksCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
     def _build(self, **kwargs):
-        defaults = dict(constitution="CONST", spec="SPEC", plan="PLAN", tasks="TASKS", iteration=1)
+        defaults = {
+            "constitution": "CONST",
+            "spec": "SPEC",
+            "plan": "PLAN",
+            "tasks": "TASKS",
+            "iteration": 1,
+        }
         defaults.update(kwargs)
         return build_tasks_critic_prompt(**defaults)
 
@@ -71,8 +83,15 @@ class TestTasksCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
 
 class TestTestCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
     def _build(self, **kwargs):
-        defaults = dict(constitution="CONST", spec="SPEC", plan="PLAN", tasks="TASKS",
-                        test_principles="PRINCIPLES", feature="001-health-endpoint", iteration=1)
+        defaults = {
+            "constitution": "CONST",
+            "spec": "SPEC",
+            "plan": "PLAN",
+            "tasks": "TASKS",
+            "test_principles": "PRINCIPLES",
+            "feature": "001-health-endpoint",
+            "iteration": 1,
+        }
         defaults.update(kwargs)
         return build_test_critic_prompt(**defaults)
 
@@ -98,7 +117,13 @@ class TestTestCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
 
 class TestImplementCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
     def _build(self, **kwargs):
-        defaults = dict(constitution="CONST", spec="SPEC", plan="PLAN", tasks="TASKS", iteration=1)
+        defaults = {
+            "constitution": "CONST",
+            "spec": "SPEC",
+            "plan": "PLAN",
+            "tasks": "TASKS",
+            "iteration": 1,
+        }
         defaults.update(kwargs)
         return build_implement_critic_prompt(**defaults)
 
@@ -119,8 +144,14 @@ class TestImplementCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
 
 class TestArchitectureReviewPrompt(unittest.TestCase):
     def _build(self, **kwargs):
-        defaults = dict(constitution="CONST", architecture="ARCH", spec="SPEC", plan="PLAN",
-                        arch_principles="PRINCIPLES", iteration=1)
+        defaults = {
+            "constitution": "CONST",
+            "architecture": "ARCH",
+            "spec": "SPEC",
+            "plan": "PLAN",
+            "arch_principles": "PRINCIPLES",
+            "iteration": 1,
+        }
         defaults.update(kwargs)
         return build_architecture_review_prompt(**defaults)
 
@@ -154,8 +185,14 @@ class TestArchitectureReviewPrompt(unittest.TestCase):
 
 class TestQualityReviewPrompt(unittest.TestCase):
     def _build(self, **kwargs):
-        defaults = dict(constitution="CONST", spec="SPEC", plan="PLAN", tasks="TASKS",
-                        quality_principles="PRINCIPLES", iteration=1)
+        defaults = {
+            "constitution": "CONST",
+            "spec": "SPEC",
+            "plan": "PLAN",
+            "tasks": "TASKS",
+            "quality_principles": "PRINCIPLES",
+            "iteration": 1,
+        }
         defaults.update(kwargs)
         return build_quality_review_prompt(**defaults)
 
