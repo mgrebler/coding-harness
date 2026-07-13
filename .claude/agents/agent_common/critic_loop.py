@@ -83,6 +83,75 @@ class GateSpec(NamedTuple):
     build_query: Callable[[int, list | None], object]
 
 
+async def _run_gate_for_iteration(
+    log,
+    spec_dir: Path,
+    feature: str,
+    iteration: int,
+    gate: GateSpec,
+    prev_violations: list | None,
+    summary_style: str,
+) -> tuple[str, dict]:
+    """
+    Idempotently run one gate for one iteration — the unit shared by both the
+    single-gate and two-gate loops. Reuses the result file if it already
+    exists (resume case); otherwise runs the gate and verifies it wrote one.
+    Logs the PASS/FAIL summary line and returns (status, result).
+
+    prev_violations is only consulted when the gate actually runs (passed
+    through to gate.build_query); it's ignored when reusing an existing
+    result, mirroring run_gate's own idempotency check.
+
+    summary_style: "violations" counts BLOCKING/WARNING entries in
+    result["violations"] (gate1-style critics); "confidence" reports
+    result["confidence"] and len(result["blocking_issues"]) (architecture/
+    quality-review-style gates) — same convention as run_local_critic_cli.
+    """
+    path = spec_dir / f"{gate.result_prefix}-{iteration}.json"
+    if not path.exists():
+        log(f"Running {gate.label} (iteration {iteration})...")
+        await run_gate(
+            log,
+            gate.critic_type,
+            gate.script_name,
+            feature,
+            iteration,
+            gate.label,
+            lambda: gate.build_query(iteration, prev_violations),
+        )
+        if not path.exists():
+            log(
+                f"ERROR: {gate.label} did not write result file for iteration {iteration}. Aborting."
+            )
+            sys.exit(1)
+    else:
+        log(f"{gate.label} result for iteration {iteration} already exists — reading status.")
+
+    result = rstate.read_result(spec_dir, gate.result_prefix, iteration)
+    status = result.get("status", "FAIL")
+
+    if summary_style == "confidence":
+        confidence = result.get("confidence", 0)
+        if status == "PASS":
+            log(f"{gate.label} PASS (iteration {iteration}, confidence {confidence}/10).")
+        else:
+            blocking = len(result.get("blocking_issues", []))
+            log(
+                f"{gate.label} FAIL (iteration {iteration}) — {blocking} blocking issue(s), confidence {confidence}/10."
+            )
+    else:
+        blocking = sum(1 for v in result.get("violations", []) if v.get("severity") == "BLOCKING")
+        warnings = sum(1 for v in result.get("violations", []) if v.get("severity") == "WARNING")
+        if status == "PASS":
+            log(f"{gate.label} PASS (iteration {iteration}) — {warnings} warning(s).")
+        else:
+            log(
+                f"{gate.label} FAIL (iteration {iteration}) — {blocking} blocking, {warnings} warning(s)."
+            )
+
+    return status, result
+
+
 async def run_two_gate_loop(
     log,
     spec_dir: Path,
@@ -138,90 +207,35 @@ async def run_two_gate_loop(
 
     while iteration <= max_iterations:
         path1 = spec_dir / f"{gate1.result_prefix}-{iteration}.json"
-        path2 = spec_dir / f"{gate2.result_prefix}-{iteration}.json"
 
         # --- Gate 1 ---
+        prev_violations1 = violations1
         if not path1.exists():
             if violations1 or violations2:
                 pending_label = gate1.label if violations1 else gate2.label
                 pending_violations = violations1 if violations1 else violations2
                 await run_revision(iteration - 1, pending_violations, pending_label)
-
-            prev_violations1 = violations1
             violations1 = None
             violations2 = None
 
-            log(f"Running {gate1.label} (iteration {iteration})...")
-            await run_gate(
-                log,
-                gate1.critic_type,
-                gate1.script_name,
-                feature,
-                iteration,
-                gate1.label,
-                lambda iteration=iteration, prev_violations1=prev_violations1: gate1.build_query(
-                    iteration, prev_violations1
-                ),
-            )
-
-            if not path1.exists():
-                log(
-                    f"ERROR: {gate1.label} did not write result file for iteration {iteration}. Aborting."
-                )
-                sys.exit(1)
-        else:
-            log(f"{gate1.label} result for iteration {iteration} already exists — reading status.")
-
-        result1 = rstate.read_result(spec_dir, gate1.result_prefix, iteration)
-        status1 = result1.get("status", "FAIL")
-        blocking1 = sum(1 for v in result1.get("violations", []) if v.get("severity") == "BLOCKING")
-        warnings1 = sum(1 for v in result1.get("violations", []) if v.get("severity") == "WARNING")
+        status1, result1 = await _run_gate_for_iteration(
+            log, spec_dir, feature, iteration, gate1, prev_violations1, "violations"
+        )
 
         if status1 == "FAIL":
-            log(
-                f"{gate1.label} FAIL (iteration {iteration}) — {blocking1} blocking, {warnings1} warning(s)."
-            )
             violations1 = result1.get("violations", [])
             iteration += 1
             continue
 
-        log(f"{gate1.label} PASS (iteration {iteration}) — {warnings1} warning(s).")
-
         # --- Gate 2 ---
-        if not path2.exists():
-            log(f"Running {gate2.label} (iteration {iteration})...")
-            await run_gate(
-                log,
-                gate2.critic_type,
-                gate2.script_name,
-                feature,
-                iteration,
-                gate2.label,
-                lambda iteration=iteration, violations2=violations2: gate2.build_query(
-                    iteration, violations2
-                ),
-            )
-            if not path2.exists():
-                log(
-                    f"ERROR: {gate2.label} did not write result file for iteration {iteration}. Aborting."
-                )
-                sys.exit(1)
-        else:
-            log(f"{gate2.label} result for iteration {iteration} already exists — reading status.")
-
-        result2 = rstate.read_result(spec_dir, gate2.result_prefix, iteration)
-        status2 = result2.get("status", "FAIL")
-        confidence = result2.get("confidence", 0)
+        status2, result2 = await _run_gate_for_iteration(
+            log, spec_dir, feature, iteration, gate2, violations2, "confidence"
+        )
 
         if status2 == "PASS":
-            log(f"{gate2.label} PASS (iteration {iteration}, confidence {confidence}/10).")
             await on_both_pass(result2)
             return
 
-        blocking2 = len(result2.get("blocking_issues", []))
-        log(
-            f"{gate2.label} FAIL (iteration {iteration}) — {blocking2} blocking issue(s), confidence {confidence}/10."
-        )
         violations2 = result2.get("blocking_issues", [])
         iteration += 1
 
@@ -272,48 +286,21 @@ async def run_single_gate_loop(
     while iteration <= max_iterations:
         path = spec_dir / f"{gate.result_prefix}-{iteration}.json"
 
+        prev_violations = violations
         if not path.exists():
             if violations:
                 await run_fix(iteration - 1, violations)
-
-            prev_violations = violations
             violations = None
 
-            log(f"Running {gate.label} (iteration {iteration})...")
-            await run_gate(
-                log,
-                gate.critic_type,
-                gate.script_name,
-                feature,
-                iteration,
-                gate.label,
-                lambda iteration=iteration, prev_violations=prev_violations: gate.build_query(
-                    iteration, prev_violations
-                ),
-            )
-
-            if not path.exists():
-                log(
-                    f"ERROR: {gate.label} did not write result file for iteration {iteration}. Aborting."
-                )
-                sys.exit(1)
-        else:
-            log(f"{gate.label} result for iteration {iteration} already exists — reading status.")
-
-        result = rstate.read_result(spec_dir, gate.result_prefix, iteration)
-        status = result.get("status", "FAIL")
-        blocking = sum(1 for v in result.get("violations", []) if v.get("severity") == "BLOCKING")
-        warnings = sum(1 for v in result.get("violations", []) if v.get("severity") == "WARNING")
+        status, result = await _run_gate_for_iteration(
+            log, spec_dir, feature, iteration, gate, prev_violations, "violations"
+        )
 
         if status == "FAIL":
-            log(
-                f"{gate.label} FAIL (iteration {iteration}) — {blocking} blocking, {warnings} warning(s)."
-            )
             violations = result.get("violations", [])
             iteration += 1
             continue
 
-        log(f"{gate.label} PASS (iteration {iteration}) — {warnings} warning(s).")
         await on_pass(result)
         return
 
