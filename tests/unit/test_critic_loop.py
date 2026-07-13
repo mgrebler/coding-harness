@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
-from agent_common import critic_loop, git, resume_state
+from agent_common import critic_loop, git, ollama, resume_state
 from agent_common.critic_loop import GateSpec
 
 
@@ -141,7 +141,7 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             on_pass = AsyncMock()
 
             with (
-                patch.object(critic_loop, "run_gate", side_effect=fake_run_gate),
+                patch.object(ollama, "run_gate", side_effect=fake_run_gate),
                 patch.object(critic_loop, "write_escalation") as mock_escalate,
             ):
                 await critic_loop.run_single_gate_loop(
@@ -176,7 +176,7 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             on_pass = AsyncMock()
 
             with (
-                patch.object(critic_loop, "run_gate", side_effect=fake_run_gate),
+                patch.object(ollama, "run_gate", side_effect=fake_run_gate),
                 patch.object(critic_loop, "write_escalation") as mock_escalate,
             ):
                 await critic_loop.run_single_gate_loop(
@@ -220,7 +220,7 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             }
 
             with (
-                patch.object(critic_loop, "run_gate", side_effect=fake_run_gate),
+                patch.object(ollama, "run_gate", side_effect=fake_run_gate),
                 patch.object(critic_loop, "write_escalation") as mock_escalate,
             ):
                 await critic_loop.run_single_gate_loop(
@@ -258,7 +258,7 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             on_pass = AsyncMock()
 
             with (
-                patch.object(critic_loop, "run_gate", side_effect=fake_run_gate),
+                patch.object(ollama, "run_gate", side_effect=fake_run_gate),
                 patch.object(critic_loop, "write_escalation") as mock_escalate,
             ):
                 await critic_loop.run_single_gate_loop(
@@ -330,7 +330,7 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
             on_both_pass = AsyncMock()
 
             with (
-                patch.object(critic_loop, "run_gate", side_effect=fake_run_gate),
+                patch.object(ollama, "run_gate", side_effect=fake_run_gate),
                 patch.object(critic_loop, "write_escalation") as mock_escalate,
             ):
                 await critic_loop.run_two_gate_loop(
@@ -366,7 +366,7 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
             on_both_pass = AsyncMock()
 
             with (
-                patch.object(critic_loop, "run_gate", side_effect=fake_run_gate),
+                patch.object(ollama, "run_gate", side_effect=fake_run_gate),
                 patch.object(critic_loop, "write_escalation") as mock_escalate,
             ):
                 await critic_loop.run_two_gate_loop(
@@ -401,7 +401,7 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
             on_both_pass = AsyncMock()
 
             with (
-                patch.object(critic_loop, "run_gate", side_effect=fake_run_gate),
+                patch.object(ollama, "run_gate", side_effect=fake_run_gate),
                 patch.object(critic_loop, "write_escalation") as mock_escalate,
             ):
                 await critic_loop.run_two_gate_loop(
@@ -443,7 +443,7 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
             }
 
             with (
-                patch.object(critic_loop, "run_gate", side_effect=fake_run_gate),
+                patch.object(ollama, "run_gate", side_effect=fake_run_gate),
                 patch.object(critic_loop, "write_escalation") as mock_escalate,
             ):
                 await critic_loop.run_two_gate_loop(

@@ -1,67 +1,18 @@
-"""Two-gate/single-gate critic-loop orchestration engine shared by the *-auto.py agents."""
+"""Two-gate/single-gate critic-loop orchestration engine shared by the *-auto.py agents.
+
+Backend-oblivious: gate execution (local LLM vs. Claude dispatch) lives in
+ollama.run_gate — this module only sequences gates and tracks resume state."""
 
 import argparse
 import asyncio
-import subprocess
 import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from agent_common import console, files, git, ollama
+from agent_common import files, git, ollama
 from agent_common import resume_state as rstate
-
-
-def _run_critic_subprocess(cmd: list) -> int:
-    """
-    Run a critic subprocess and tee its stdout/stderr through sys.stdout/sys.stderr
-    so output reaches the log file (via the _Tee set up by setup_log_file).
-    Returns the process exit code.
-    """
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.stdout:
-        print(result.stdout, end="", flush=True)
-    if result.stderr:
-        print(result.stderr, end="", file=sys.stderr, flush=True)
-    return result.returncode
-
-
-async def run_gate(
-    log,
-    critic_type: str,
-    script_name: str,
-    feature: str,
-    iteration: int,
-    label: str,
-    claude_fallback: Callable,
-) -> None:
-    """
-    Run one review gate: try the local-LLM subprocess first (if critic_type is
-    configured in .specify/local-llm.json), falling back to Claude when it isn't
-    configured (subprocess exit code 2) or absent entirely. Aborts the whole
-    process (sys.exit(1)) if the local LLM subprocess fails for any other reason.
-
-    claude_fallback: zero-arg callable returning the async iterator of SDK
-    messages to consume on the Claude path, e.g. `lambda: query(prompt=..., options=...)`.
-    Invoked only when falling back — never called if the local LLM path succeeds.
-    """
-    llm_config = ollama.load_local_llm_config(critic_type)
-    if llm_config:
-        log(f"Using local LLM ({llm_config['model']}) for {label}...")
-        script = Path(__file__).parent.parent / script_name
-        returncode = _run_critic_subprocess(
-            [sys.executable, str(script), "--feature", feature, "--iteration", str(iteration)],
-        )
-        if returncode == 2:
-            llm_config = None  # not configured; fall through to Claude
-        elif returncode != 0:
-            log(f"ERROR: local LLM {label} failed for iteration {iteration}. Aborting.")
-            sys.exit(1)
-
-    if not llm_config:
-        async for message in claude_fallback():
-            console.log_sdk_message(message, prefix="  ")
 
 
 class GateSpec(NamedTuple):
@@ -110,7 +61,7 @@ async def _run_gate_for_iteration(
     path = spec_dir / f"{gate.result_prefix}-{iteration}.json"
     if not path.exists():
         log(f"Running {gate.label} (iteration {iteration})...")
-        await run_gate(
+        await ollama.run_gate(
             log,
             gate.critic_type,
             gate.script_name,
