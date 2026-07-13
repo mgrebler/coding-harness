@@ -208,7 +208,7 @@ The harness has a two-layer test suite under `tests/`.
 
 ### Layer 1 — Unit tests (no LLM, fast)
 
-Tests for pure functions in the `agent_common/` package and the prompt-building functions exported by each critic module. No external calls.
+Tests for pure functions in the `agent_common/` package and the prompt-building functions exported by each critic module. No external calls. Enforced in CI (`.github/workflows/tests.yml`).
 
 ```bash
 bash tests/run_tests.sh --skip-evals
@@ -218,7 +218,7 @@ python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
 
 ### Layer 2 — Critic evals (requires local Ollama)
 
-Each critic script (`plan_critic.py`, `tasks_critic.py`, `test_critic.py`, `implement_critic.py`, `architecture_critic.py`, `quality_critic.py`) is run against known-good and known-bad fixture artifacts. The result JSON is asserted. This catches prompt degradation, rule drift, or regressions in critic logic.
+Each critic script (`plan_critic.py`, `tasks_critic.py`, `test_critic.py`, `implement_critic.py`, `architecture_critic.py`, `quality_critic.py`) is run against known-good and known-bad fixture artifacts. The result JSON is asserted. This catches prompt degradation, rule drift, or regressions in critic logic. Not run in CI — no local Ollama instance available there; run locally before pushing changes that touch a critic's prompt or scoring logic.
 
 Fixtures live in `tests/evals/fixtures/` — a minimal "health endpoint" feature with good and bad variants for each pipeline stage.
 
