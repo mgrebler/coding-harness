@@ -57,15 +57,12 @@ QUALITY_RESULT_PREFIX = "code-quality-review-result"
 log = make_logger(AGENT_NAME)
 
 
-# ---------------------------------------------------------------------------
 # Pre-flight checks
-# ---------------------------------------------------------------------------
 
 
 def preflight(spec_dir: Path, feature: str):
     require_spec_files(log, spec_dir, "spec.md", "plan.md", "tasks.md")
 
-    # Confirm test phase is complete
     test_critic_results = list(spec_dir.glob("test-critic-result-*.json"))
     if not test_critic_results:
         log("ERROR: Test phase not complete. Run /speckit-test-auto first.")
@@ -97,9 +94,7 @@ def preflight(spec_dir: Path, feature: str):
             sys.exit(0)
 
 
-# ---------------------------------------------------------------------------
 # Subagent definitions
-# ---------------------------------------------------------------------------
 
 
 def impl_agent_definition(
@@ -306,9 +301,7 @@ def quality_review_agent_definition(
     )
 
 
-# ---------------------------------------------------------------------------
 # CI check
-# ---------------------------------------------------------------------------
 
 CI_QUICK_COMMANDS = [
     ("typecheck", ["pnpm", "typecheck"]),
@@ -353,9 +346,7 @@ def run_full_ci_checks() -> tuple[bool, str]:
     return _run_commands(CI_FULL_COMMANDS)
 
 
-# ---------------------------------------------------------------------------
 # Main orchestration loop
-# ---------------------------------------------------------------------------
 
 
 async def run(feature: str):
@@ -414,9 +405,8 @@ async def run(feature: str):
     else:
         log("All tasks already checked off — skipping implementation agent.")
 
-    # --- Step 1b: Quick CI check (typecheck + unit tests) before critic loop ---
-    # Catches compile errors and broken tests early — no point running the critic on broken code.
-    # e2e runs later, once both review gates pass, to avoid the ~3 min cost on every iteration.
+    # --- Step 1b: Quick CI check (typecheck + unit tests) — e2e is deferred until
+    # both review gates pass, to avoid its ~3 min cost on every iteration.
     if not find_passing_iteration(spec_dir, CRITIC_RESULT_PREFIX, MAX_ITERATIONS):
         log("Running quick CI checks (typecheck + unit tests) before critic loop...")
         quick_passed, quick_failure_summary = run_quick_ci_checks()
@@ -652,9 +642,7 @@ async def run(feature: str):
     )
 
 
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     run_cli(AGENT_NAME, "Implementation auto-orchestrator", run)

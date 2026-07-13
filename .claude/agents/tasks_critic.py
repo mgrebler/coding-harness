@@ -76,8 +76,7 @@ def _analyze_task_format(tasks: str) -> str:
             "Numbered list entries found — THESE VIOLATE §T5 (must use [Txxx] [TEST|IMPL] format):\n"
             + "\n".join(numbered)
         )
-    # Only flag plain bullets as potentially violating when NO [Txxx] tasks exist —
-    # if [Txxx] entries are present, bullets are sub-item descriptions under a task, not standalone tasks.
+    # If [Txxx] tasks exist, bullets are sub-items under them, not standalone tasks.
     if bullets and not complete_tasks and not incomplete_tasks:
         parts.append(
             "Plain bullet entries found (no [Txxx] ID, no machine-readable tasks in file) — may violate §T5:\n"

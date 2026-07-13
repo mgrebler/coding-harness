@@ -58,9 +58,7 @@ ARCH_RESULT_PREFIX = "architecture-review-result"
 log = make_logger(AGENT_NAME)
 
 
-# ---------------------------------------------------------------------------
 # Pre-flight checks
-# ---------------------------------------------------------------------------
 
 
 def preflight(spec_dir: Path, feature: str) -> bool:
@@ -93,9 +91,7 @@ def preflight(spec_dir: Path, feature: str) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
 # Subagent definitions
-# ---------------------------------------------------------------------------
 
 
 def plan_agent_definition(constitution: str, spec: str, arch_principles: str) -> AgentDefinition:
@@ -195,9 +191,7 @@ def arch_review_agent_definition(
     )
 
 
-# ---------------------------------------------------------------------------
 # Main orchestration loop
-# ---------------------------------------------------------------------------
 
 
 async def run(feature: str):
@@ -380,9 +374,7 @@ async def run(feature: str):
     )
 
 
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     run_cli(AGENT_NAME, "Plan auto-orchestrator", run)

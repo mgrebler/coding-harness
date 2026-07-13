@@ -17,8 +17,8 @@ from agent_common import resume_state as rstate
 
 class GateSpec(NamedTuple):
     """
-    Describes one gate of a two-gate critic loop (e.g. the plan critic, or the
-    architecture review that follows it).
+    Describes one gate of a critic loop (e.g. the plan critic, or the architecture
+    review that follows it).
 
     result_prefix: result file prefix, e.g. "plan-critic-result"
     script_name: standalone critic script passed to run_gate, e.g. "plan_critic.py"
@@ -117,24 +117,17 @@ async def run_two_gate_loop(
     escalation_kwargs: dict,
 ) -> None:
     """
-    Shared driver for a two-gate critic loop: gate1 (e.g. plan critic / implement
-    critic) must PASS before gate2 (e.g. architecture review / code quality review)
-    runs; both must PASS in the same iteration before on_both_pass fires and the loop
-    returns. Mirrors the per-gate result-file idempotency and violation-carrying
-    behaviour of find_two_gate_resume_state.
+    Shared driver for a two-gate critic loop: gate1 must PASS before gate2 runs; both
+    must PASS in the same iteration before on_both_pass fires and the loop returns.
 
-    resume_state: (iteration, gate1_violations, gate2_violations) as returned by
+    resume_state: (iteration, gate1_violations, gate2_violations), as returned by
     find_two_gate_resume_state.
-
     run_revision(pending_iteration, pending_violations, pending_label): awaited before
-    re-running gate1 whenever violations are pending from either gate's previous FAIL.
-    pending_label is gate1.label or gate2.label, whichever gate produced the violations.
-
-    on_both_pass(gate2_result): awaited once gate2 PASSes, before the loop returns.
-    Callers do their own commit / stage-complete / CI-check work here.
-
-    escalation_kwargs: forwarded to write_escalation() if the loop exhausts
-    max_iterations (spec_dir, feature, max_iterations, and log_fn are supplied here).
+    re-running gate1 whenever either gate has pending violations from its last FAIL.
+    on_both_pass(gate2_result): awaited once gate2 PASSes; callers do their own
+    commit/stage-complete/CI-check work here.
+    escalation_kwargs: forwarded to write_escalation() (with spec_dir, feature,
+    max_iterations, log_fn) if the loop exhausts max_iterations.
     """
     iteration, violations1, violations2 = resume_state
     if skip_fix_agent and (violations1 or violations2):

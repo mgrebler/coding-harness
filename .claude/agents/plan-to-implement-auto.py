@@ -57,9 +57,7 @@ TEST_CRITIC_PREFIX = "test-critic-result"
 IMPL_QUALITY_PREFIX = "code-quality-review-result"
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def stream_subprocess(cmd: list[str]) -> int:
@@ -91,9 +89,7 @@ def get_current_branch() -> str:
     return result.stdout.strip()
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 
 def run(feature: str):
@@ -171,9 +167,7 @@ def run(feature: str):
     log("Pipeline complete. All stages passed.")
 
 
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Full plan-to-implement pipeline orchestrator")

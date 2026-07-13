@@ -50,9 +50,7 @@ RESULT_PREFIX = "tasks-critic-result"
 log = make_logger(AGENT_NAME)
 
 
-# ---------------------------------------------------------------------------
 # Pre-flight checks
-# ---------------------------------------------------------------------------
 
 
 def preflight(spec_dir: Path, feature: str) -> bool:
@@ -85,9 +83,7 @@ def preflight(spec_dir: Path, feature: str) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
 # Subagent definitions
-# ---------------------------------------------------------------------------
 
 
 def tasks_agent_definition(
@@ -161,9 +157,7 @@ def critic_agent_definition(
     )
 
 
-# ---------------------------------------------------------------------------
 # Main orchestration loop
-# ---------------------------------------------------------------------------
 
 
 async def run(feature: str):
@@ -302,9 +296,7 @@ async def run(feature: str):
     )
 
 
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     run_cli(AGENT_NAME, "Tasks auto-orchestrator", run)

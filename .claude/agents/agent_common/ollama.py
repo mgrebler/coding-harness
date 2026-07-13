@@ -44,36 +44,28 @@ def load_local_llm_config(critic_type: str) -> dict | None:
         "ollama_url": raw.get("ollama_url", "http://host.docker.internal:11434").rstrip("/"),
         "model": resolved["model"],
     }
-    # num_ctx caps the KV-cache context window. Without it Ollama uses the model's
-    # default (often 32k–128k), which overflows VRAM and spills to system RAM.
-    # 16384 is a good default for an 8 GB GPU: critic prompts fit comfortably in VRAM.
+    # Without num_ctx, Ollama defaults to the model's native window (often 32k-128k),
+    # which can overflow VRAM and spill to system RAM.
     num_ctx = resolved["num_ctx"] if "num_ctx" in resolved else raw.get("num_ctx")
     if num_ctx is not None:
         result["num_ctx"] = int(num_ctx)
-    # keep_alive controls how long Ollama keeps the model in VRAM after a request.
-    # Set to -1 to pin the model indefinitely — avoids cold-load latency between
-    # critic iterations and between pipeline stages.
+    # -1 pins the model in VRAM indefinitely, avoiding cold-load latency between calls.
     keep_alive = resolved.get("keep_alive") if "keep_alive" in resolved else raw.get("keep_alive")
     if keep_alive is not None:
         result["keep_alive"] = keep_alive
-    # num_gpu forces this many transformer layers onto the GPU instead of Ollama's own
-    # conservative auto-split, which testing showed leaves usable VRAM headroom unused
-    # (e.g. it picked 34/37 layers when its own math showed 35 would still fit). Defaults
-    # to a sentinel above any real model's layer count so "all layers" is the default
-    # behavior with no config needed; llama.cpp clamps to the model's actual max. If the
-    # forced value doesn't fit on a smaller GPU, _ensure_model_context() falls back to
-    # Ollama's normal auto-split automatically.
+    # Forces this many GPU layers instead of Ollama's own auto-split, which testing
+    # showed can leave usable VRAM headroom unused. Defaults to a sentinel above any
+    # real model's layer count ("all layers"); _ensure_model_context() falls back to
+    # auto-split if the forced value doesn't fit.
     num_gpu = resolved["num_gpu"] if "num_gpu" in resolved else raw.get("num_gpu")
     result["num_gpu"] = int(num_gpu) if num_gpu is not None else _FULL_GPU_OFFLOAD
-    # num_predict caps total generated tokens (thinking + response). For reasoning models
-    # like deepseek-r1, runaway thinking causes hallucinations; this is the safety cap.
+    # Caps total generated tokens; reasoning models can otherwise think unboundedly.
     num_predict = (
         resolved.get("num_predict") if "num_predict" in resolved else raw.get("num_predict")
     )
     if num_predict is not None:
         result["num_predict"] = int(num_predict)
-    # temperature controls generation randomness. Default 0.1; use 0.0 for fully
-    # deterministic output (greedy decoding) — useful for reproducible eval runs.
+    # 0.0 = fully deterministic (greedy) — used for reproducible eval runs.
     temperature = (
         resolved.get("temperature") if "temperature" in resolved else raw.get("temperature")
     )
@@ -127,24 +119,17 @@ def _ensure_model_context(
     ollama_url: str, model: str, num_ctx: int | None = None, keep_alive=None, num_gpu=None
 ) -> None:
     """
-    Ensure the model is loaded with the requested num_ctx (if any) and num_gpu (if any).
+    Ensure the model is loaded with the requested num_ctx and num_gpu.
 
-    Ollama reuses a loaded model for any request that fits within its current context
-    window — it will NOT shrink context on its own, and the OpenAI-compatible endpoint
-    does not apply options.num_ctx at load time. When num_ctx is given, this function:
-      1. Unloads the model if it is currently loaded at the wrong context size.
-      2. Preloads it at num_ctx via the native /api/generate endpoint (which does
-         respect options.num_ctx at load time), using keep_alive=-1 so it stays pinned.
+    Ollama won't shrink an already-loaded model's context on its own, and the
+    OpenAI-compatible endpoint ignores options.num_ctx at load time — so when num_ctx
+    is given, this unloads a wrongly-sized model and reloads it via the native
+    /api/generate endpoint (which does respect num_ctx at load time), pinned with
+    keep_alive=-1. When num_ctx is None, it only preloads if nothing is loaded yet
+    (to apply num_gpu); an already-loaded model is left alone.
 
-    When num_ctx is None (the project hasn't opted into pinning it), this function only
-    acts if the model isn't loaded at all yet — it preloads once (to apply num_gpu) and
-    otherwise leaves an already-loaded model alone, since we have no opinion on what
-    context size it should be loaded at and don't want to force one.
-
-    num_gpu, if given, is passed through to force a specific GPU-layer split. If that
-    preload fails (e.g. it doesn't fit in VRAM on a smaller GPU), retries once without
-    num_gpu so Ollama falls back to its own conservative auto-split rather than leaving
-    the model unloaded.
+    If a forced num_gpu doesn't fit in VRAM, retries once without it so Ollama falls
+    back to its own auto-split rather than leaving the model unloaded.
     """
     entry = _get_ps_entry(ollama_url, model)
     current_ctx = entry.get("context_length") if entry else None
@@ -213,28 +198,19 @@ def call_local_llm(
     prompt: str, config: dict, progress_fn=None, progress_interval: int = 250
 ) -> str:
     """
-    Send prompt to Ollama via the native /api/chat endpoint.
-    Uses streaming so the socket stays alive during generation (avoids read timeout).
-    Thinking mode disabled — reduces latency for rule-checking tasks.
-    format="json" grammar-constrains decoding to syntactically valid JSON, preventing
-    the malformed output (e.g. a dropped comma) that smaller models occasionally produce.
-    Per-chunk read timeout: 300s.
+    Send prompt to Ollama via the native /api/chat endpoint (streaming, to keep the
+    socket alive during generation). Thinking mode disabled for lower latency;
+    format="json" grammar-constrains decoding to valid JSON. Uses the native endpoint
+    rather than /v1/chat/completions because the OpenAI-compatible one ignores
+    options.num_ctx at load time, defeating VRAM optimisation.
 
-    Uses the native endpoint (not /v1/chat/completions) because the OpenAI-compatible
-    endpoint ignores options.num_ctx at model-load time and always loads at the model's
-    default context size — defeating VRAM optimisation.
-
-    progress_fn: optional callable(token_count: int, elapsed_s: float) invoked every
-                 progress_interval content tokens. Useful for logging heartbeats to a
-                 log file when the caller cannot otherwise observe generation progress.
-    progress_interval: how often (in tokens) to fire progress_fn (default: 250).
+    progress_fn: optional callable(token_count, elapsed_s) invoked every
+                 progress_interval content tokens, for logging heartbeats.
     """
     url = f"{config['ollama_url']}/api/chat"
-    # num_gpu is deliberately NOT included here: it's a model-load-time decision that
-    # _ensure_model_context() already applies (with a fallback if the forced value
-    # doesn't fit). Re-requesting it on every chat call would tell Ollama to reload
-    # whenever the fallback took a different value than the raw config asked for,
-    # forcing a second, unguarded load attempt outside that fallback's protection.
+    # num_gpu is a model-load-time decision already applied (with fallback) by
+    # _ensure_model_context(); repeating it here on every call would trigger an
+    # unguarded reload whenever the fallback took a different value.
     options: dict = {"temperature": config.get("temperature", 0.1)}
     if config.get("num_ctx"):
         options["num_ctx"] = config["num_ctx"]
@@ -283,7 +259,6 @@ def call_local_llm(
                 if chunk.get("done"):
                     break
                 msg = chunk.get("message", {})
-                # Thinking tokens (native API returns them in message.thinking)
                 thinking = msg.get("thinking", "")
                 if thinking:
                     thinking_count += len(thinking.split())
@@ -326,17 +301,14 @@ def run_local_critic_cli(
 ) -> None:
     """
     Shared CLI driver for a standalone local-LLM critic script (plan_critic.py,
-    architecture_critic.py, etc). Handles argument parsing, config loading, calling
-    the model, parsing/writing the result, and the PASS/FAIL summary line — callers
-    only need to supply build_prompt(spec_dir, iteration) -> str, which should read
-    whatever files it needs (via require_files/read_optional) and return the finished
-    prompt.
+    architecture_critic.py, etc). Callers only supply build_prompt(spec_dir, iteration)
+    -> str; this handles arg parsing, config loading, the model call, and writing
+    the result.
 
-    summary_style:
-      "violations" — count BLOCKING/WARNING entries in result["violations"] (default;
-                     used by plan/tasks/test/implement critics)
-      "confidence" — report result["confidence"] and len(result["blocking_issues"])
-                     (used by architecture/quality reviews)
+    summary_style: "violations" counts BLOCKING/WARNING entries in
+    result["violations"] (plan/tasks/test/implement critics); "confidence" reports
+    result["confidence"] and len(result["blocking_issues"]) (architecture/quality
+    reviews).
 
     Exit codes: 0 success, 1 runtime error, 2 local LLM not configured.
     """
@@ -442,18 +414,14 @@ async def run_gate(
     claude_fallback: Callable,
 ) -> None:
     """
-    Run one review gate: try the local-LLM subprocess first (if critic_type is
-    configured in .specify/local-llm.json), falling back to Claude when it isn't
-    configured (subprocess exit code 2) or absent entirely. Aborts the whole
-    process (sys.exit(1)) if the local LLM subprocess fails for any other reason.
+    Run one review gate for the *-auto.py orchestrators: try the local-LLM subprocess
+    first (if critic_type is configured), falling back to Claude when it isn't
+    configured (exit code 2) or absent. Aborts (sys.exit(1)) on any other subprocess
+    failure. The run_local_critic_cli counterpart for orchestrator gates, which — unlike
+    standalone critic scripts — have a Claude fallback.
 
-    This is the *-auto.py orchestrators' entry point for one gate — the
-    run_local_critic_cli counterpart for standalone critic scripts, which have
-    no Claude fallback of their own.
-
-    claude_fallback: zero-arg callable returning the async iterator of SDK
-    messages to consume on the Claude path, e.g. `lambda: query(prompt=..., options=...)`.
-    Invoked only when falling back — never called if the local LLM path succeeds.
+    claude_fallback: zero-arg callable returning the async iterator of SDK messages,
+    e.g. `lambda: query(prompt=..., options=...)`. Only invoked on fallback.
     """
     llm_config = load_local_llm_config(critic_type)
     if llm_config:
