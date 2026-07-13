@@ -208,7 +208,7 @@ The harness has a two-layer test suite under `tests/`.
 
 ### Layer 1 — Unit tests (no LLM, fast)
 
-Tests for pure functions in `agent_common.py` and the prompt-building functions exported by each critic module. No external calls.
+Tests for pure functions in the `agent_common/` package and the prompt-building functions exported by each critic module. No external calls.
 
 ```bash
 bash tests/run_tests.sh --skip-evals
@@ -270,7 +270,12 @@ speckit/
 ├── tests/
 │   ├── run_tests.sh            # Top-level runner (--skip-evals for unit only)
 │   ├── unit/                   # Pure-function tests, no LLM
-│   │   ├── test_agent_common.py
+│   │   ├── test_console.py
+│   │   ├── test_git.py
+│   │   ├── test_files.py
+│   │   ├── test_resume_state.py
+│   │   ├── test_ollama.py
+│   │   ├── test_critic_loop.py
 │   │   └── test_prompt_builders.py
 │   └── evals/                  # Critic evals against fixture artifacts (requires Ollama)
 │       ├── fixtures/           # Good and bad artifacts for the health-endpoint feature

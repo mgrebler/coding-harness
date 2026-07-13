@@ -69,7 +69,7 @@ claude
 
 ### Key Directories
 
-**`.claude/agents/`** — Python orchestrators that run autonomous multi-stage pipelines. Each stage has a `*-auto.py` (end-to-end with critic loop) and a `*_critic.py` (builds critic prompts). These are invoked manually via slash commands, or chained automatically by the fully-automatic pipeline. `agent_common.py` provides shared utilities.
+**`.claude/agents/`** — Python orchestrators that run autonomous multi-stage pipelines. Each stage has a `*-auto.py` (end-to-end with critic loop) and a `*_critic.py` (builds critic prompts). These are invoked manually via slash commands, or chained automatically by the fully-automatic pipeline. The `agent_common/` package provides shared utilities, split by concern (`console`, `git`, `files`, `resume_state`, `ollama`, `critic_loop`).
 
 **`.claude/skills/`** — User-facing slash commands. Each is a directory with a `SKILL.md` prompt. Skills write artifacts to disk or invoke agent pipelines directly.
 
