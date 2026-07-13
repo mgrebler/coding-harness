@@ -17,13 +17,9 @@ Exit codes:
 import re
 from pathlib import Path
 
-from agent_common import (
-    get_changed_files,
-    read_changed_source_files,
-    read_optional,
-    require_files,
-    run_local_critic_cli,
-)
+from agent_common.files import read_changed_source_files, read_optional, require_files
+from agent_common.git import get_changed_files
+from agent_common.ollama import run_local_critic_cli
 
 CRITIC_RESULT_PREFIX = "implement-critic-result"
 

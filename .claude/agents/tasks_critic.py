@@ -17,10 +17,8 @@ Exit codes:
 import re
 from pathlib import Path
 
-from agent_common import (
-    require_files,
-    run_local_critic_cli,
-)
+from agent_common.files import require_files
+from agent_common.ollama import run_local_critic_cli
 
 CRITIC_RESULT_PREFIX = "tasks-critic-result"
 

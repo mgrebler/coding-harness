@@ -18,11 +18,8 @@ Exit codes:
 
 from pathlib import Path
 
-from agent_common import (
-    read_optional,
-    require_files,
-    run_local_critic_cli,
-)
+from agent_common.files import read_optional, require_files
+from agent_common.ollama import run_local_critic_cli
 
 RESULT_PREFIX = "architecture-review-result"
 

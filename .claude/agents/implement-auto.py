@@ -39,21 +39,15 @@ from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
 from implement_critic import build_implement_critic_prompt
 from quality_critic import build_quality_review_prompt
 
-from agent_common import (
-    GateSpec,
+from agent_common.console import log_sdk_message, make_logger, setup_log_file
+from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
+from agent_common.files import read_file, require_spec_files
+from agent_common.resume_state import (
     extend_iterations_if_reviewed,
     find_passing_iteration,
     find_two_gate_resume_state,
-    finish_stage,
     format_violations_block,
-    log_sdk_message,
-    make_logger,
     next_iteration,
-    read_file,
-    require_spec_files,
-    run_cli,
-    run_two_gate_loop,
-    setup_log_file,
     stage_is_complete,
 )
 

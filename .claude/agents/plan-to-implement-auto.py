@@ -44,13 +44,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_common import (
-    find_passing_iteration,
-    get_feature_from_branch,
-    make_logger,
-    setup_log_file,
-    stage_is_complete,
-)
+from agent_common.console import make_logger, setup_log_file
+from agent_common.git import get_feature_from_branch
+from agent_common.resume_state import find_passing_iteration, stage_is_complete
 
 AGENT_NAME = "plan-to-implement-auto"
 log = make_logger(AGENT_NAME)

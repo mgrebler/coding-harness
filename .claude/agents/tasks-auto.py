@@ -29,21 +29,20 @@ from pathlib import Path
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
 from tasks_critic import build_tasks_critic_prompt
 
-from agent_common import (
+from agent_common.console import log_sdk_message, make_logger, setup_log_file
+from agent_common.critic_loop import (
     GateSpec,
-    extend_iterations_if_reviewed,
     finish_if_already_passing,
     finish_stage,
-    format_violations_block,
-    load_prior_violations,
-    log_sdk_message,
-    make_logger,
-    next_iteration,
-    read_file,
-    require_spec_files,
     run_cli,
     run_single_gate_loop,
-    setup_log_file,
+)
+from agent_common.files import read_file, require_spec_files
+from agent_common.resume_state import (
+    extend_iterations_if_reviewed,
+    format_violations_block,
+    load_prior_violations,
+    next_iteration,
 )
 
 AGENT_NAME = "tasks-auto"

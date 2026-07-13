@@ -130,7 +130,8 @@ manage_gitignore() {
 # Re-run install.sh after updating the harness to keep this section current.
 
 # .claude/agents — individual files so project-specific agents can coexist
-.claude/agents/agent_common.py
+# .claude/agents/agent_common/ — fully harness-owned package, no project customisation expected inside
+.claude/agents/agent_common/
 .claude/agents/implement-auto.py
 .claude/agents/implement_critic.py
 .claude/agents/plan-auto.py

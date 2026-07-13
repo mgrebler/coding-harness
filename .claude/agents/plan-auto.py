@@ -36,21 +36,20 @@ from architecture_critic import build_architecture_review_prompt
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
 from plan_critic import build_plan_critic_prompt
 
-from agent_common import (
+from agent_common.console import log_sdk_message, make_logger, setup_log_file
+from agent_common.critic_loop import (
     GateSpec,
-    extend_iterations_if_reviewed,
-    find_two_gate_resume_state,
     finish_if_already_passing,
     finish_stage,
-    format_violations_block,
-    log_sdk_message,
-    make_logger,
-    next_iteration,
-    read_file,
-    require_spec_files,
     run_cli,
     run_two_gate_loop,
-    setup_log_file,
+)
+from agent_common.files import read_file, require_spec_files
+from agent_common.resume_state import (
+    extend_iterations_if_reviewed,
+    find_two_gate_resume_state,
+    format_violations_block,
+    next_iteration,
 )
 
 AGENT_NAME = "plan-auto"
