@@ -1,6 +1,6 @@
-"""Regression tests for plan-auto.py's preflight() non-interactive default.
+"""Regression tests for ch-1-plan-auto.py's preflight() non-interactive default.
 
-plan-auto.py's filename contains a dash and isn't import-syntax-loadable, so it's
+ch-1-plan-auto.py's filename contains a dash and isn't import-syntax-loadable, so it's
 loaded here via importlib.util directly from its file path.
 """
 
@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 AGENTS_DIR = Path(__file__).parent.parent.parent / ".claude/agents"
 sys.path.insert(0, str(AGENTS_DIR))
 
-_spec = importlib.util.spec_from_file_location("plan_auto", AGENTS_DIR / "plan-auto.py")
+_spec = importlib.util.spec_from_file_location("plan_auto", AGENTS_DIR / "ch-1-plan-auto.py")
 plan_auto = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(plan_auto)
 
@@ -26,7 +26,7 @@ class TestPlanAutoPreflight(unittest.TestCase):
         if with_plan:
             (spec_dir / "plan.md").write_text("plan", encoding="utf-8")
         if with_result:
-            (spec_dir / "plan-critic-result-1.json").write_text(
+            (spec_dir / "ch-1-plan-critic-result-1.json").write_text(
                 '{"status": "FAIL"}', encoding="utf-8"
             )
         return spec_dir

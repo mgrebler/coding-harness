@@ -33,6 +33,19 @@ def make_llm_config(critic_name: str) -> dict:
     }
 
 
+# critic_name (the local-llm.json critic_type key) -> (script filename, result-file prefix).
+# Neither the key nor either value follows a shared naming convention, so this is a
+# plain lookup rather than a derivation.
+_CRITIC_SCRIPTS = {
+    "plan": ("ch_1_plan_critic.py", "ch-1-plan-critic-result"),
+    "architecture": ("ch_1_plan_architecture_critic.py", "ch-1-plan-architecture-review-result"),
+    "tasks": ("ch_2_tasks_critic.py", "ch-2-tasks-critic-result"),
+    "test": ("ch_3_test_critic.py", "ch-3-test-critic-result"),
+    "implement": ("ch_4_implement_critic.py", "ch-4-implement-critic-result"),
+    "quality": ("ch_4_implement_quality_critic.py", "ch-4-implement-code-quality-review-result"),
+}
+
+
 def run_critic(
     tmpdir: Path,
     critic_name: str,
@@ -41,17 +54,17 @@ def run_critic(
 ) -> dict:
     """Run a critic subprocess and return the parsed result JSON.
 
-    result_prefix defaults to "<critic_name>-critic-result"; pass an explicit
-    value for gates whose result filename doesn't follow that convention
-    (e.g. "architecture-review-result", "code-quality-review-result").
+    script filename and default result_prefix are resolved from _CRITIC_SCRIPTS;
+    pass an explicit result_prefix only to override that default.
     """
-    script = AGENTS / f"{critic_name}_critic.py"
+    script_name, default_prefix = _CRITIC_SCRIPTS[critic_name]
+    script = AGENTS / script_name
     subprocess.run(
         [sys.executable, str(script), "--feature", feature],
         cwd=tmpdir,
         check=True,
     )
-    prefix = result_prefix or f"{critic_name}-critic-result"
+    prefix = result_prefix or default_prefix
     result_path = tmpdir / "specs" / feature / f"{prefix}-1.json"
     return json.loads(result_path.read_text(encoding="utf-8"))
 

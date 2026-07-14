@@ -44,7 +44,7 @@ claude
 
 **Two execution modes in installed projects:**
 - **Human-in-the-loop**: review each stage's artifact, then manually run the next `/speckit-*-auto` (or plain `/speckit-*`) command yourself
-- **Fully automatic**: `/speckit-plan-to-implement-auto` chains all stages unattended after `spec.md` is reviewed
+- **Fully automatic**: `/ch-plan-to-implement-auto` chains all stages unattended after `spec.md` is reviewed
 
 ## Harness Architecture
 
@@ -69,7 +69,7 @@ claude
 
 ### Key Directories
 
-**`.claude/agents/`** — Python orchestrators that run autonomous multi-stage pipelines. Each stage has a `*-auto.py` (end-to-end with critic loop) and a `*_critic.py` (builds critic prompts). These are invoked manually via slash commands, or chained automatically by the fully-automatic pipeline. The `agent_common/` package provides shared utilities, split by concern (`console`, `git`, `files`, `resume_state`, `ollama`, `critic_loop`).
+**`.claude/agents/`** — Python orchestrators that run autonomous multi-stage pipelines. Each stage has a `ch-N-stage-auto.py` (end-to-end with critic loop) and a `ch_N_stage_critic.py` (builds critic prompts), numbered by pipeline order (`1`=plan, `2`=tasks, `3`=test, `4`=implement). These are invoked manually via slash commands, or chained automatically by the fully-automatic pipeline. The `agent_common/` package provides shared utilities, split by concern (`console`, `git`, `files`, `resume_state`, `ollama`, `critic_loop`).
 
 **`.claude/skills/`** — User-facing slash commands. Each is a directory with a `SKILL.md` prompt. Skills write artifacts to disk or invoke agent pipelines directly.
 
@@ -128,4 +128,4 @@ Critic passes can run against a local [Ollama](https://ollama.com) instance inst
 
 ### Critic Loop Pattern
 
-Each `*-auto.py` agent runs an iteration loop: generate → critic review → fix → repeat until the critic passes or a max iteration count is reached. Critic prompts are built by companion `*_critic.py` modules. The constitution and quality principles documents from `.specify/memory/` are injected into every critic prompt.
+Each `ch-N-stage-auto.py` agent runs an iteration loop: generate → critic review → fix → repeat until the critic passes or a max iteration count is reached. Critic prompts are built by companion `ch_N_stage_critic.py` modules. The constitution and quality principles documents from `.specify/memory/` are injected into every critic prompt.

@@ -38,7 +38,7 @@ class TestFinishIfAlreadyPassing(unittest.TestCase):
                     log,
                     spec_dir,
                     "plan-auto",
-                    "plan-critic-result",
+                    "ch-1-plan-critic-result",
                     3,
                     "plan critic",
                     "Ready for review.",
@@ -53,14 +53,14 @@ class TestFinishIfAlreadyPassing(unittest.TestCase):
     def test_passing_result_returns_true_and_finishes(self):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
-            (spec_dir / "plan-critic-result-1.json").write_text(json.dumps({"status": "PASS"}))
+            (spec_dir / "ch-1-plan-critic-result-1.json").write_text(json.dumps({"status": "PASS"}))
             log = MagicMock()
             with patch.object(git, "run_auto_commit") as mock_commit:
                 result = critic_loop.finish_if_already_passing(
                     log,
                     spec_dir,
                     "plan-auto",
-                    "plan-critic-result",
+                    "ch-1-plan-critic-result",
                     3,
                     "plan critic",
                     "Ready for review.",
@@ -78,7 +78,7 @@ class TestRunCli(unittest.TestCase):
     def test_explicit_feature_bypasses_branch_lookup(self):
         run_coro = MagicMock()
         with (
-            patch.object(sys, "argv", ["plan-auto.py", "--feature", "foo"]),
+            patch.object(sys, "argv", ["ch-1-plan-auto.py", "--feature", "foo"]),
             patch.object(git, "get_feature_from_branch") as mock_branch,
             patch.object(critic_loop.asyncio, "run") as mock_run,
         ):
@@ -91,7 +91,7 @@ class TestRunCli(unittest.TestCase):
     def test_omitted_feature_falls_back_to_branch(self):
         run_coro = MagicMock()
         with (
-            patch.object(sys, "argv", ["plan-auto.py"]),
+            patch.object(sys, "argv", ["ch-1-plan-auto.py"]),
             patch.object(
                 git, "get_feature_from_branch", return_value="017-my-feature"
             ) as mock_branch,
@@ -125,11 +125,11 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
         ):
             status, violations = results[iteration]
             _write_result(
-                spec_dir, "tasks-critic-result", iteration, status, violations=violations or []
+                spec_dir, "ch-2-tasks-critic-result", iteration, status, violations=violations or []
             )
 
         gate = GateSpec(
-            "tasks-critic-result", "tasks_critic.py", "tasks", "tasks critic", build_query
+            "ch-2-tasks-critic-result", "ch_2_tasks_critic.py", "tasks", "tasks critic", build_query
         )
         return gate, fake_run_gate, build_query_calls
 
@@ -252,7 +252,7 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             # Simulate resuming after an escalation review: iteration 1 already FAILed
             # (result file exists on disk) and resume_state carries its violations forward,
             # but skip_fix_agent=True means those violations were resolved externally.
-            _write_result(spec_dir, "tasks-critic-result", 1, "FAIL", violations=viols)
+            _write_result(spec_dir, "ch-2-tasks-critic-result", 1, "FAIL", violations=viols)
             gate, fake_run_gate, _ = self._make_gate(spec_dir, {2: ("PASS", [])})
             run_fix = AsyncMock()
             on_pass = AsyncMock()
@@ -293,13 +293,17 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
             if critic_type == "plan":
                 status, violations = gate1_results[iteration]
                 _write_result(
-                    spec_dir, "plan-critic-result", iteration, status, violations=violations or []
+                    spec_dir,
+                    "ch-1-plan-critic-result",
+                    iteration,
+                    status,
+                    violations=violations or [],
                 )
             else:
                 status, blocking_issues = gate2_results[iteration]
                 _write_result(
                     spec_dir,
-                    "architecture-review-result",
+                    "ch-1-plan-architecture-review-result",
                     iteration,
                     status,
                     confidence=8,
@@ -307,11 +311,11 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
                 )
 
         gate1 = GateSpec(
-            "plan-critic-result", "plan_critic.py", "plan", "plan critic", build_query1
+            "ch-1-plan-critic-result", "ch_1_plan_critic.py", "plan", "plan critic", build_query1
         )
         gate2 = GateSpec(
-            "architecture-review-result",
-            "architecture_critic.py",
+            "ch-1-plan-architecture-review-result",
+            "ch_1_plan_architecture_critic.py",
             "architecture",
             "architecture review",
             build_query2,
@@ -384,7 +388,7 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
                 )
 
             run_revision.assert_awaited_once_with(1, viols, "plan critic")
-            self.assertFalse((spec_dir / "architecture-review-result-1.json").exists())
+            self.assertFalse((spec_dir / "ch-1-plan-architecture-review-result-1.json").exists())
             on_both_pass.assert_awaited_once()
             mock_escalate.assert_not_called()
 

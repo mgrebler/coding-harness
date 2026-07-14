@@ -20,8 +20,8 @@ class GateSpec(NamedTuple):
     Describes one gate of a critic loop (e.g. the plan critic, or the architecture
     review that follows it).
 
-    result_prefix: result file prefix, e.g. "plan-critic-result"
-    script_name: standalone critic script passed to run_gate, e.g. "plan_critic.py"
+    result_prefix: result file prefix, e.g. "ch-1-plan-critic-result"
+    script_name: standalone critic script passed to run_gate, e.g. "ch_1_plan_critic.py"
     critic_type: local-LLM critic_type key in .specify/local-llm.json, e.g. "plan"
     label: display label used in log lines and passed to run_gate, e.g. "plan critic"
     build_query: (iteration, prior_violations) -> the query(...) call to run via run_gate
@@ -281,7 +281,7 @@ def finish_if_already_passing(
     If a passing result already exists for result_prefix, log it, commit, mark the
     stage complete, and return True (caller should return immediately). Otherwise
     return False. Shared by the trivial "already PASS -> finish" resume guards in
-    plan-auto.py, tasks-auto.py, and test-auto.py (implement-auto.py's guard also
+    ch-1-plan-auto.py, ch-2-tasks-auto.py, and ch-3-test-auto.py (ch-4-implement-auto.py's guard also
     runs CI checks, so it stays bespoke).
     """
     passing = rstate.find_passing_iteration(spec_dir, result_prefix, max_iterations)

@@ -103,7 +103,7 @@ You are the gatekeeper at each stage: review the artifact, then run the next com
 **Review** `specs/NNN-feature/spec.md`. Edit it directly or give Claude feedback. Then:
 
 ```
-/speckit-plan-auto     # or /speckit-plan for a single generation without the critic loop
+/ch-1-plan-auto     # or /speckit-plan for a single generation without the critic loop
 ```
 
 ### Step 2 — Review the plan
@@ -111,7 +111,7 @@ You are the gatekeeper at each stage: review the artifact, then run the next com
 Review `specs/NNN-feature/plan.md`. Then:
 
 ```
-/speckit-tasks-auto     # or /speckit-tasks
+/ch-2-tasks-auto     # or /speckit-tasks
 ```
 
 ### Step 3 — Review the tasks
@@ -119,7 +119,7 @@ Review `specs/NNN-feature/plan.md`. Then:
 Review the dependency-ordered list of `[TEST]` / `[IMPL]` task pairs in `specs/NNN-feature/tasks.md`. Then:
 
 ```
-/speckit-test-auto     # or /speckit-test
+/ch-3-test-auto     # or /ch-3-test
 ```
 
 ### Step 4 — Review the tests
@@ -127,7 +127,7 @@ Review the dependency-ordered list of `[TEST]` / `[IMPL]` task pairs in `specs/N
 Review the failing test files. Then:
 
 ```
-/speckit-implement-auto     # or /speckit-implement
+/ch-4-implement-auto     # or /speckit-implement
 ```
 
 ### Step 5 — Review the implementation
@@ -147,7 +147,7 @@ After specifying the feature, run the entire plan → tasks → test → impleme
 Review and edit `specs/NNN-feature/spec.md` if needed, then:
 
 ```
-/speckit-plan-to-implement-auto
+/ch-plan-to-implement-auto
 ```
 
 This chains four stages — plan, tasks, test, implement — with built-in critic loops at each stage.
@@ -160,14 +160,14 @@ This chains four stages — plan, tasks, test, implement — with built-in criti
 |---------|-------------|
 | `/speckit-specify <desc>` | Create spec + feature branch |
 | `/speckit-plan` | Generate implementation plan (manual) |
-| `/speckit-plan-auto` | Generate plan with automatic critic loop |
+| `/ch-1-plan-auto` | Generate plan with automatic critic loop |
 | `/speckit-tasks` | Generate task list (manual) |
-| `/speckit-tasks-auto` | Generate tasks with automatic critic loop |
-| `/speckit-test` | Write failing tests for all `[TEST]` tasks (manual) |
-| `/speckit-test-auto` | Write tests with automatic critic loop |
+| `/ch-2-tasks-auto` | Generate tasks with automatic critic loop |
+| `/ch-3-test` | Write failing tests for all `[TEST]` tasks (manual) |
+| `/ch-3-test-auto` | Write tests with automatic critic loop |
 | `/speckit-implement` | Implement all tasks (manual) |
-| `/speckit-implement-auto` | Implement with automatic critic loop |
-| `/speckit-plan-to-implement-auto` | Full pipeline: plan → tasks → test → implement |
+| `/ch-4-implement-auto` | Implement with automatic critic loop |
+| `/ch-plan-to-implement-auto` | Full pipeline: plan → tasks → test → implement |
 
 ---
 
@@ -218,7 +218,7 @@ python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
 
 ### Layer 2 — Critic evals (requires local Ollama)
 
-Each critic script (`plan_critic.py`, `tasks_critic.py`, `test_critic.py`, `implement_critic.py`, `architecture_critic.py`, `quality_critic.py`) is run against known-good and known-bad fixture artifacts. The result JSON is asserted. This catches prompt degradation, rule drift, or regressions in critic logic. Not run in CI — no local Ollama instance available there; run locally before pushing changes that touch a critic's prompt or scoring logic.
+Each critic script (`ch_1_plan_critic.py`, `ch_2_tasks_critic.py`, `ch_3_test_critic.py`, `ch_4_implement_critic.py`, `ch_1_plan_architecture_critic.py`, `ch_4_implement_quality_critic.py`) is run against known-good and known-bad fixture artifacts. The result JSON is asserted. This catches prompt degradation, rule drift, or regressions in critic logic. Not run in CI — no local Ollama instance available there; run locally before pushing changes that touch a critic's prompt or scoring logic.
 
 Fixtures live in `tests/evals/fixtures/` — a minimal "health endpoint" feature with good and bad variants for each pipeline stage.
 
@@ -248,8 +248,8 @@ ruff format .
 ```
 speckit/
 ├── .claude/
-│   ├── agents/             # Python orchestrators (plan-auto, tasks-auto, etc.)
-│   └── skills/             # All /speckit-* slash commands
+│   ├── agents/             # Python orchestrators (ch-1-plan-auto, ch-2-tasks-auto, etc.)
+│   └── skills/             # Upstream /speckit-* commands plus this harness's /ch-* commands
 ├── .specify/
 │   ├── extensions/         # Git integration scripts
 │   ├── memory/             # Generic critic quality bars (architecture, code, test principles)

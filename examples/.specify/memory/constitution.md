@@ -77,7 +77,7 @@ Every deliverable is split into two tasks that form an inseparable pair:
 - **[TEST] task** — writes failing test(s) only. No implementation code.
 - **[IMPL] task** — writes implementation only, to pass the failing tests. No new tests.
 
-[TEST] tasks are executed in the test phase (`/speckit-test`).
+[TEST] tasks are executed in the test phase (`/ch-3-test`).
 [IMPL] tasks are executed in the implement phase (`/speckit-implement`).
 
 The test phase must pass its gate before implementation begins (§19).
@@ -295,7 +295,7 @@ An [IMPL] task is BLOCKED until ALL of the following are true for its paired [TE
 
 1. The [TEST] task is marked `[x]` in `tasks.md`.
 2. A red-output artifact exists at `specs/$FEATURE/test-results/<TASKID>-red.txt`, containing a meaningful assertion or "not found" failure — not a compile/syntax error in the test file itself.
-3. `specs/$FEATURE/test-critic-result-*.json` exists with `"status": "PASS"`.
+3. `specs/$FEATURE/ch-3-test-critic-result-*.json` exists with `"status": "PASS"`.
 
 The quality bar for test files is defined in `.specify/memory/test-principles.md`. This is the same relationship that `code-quality-principles.md` has to the code-quality gate.
 

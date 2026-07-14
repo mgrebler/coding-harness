@@ -1,5 +1,5 @@
 """
-Eval tests for tasks_critic.py.
+Eval tests for ch_2_tasks_critic.py.
 Requires a running Ollama instance. Configure via environment variables:
   OLLAMA_URL   (default: http://localhost:11434)
   OLLAMA_MODEL (default: deepseek-r1:8b)

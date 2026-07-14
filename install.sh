@@ -132,20 +132,20 @@ manage_gitignore() {
 # .claude/agents — individual files so project-specific agents can coexist
 # .claude/agents/agent_common/ — fully harness-owned package, no project customisation expected inside
 .claude/agents/agent_common/
-.claude/agents/implement-auto.py
-.claude/agents/implement_critic.py
-.claude/agents/plan-auto.py
-.claude/agents/plan_critic.py
-.claude/agents/plan-to-implement-auto.py
+.claude/agents/ch-4-implement-auto.py
+.claude/agents/ch_4_implement_critic.py
+.claude/agents/ch-1-plan-auto.py
+.claude/agents/ch_1_plan_critic.py
+.claude/agents/ch-plan-to-implement-auto.py
 .claude/agents/semble-search.md
-.claude/agents/tasks-auto.py
-.claude/agents/tasks_critic.py
-.claude/agents/test-auto.py
-.claude/agents/test_critic.py
+.claude/agents/ch-2-tasks-auto.py
+.claude/agents/ch_2_tasks_critic.py
+.claude/agents/ch-3-test-auto.py
+.claude/agents/ch_3_test_critic.py
 
 # .claude/skills — individual skill dirs so project-specific skills can coexist
-.claude/skills/architecture-review-plan/
-.claude/skills/code-quality-review/
+.claude/skills/ch-1-plan-architecture-review/
+.claude/skills/ch-4-implement-code-quality-review/
 .claude/skills/speckit-analyze/
 .claude/skills/speckit-checklist/
 .claude/skills/speckit-clarify/
@@ -156,20 +156,20 @@ manage_gitignore() {
 .claude/skills/speckit-git-remote/
 .claude/skills/speckit-git-validate/
 .claude/skills/speckit-implement/
-.claude/skills/speckit-implement-auto/
-.claude/skills/speckit-implement-critic/
+.claude/skills/ch-4-implement-auto/
+.claude/skills/ch-4-implement-critic/
 .claude/skills/speckit-plan/
-.claude/skills/speckit-plan-auto/
-.claude/skills/speckit-plan-critic/
-.claude/skills/speckit-plan-to-implement-auto/
+.claude/skills/ch-1-plan-auto/
+.claude/skills/ch-1-plan-critic/
+.claude/skills/ch-plan-to-implement-auto/
 .claude/skills/speckit-specify/
 .claude/skills/speckit-tasks/
-.claude/skills/speckit-tasks-auto/
-.claude/skills/speckit-tasks-critic/
+.claude/skills/ch-2-tasks-auto/
+.claude/skills/ch-2-tasks-critic/
 .claude/skills/speckit-taskstoissues/
-.claude/skills/speckit-test/
-.claude/skills/speckit-test-auto/
-.claude/skills/speckit-test-critic/
+.claude/skills/ch-3-test/
+.claude/skills/ch-3-test-auto/
+.claude/skills/ch-3-test-critic/
 
 # .specify subdirs — fully harness-owned, no project files expected here
 .specify/extensions/

@@ -300,8 +300,8 @@ def run_local_critic_cli(
     summary_style: str = "violations",
 ) -> None:
     """
-    Shared CLI driver for a standalone local-LLM critic script (plan_critic.py,
-    architecture_critic.py, etc). Callers only supply build_prompt(spec_dir, iteration)
+    Shared CLI driver for a standalone local-LLM critic script (ch_1_plan_critic.py,
+    ch_1_plan_architecture_critic.py, etc). Callers only supply build_prompt(spec_dir, iteration)
     -> str; this handles arg parsing, config loading, the model call, and writing
     the result.
 

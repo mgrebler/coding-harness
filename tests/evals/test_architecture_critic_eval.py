@@ -1,5 +1,5 @@
 """
-Eval tests for architecture_critic.py.
+Eval tests for ch_1_plan_architecture_critic.py.
 Requires a running Ollama instance. Configure via environment variables:
   OLLAMA_URL   (default: http://localhost:11434)
   OLLAMA_MODEL (default: deepseek-r1:8b)
@@ -21,7 +21,7 @@ from common import (
 )
 
 LOCAL_LLM_CONFIG = make_llm_config("architecture")
-RESULT_PREFIX = "architecture-review-result"
+RESULT_PREFIX = "ch-1-plan-architecture-review-result"
 
 
 def _setup_tmpdir(plan_fixture: Path) -> Path:

@@ -13,44 +13,52 @@ from agent_common import resume_state
 class TestNextIteration(unittest.TestCase):
     def test_empty_dir(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(resume_state.next_iteration(Path(d), "plan-critic-result"), 1)
+            self.assertEqual(resume_state.next_iteration(Path(d), "ch-1-plan-critic-result"), 1)
 
     def test_one_result_file(self):
         with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "plan-critic-result-1.json").write_text("{}")
-            self.assertEqual(resume_state.next_iteration(Path(d), "plan-critic-result"), 2)
+            (Path(d) / "ch-1-plan-critic-result-1.json").write_text("{}")
+            self.assertEqual(resume_state.next_iteration(Path(d), "ch-1-plan-critic-result"), 2)
 
     def test_three_result_files(self):
         with tempfile.TemporaryDirectory() as d:
             for i in range(1, 4):
-                (Path(d) / f"plan-critic-result-{i}.json").write_text("{}")
-            self.assertEqual(resume_state.next_iteration(Path(d), "plan-critic-result"), 4)
+                (Path(d) / f"ch-1-plan-critic-result-{i}.json").write_text("{}")
+            self.assertEqual(resume_state.next_iteration(Path(d), "ch-1-plan-critic-result"), 4)
 
 
 class TestFindPassingIteration(unittest.TestCase):
     def _write(self, d, i, status):
-        (Path(d) / f"plan-critic-result-{i}.json").write_text(json.dumps({"status": status}))
+        (Path(d) / f"ch-1-plan-critic-result-{i}.json").write_text(json.dumps({"status": status}))
 
     def test_no_files_returns_none(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertIsNone(resume_state.find_passing_iteration(Path(d), "plan-critic-result"))
+            self.assertIsNone(
+                resume_state.find_passing_iteration(Path(d), "ch-1-plan-critic-result")
+            )
 
     def test_all_fail_returns_none(self):
         with tempfile.TemporaryDirectory() as d:
             self._write(d, 1, "FAIL")
             self._write(d, 2, "FAIL")
-            self.assertIsNone(resume_state.find_passing_iteration(Path(d), "plan-critic-result"))
+            self.assertIsNone(
+                resume_state.find_passing_iteration(Path(d), "ch-1-plan-critic-result")
+            )
 
     def test_first_pass_returns_1(self):
         with tempfile.TemporaryDirectory() as d:
             self._write(d, 1, "PASS")
-            self.assertEqual(resume_state.find_passing_iteration(Path(d), "plan-critic-result"), 1)
+            self.assertEqual(
+                resume_state.find_passing_iteration(Path(d), "ch-1-plan-critic-result"), 1
+            )
 
     def test_second_pass_returns_2(self):
         with tempfile.TemporaryDirectory() as d:
             self._write(d, 1, "FAIL")
             self._write(d, 2, "PASS")
-            self.assertEqual(resume_state.find_passing_iteration(Path(d), "plan-critic-result"), 2)
+            self.assertEqual(
+                resume_state.find_passing_iteration(Path(d), "ch-1-plan-critic-result"), 2
+            )
 
 
 class TestStageComplete(unittest.TestCase):
@@ -88,22 +96,26 @@ class TestFormatViolationsBlock(unittest.TestCase):
 class TestLoadPriorViolations(unittest.TestCase):
     def _write_result(self, d, i, status, violations=None):
         data = {"status": status, "violations": violations or []}
-        (Path(d) / f"plan-critic-result-{i}.json").write_text(json.dumps(data))
+        (Path(d) / f"ch-1-plan-critic-result-{i}.json").write_text(json.dumps(data))
 
     def test_iteration_1_returns_none(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertIsNone(resume_state.load_prior_violations(Path(d), "plan-critic-result", 1))
+            self.assertIsNone(
+                resume_state.load_prior_violations(Path(d), "ch-1-plan-critic-result", 1)
+            )
 
     def test_previous_pass_returns_none(self):
         with tempfile.TemporaryDirectory() as d:
             self._write_result(d, 1, "PASS")
-            self.assertIsNone(resume_state.load_prior_violations(Path(d), "plan-critic-result", 2))
+            self.assertIsNone(
+                resume_state.load_prior_violations(Path(d), "ch-1-plan-critic-result", 2)
+            )
 
     def test_previous_fail_returns_violations(self):
         viols = [{"rule": "§T1", "severity": "BLOCKING"}]
         with tempfile.TemporaryDirectory() as d:
             self._write_result(d, 1, "FAIL", viols)
-            result = resume_state.load_prior_violations(Path(d), "plan-critic-result", 2)
+            result = resume_state.load_prior_violations(Path(d), "ch-1-plan-critic-result", 2)
             self.assertEqual(result, viols)
 
 

@@ -81,7 +81,7 @@ class TestReadChangedSourceFiles(unittest.TestCase):
         result = files.read_changed_source_files(
             [
                 "specs/001-feature/plan.md",
-                "specs/001-feature/plan-critic-result-1.json",
+                "specs/001-feature/ch-1-plan-critic-result-1.json",
             ]
         )
         self.assertEqual(result, "(no changed files found)")

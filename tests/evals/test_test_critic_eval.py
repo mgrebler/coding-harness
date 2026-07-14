@@ -1,5 +1,5 @@
 """
-Eval tests for test_critic.py.
+Eval tests for ch_3_test_critic.py.
 Requires a running Ollama instance. Configure via environment variables:
   OLLAMA_URL   (default: http://localhost:11434)
   OLLAMA_MODEL (default: deepseek-r1:8b)

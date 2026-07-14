@@ -171,8 +171,8 @@ def build_review_history(
     Build a markdown history block for escalation documents.
 
     result_prefixes is a list of (file_prefix, display_label) pairs, e.g.:
-        [("plan-critic-result", "Plan Critic"),
-         ("architecture-review-result", "Architecture Review")]
+        [("ch-1-plan-critic-result", "Plan Critic"),
+         ("ch-1-plan-architecture-review-result", "Architecture Review")]
 
     Returns a string of fenced JSON blocks, one per result file found.
     """

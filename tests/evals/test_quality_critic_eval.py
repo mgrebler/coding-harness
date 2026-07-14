@@ -1,5 +1,5 @@
 """
-Eval tests for quality_critic.py.
+Eval tests for ch_4_implement_quality_critic.py.
 Requires a running Ollama instance. Configure via environment variables:
   OLLAMA_URL   (default: http://localhost:11434)
   OLLAMA_MODEL (default: deepseek-r1:8b)
@@ -24,7 +24,7 @@ from common import (
 )
 
 LOCAL_LLM_CONFIG = make_llm_config("quality")
-RESULT_PREFIX = "code-quality-review-result"
+RESULT_PREFIX = "ch-4-implement-code-quality-review-result"
 
 IMPL_FILE_IN_REPO = "backend/src/api/health.ts"
 INDEX_FILE_IN_REPO = "backend/src/index.ts"

@@ -5,12 +5,12 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
-from architecture_critic import build_architecture_review_prompt
-from implement_critic import build_implement_critic_prompt
-from plan_critic import build_plan_critic_prompt
-from quality_critic import build_quality_review_prompt
-from tasks_critic import build_tasks_critic_prompt
-from test_critic import build_test_critic_prompt
+from ch_1_plan_architecture_critic import build_architecture_review_prompt
+from ch_1_plan_critic import build_plan_critic_prompt
+from ch_2_tasks_critic import build_tasks_critic_prompt
+from ch_3_test_critic import build_test_critic_prompt
+from ch_4_implement_critic import build_implement_critic_prompt
+from ch_4_implement_quality_critic import build_quality_review_prompt
 
 
 class PromptBuilderCommonTests:
