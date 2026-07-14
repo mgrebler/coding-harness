@@ -129,50 +129,18 @@ manage_gitignore() {
 # Managed by coding-harness/install.sh — do not edit this section manually.
 # Re-run install.sh after updating the harness to keep this section current.
 
-# .claude/agents — individual files so project-specific agents can coexist
+# .claude/agents — matched by naming convention so new ch-N-* agent files are
+# picked up automatically without editing this list; project-specific agents
+# using any other filename still coexist un-ignored
 # .claude/agents/agent_common/ — fully harness-owned package, no project customisation expected inside
 .claude/agents/agent_common/
-.claude/agents/ch_4_implement_auto.py
-.claude/agents/ch_4_implement_critic.py
-.claude/agents/ch_4_implement_quality_critic.py
-.claude/agents/ch_1_plan_auto.py
-.claude/agents/ch_1_plan_critic.py
-.claude/agents/ch_1_plan_architecture_critic.py
-.claude/agents/ch_plan_to_implement_auto.py
+.claude/agents/ch_*.py
 .claude/agents/semble-search.md
-.claude/agents/ch_2_tasks_auto.py
-.claude/agents/ch_2_tasks_critic.py
-.claude/agents/ch_3_test_auto.py
-.claude/agents/ch_3_test_critic.py
-.claude/agents/ch_3_test_quality_critic.py
 
-# .claude/skills — individual skill dirs so project-specific skills can coexist
-.claude/skills/ch-1-plan-architecture-review/
-.claude/skills/ch-4-implement-code-quality-review/
-.claude/skills/speckit-analyze/
-.claude/skills/speckit-checklist/
-.claude/skills/speckit-clarify/
-.claude/skills/speckit-constitution/
-.claude/skills/speckit-git-commit/
-.claude/skills/speckit-git-feature/
-.claude/skills/speckit-git-initialize/
-.claude/skills/speckit-git-remote/
-.claude/skills/speckit-git-validate/
-.claude/skills/speckit-implement/
-.claude/skills/ch-4-implement-auto/
-.claude/skills/ch-4-implement-critic/
-.claude/skills/speckit-plan/
-.claude/skills/ch-1-plan-auto/
-.claude/skills/ch-1-plan-critic/
-.claude/skills/ch-plan-to-implement-auto/
-.claude/skills/speckit-specify/
-.claude/skills/speckit-tasks/
-.claude/skills/ch-2-tasks-auto/
-.claude/skills/ch-2-tasks-critic/
-.claude/skills/speckit-taskstoissues/
-.claude/skills/ch-3-test/
-.claude/skills/ch-3-test-auto/
-.claude/skills/ch-3-test-critic/
+# .claude/skills — harness-owned skill dirs, matched by naming convention so new
+# ch-N-*/speckit-* skills are picked up automatically without editing this list
+.claude/skills/ch-*/
+.claude/skills/speckit-*/
 
 # .specify subdirs — fully harness-owned, no project files expected here
 .specify/extensions/
