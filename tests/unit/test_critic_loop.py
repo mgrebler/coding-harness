@@ -78,7 +78,7 @@ class TestRunCli(unittest.TestCase):
     def test_explicit_feature_bypasses_branch_lookup(self):
         run_coro = MagicMock()
         with (
-            patch.object(sys, "argv", ["ch-1-plan-auto.py", "--feature", "foo"]),
+            patch.object(sys, "argv", ["ch_1_plan_auto.py", "--feature", "foo"]),
             patch.object(git, "get_feature_from_branch") as mock_branch,
             patch.object(critic_loop.asyncio, "run") as mock_run,
         ):
@@ -91,7 +91,7 @@ class TestRunCli(unittest.TestCase):
     def test_omitted_feature_falls_back_to_branch(self):
         run_coro = MagicMock()
         with (
-            patch.object(sys, "argv", ["ch-1-plan-auto.py"]),
+            patch.object(sys, "argv", ["ch_1_plan_auto.py"]),
             patch.object(
                 git, "get_feature_from_branch", return_value="017-my-feature"
             ) as mock_branch,

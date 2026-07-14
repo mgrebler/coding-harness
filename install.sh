@@ -132,16 +132,19 @@ manage_gitignore() {
 # .claude/agents — individual files so project-specific agents can coexist
 # .claude/agents/agent_common/ — fully harness-owned package, no project customisation expected inside
 .claude/agents/agent_common/
-.claude/agents/ch-4-implement-auto.py
+.claude/agents/ch_4_implement_auto.py
 .claude/agents/ch_4_implement_critic.py
-.claude/agents/ch-1-plan-auto.py
+.claude/agents/ch_4_implement_quality_critic.py
+.claude/agents/ch_1_plan_auto.py
 .claude/agents/ch_1_plan_critic.py
-.claude/agents/ch-plan-to-implement-auto.py
+.claude/agents/ch_1_plan_architecture_critic.py
+.claude/agents/ch_plan_to_implement_auto.py
 .claude/agents/semble-search.md
-.claude/agents/ch-2-tasks-auto.py
+.claude/agents/ch_2_tasks_auto.py
 .claude/agents/ch_2_tasks_critic.py
-.claude/agents/ch-3-test-auto.py
+.claude/agents/ch_3_test_auto.py
 .claude/agents/ch_3_test_critic.py
+.claude/agents/ch_3_test_quality_critic.py
 
 # .claude/skills — individual skill dirs so project-specific skills can coexist
 .claude/skills/ch-1-plan-architecture-review/

@@ -3,7 +3,7 @@
 .claude/agents/ch_4_implement_critic.py
 
 Self-contained implement critic that runs against a local Ollama LLM.
-Called by ch-4-implement-auto.py when local LLM is configured for the "implement" critic.
+Called by ch_4_implement_auto.py when local LLM is configured for the "implement" critic.
 
 Usage:
   python3 .claude/agents/ch_4_implement_critic.py [--feature 012-my-feature] [--iteration 2]

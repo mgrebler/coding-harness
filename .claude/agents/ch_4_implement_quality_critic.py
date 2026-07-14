@@ -3,7 +3,7 @@
 .claude/agents/ch_4_implement_quality_critic.py
 
 Self-contained code quality review that runs against a local Ollama LLM.
-Called by ch-4-implement-auto.py (automated path) when local LLM is configured for
+Called by ch_4_implement_auto.py (automated path) when local LLM is configured for
 the "quality" gate. This is Gate 2 of the implement pipeline — it runs only
 after the implement critic (Gate 1) has passed.
 

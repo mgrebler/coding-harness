@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-.claude/agents/ch-2-tasks-auto.py
+.claude/agents/ch_2_tasks_auto.py
 
 Agentic orchestrator for automated task generation and critic loop.
 Run manually via /ch-2-tasks-auto after reviewing the plan.
 Runs independently of any Claude Code interactive session.
 
 Usage:
-  python .claude/agents/ch-2-tasks-auto.py
-  python .claude/agents/ch-2-tasks-auto.py --feature 014-rich-text-formatting
+  python .claude/agents/ch_2_tasks_auto.py
+  python .claude/agents/ch_2_tasks_auto.py --feature 014-rich-text-formatting
 
 Requirements:
   pip install claude-agent-sdk
@@ -289,7 +289,7 @@ async def run(feature: str):
             "required_action": (
                 f"1. Review the violations above.\n"
                 f"2. Edit specs/{feature}/tasks.md manually to address the BLOCKING violations.\n"
-                f"3. Re-run `python .claude/agents/ch-2-tasks-auto.py` to restart the automated loop,\n"
+                f"3. Re-run `python .claude/agents/ch_2_tasks_auto.py` to restart the automated loop,\n"
                 f"   or run `/ch-2-tasks-critic` manually to verify your fixes."
             ),
         },

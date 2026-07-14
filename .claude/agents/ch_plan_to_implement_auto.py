@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-.claude/agents/ch-plan-to-implement-auto.py
+.claude/agents/ch_plan_to_implement_auto.py
 
 Full-pipeline orchestrator: chains ch-1-plan-auto → ch-2-tasks-auto → ch-3-test-auto →
 ch-4-implement-auto for a feature branch without stopping for review between stages.
 
 Usage:
-  python .claude/agents/ch-plan-to-implement-auto.py
-  python .claude/agents/ch-plan-to-implement-auto.py --feature 016-my-feature
+  python .claude/agents/ch_plan_to_implement_auto.py
+  python .claude/agents/ch_plan_to_implement_auto.py --feature 016-my-feature
 
 Requirements:
   pip install claude-agent-sdk   (needed by the sub-scripts, not this wrapper)
@@ -116,7 +116,7 @@ def run(feature: str):
         log("Stage 1/4 (plan): already complete — skipping.")
     else:
         log("Stage 1/4 (plan): running ch-1-plan-auto...")
-        rc = stream_subprocess(["python", ".claude/agents/ch-1-plan-auto.py", "--feature", feature])
+        rc = stream_subprocess(["python", ".claude/agents/ch_1_plan_auto.py", "--feature", feature])
         if rc != 0:
             log("Stage 1/4 (plan): FAILED. Review ch-1-plan-critic-escalation.md and re-run.")
             sys.exit(1)
@@ -131,7 +131,7 @@ def run(feature: str):
     else:
         log("Stage 2/4 (tasks): running ch-2-tasks-auto...")
         rc = stream_subprocess(
-            ["python", ".claude/agents/ch-2-tasks-auto.py", "--feature", feature]
+            ["python", ".claude/agents/ch_2_tasks_auto.py", "--feature", feature]
         )
         if rc != 0:
             log("Stage 2/4 (tasks): FAILED. Review ch-2-tasks-critic-escalation.md and re-run.")
@@ -146,7 +146,7 @@ def run(feature: str):
         log("Stage 3/4 (test): already complete — skipping.")
     else:
         log("Stage 3/4 (test): running ch-3-test-auto...")
-        rc = stream_subprocess(["python", ".claude/agents/ch-3-test-auto.py", "--feature", feature])
+        rc = stream_subprocess(["python", ".claude/agents/ch_3_test_auto.py", "--feature", feature])
         if rc != 0:
             log("Stage 3/4 (test): FAILED. Review ch-3-test-critic-escalation.md and re-run.")
             sys.exit(1)
@@ -161,7 +161,7 @@ def run(feature: str):
     else:
         log("Stage 4/4 (implement): running ch-4-implement-auto...")
         rc = stream_subprocess(
-            ["python", ".claude/agents/ch-4-implement-auto.py", "--feature", feature]
+            ["python", ".claude/agents/ch_4_implement_auto.py", "--feature", feature]
         )
         if rc != 0:
             log(

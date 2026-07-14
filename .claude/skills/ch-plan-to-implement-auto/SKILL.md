@@ -1,6 +1,6 @@
 ---
 name: ch-plan-to-implement-auto
-description: Runs the full plan → tasks → test → implement pipeline for the current feature branch unattended, without stopping for review between stages. Chains ch-1-plan-auto.py, ch-2-tasks-auto.py, ch-3-test-auto.py, and ch-4-implement-auto.py sequentially. Resume-safe — re-running after any interruption continues from the first incomplete stage.
+description: Runs the full plan → tasks → test → implement pipeline for the current feature branch unattended, without stopping for review between stages. Chains ch_1_plan_auto.py, ch_2_tasks_auto.py, ch_3_test_auto.py, and ch_4_implement_auto.py sequentially. Resume-safe — re-running after any interruption continues from the first incomplete stage.
 user-invocable: true
 ---
 
@@ -10,7 +10,7 @@ Run the full automated pipeline for the current feature branch: plan generation,
 task generation, test writing, and implementation — chained end-to-end without
 stopping for human review between stages.
 
-All orchestration logic lives in `.claude/agents/ch-plan-to-implement-auto.py`. This
+All orchestration logic lives in `.claude/agents/ch_plan_to_implement_auto.py`. This
 skill is a thin invocation wrapper — do not re-implement the logic here.
 
 ---
@@ -28,14 +28,14 @@ Before running, ensure:
 Run from the repo root:
 
 ```bash
-python .claude/agents/ch-plan-to-implement-auto.py
+python .claude/agents/ch_plan_to_implement_auto.py
 ```
 
 The script derives the feature from the current git branch automatically.
 To target a specific feature, pass `--feature <name>`:
 
 ```bash
-python .claude/agents/ch-plan-to-implement-auto.py --feature 016-my-feature
+python .claude/agents/ch_plan_to_implement_auto.py --feature 016-my-feature
 ```
 
 Wait for the script to complete and relay its output to the user.
@@ -46,22 +46,22 @@ Wait for the script to complete and relay its output to the user.
 
 Runs four stages in sequence. Each stage must pass before the next begins.
 
-**Stage 1 — Plan** (`ch-1-plan-auto.py`):
+**Stage 1 — Plan** (`ch_1_plan_auto.py`):
 - Generates `plan.md` via the plan agent
 - Runs iterative two-gate review (plan critic + architecture review, up to 3 iterations)
 - On PASS: triggers auto-commit via the git extension
 
-**Stage 2 — Tasks** (`ch-2-tasks-auto.py`):
+**Stage 2 — Tasks** (`ch_2_tasks_auto.py`):
 - Generates `tasks.md` via the tasks agent
 - Runs iterative tasks critic review (up to 3 iterations)
 - On PASS: triggers auto-commit via the git extension
 
-**Stage 3 — Test** (`ch-3-test-auto.py`):
+**Stage 3 — Test** (`ch_3_test_auto.py`):
 - Writes failing tests for all `[TEST]` tasks in `tasks.md`
 - Runs iterative two-gate review (test critic + test quality review, up to 3 iterations)
 - On PASS: triggers auto-commit via the git extension
 
-**Stage 4 — Implement** (`ch-4-implement-auto.py`):
+**Stage 4 — Implement** (`ch_4_implement_auto.py`):
 - Implements all unchecked tasks in `tasks.md`
 - Runs iterative two-gate review (implement critic + code quality review, up to 3 iterations)
 - Runs CI checks (typecheck, unit tests, e2e) after both gates pass

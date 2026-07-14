@@ -3,7 +3,7 @@
 .claude/agents/ch_3_test_critic.py
 
 Self-contained test critic that runs against a local Ollama LLM.
-Called by ch-3-test-auto.py when local LLM is configured for the "test" critic.
+Called by ch_3_test_auto.py when local LLM is configured for the "test" critic.
 
 Usage:
   python3 .claude/agents/ch_3_test_critic.py [--feature 012-my-feature] [--iteration 2]

@@ -281,7 +281,7 @@ def finish_if_already_passing(
     If a passing result already exists for result_prefix, log it, commit, mark the
     stage complete, and return True (caller should return immediately). Otherwise
     return False. Shared by the trivial "already PASS -> finish" resume guards in
-    ch-1-plan-auto.py, ch-2-tasks-auto.py, and ch-3-test-auto.py (ch-4-implement-auto.py's guard also
+    ch_1_plan_auto.py, ch_2_tasks_auto.py, and ch_3_test_auto.py (ch_4_implement_auto.py's guard also
     runs CI checks, so it stays bespoke).
     """
     passing = rstate.find_passing_iteration(spec_dir, result_prefix, max_iterations)

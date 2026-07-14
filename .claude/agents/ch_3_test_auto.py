@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-.claude/agents/ch-3-test-auto.py
+.claude/agents/ch_3_test_auto.py
 
 Agentic orchestrator for the automated test phase loop.
 Writes failing tests for all [TEST] tasks in tasks.md, then runs the test critic and
 test quality review in a two-gate feedback loop until both PASS or escalation.
 
 Usage:
-  python .claude/agents/ch-3-test-auto.py
-  python .claude/agents/ch-3-test-auto.py --feature 015-job-description-rich-text
+  python .claude/agents/ch_3_test_auto.py
+  python .claude/agents/ch_3_test_auto.py --feature 015-job-description-rich-text
 
 Requirements:
   pip install claude-agent-sdk
@@ -479,7 +479,7 @@ async def run(feature: str):
             "required_action": (
                 "1. Review the violations above.\n"
                 "2. Fix the BLOCKING violations manually in the test files.\n"
-                "3. Re-run `python .claude/agents/ch-3-test-auto.py` to restart the automated loop,\n"
+                "3. Re-run `python .claude/agents/ch_3_test_auto.py` to restart the automated loop,\n"
                 "   or run `/ch-3-test-critic` and `/ch-3-test-quality-review` manually to verify your fixes.\n"
                 "4. Once both gates pass, run `/ch-4-implement-auto` to start implementation."
             ),

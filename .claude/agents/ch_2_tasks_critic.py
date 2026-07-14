@@ -3,7 +3,7 @@
 .claude/agents/ch_2_tasks_critic.py
 
 Self-contained tasks critic that runs against a local Ollama LLM.
-Called by ch-2-tasks-auto.py when local LLM is configured for the "tasks" critic.
+Called by ch_2_tasks_auto.py when local LLM is configured for the "tasks" critic.
 
 Usage:
   python3 .claude/agents/ch_2_tasks_critic.py [--feature 012-my-feature] [--iteration 2]

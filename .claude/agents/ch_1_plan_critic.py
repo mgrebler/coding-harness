@@ -4,7 +4,7 @@
 
 Self-contained plan critic that runs against a local Ollama LLM.
 Called by ch-1-plan-critic/SKILL.md (human-in-the-loop) and
-ch-1-plan-auto.py (automated path) when local LLM is configured.
+ch_1_plan_auto.py (automated path) when local LLM is configured.
 
 Usage:
   python3 .claude/agents/ch_1_plan_critic.py [--feature 012-my-feature] [--iteration 2]

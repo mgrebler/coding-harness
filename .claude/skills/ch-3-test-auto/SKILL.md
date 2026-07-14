@@ -1,6 +1,6 @@
 ---
 name: ch-3-test-auto
-description: Runs the automated test phase loop for the current feature branch by invoking ch-3-test-auto.py. Writes failing tests for all [TEST] tasks, runs the iterative test-critic and test-quality-review two-gate loop, applies fixes, and escalates on failure. Run manually after reviewing tasks.md.
+description: Runs the automated test phase loop for the current feature branch by invoking ch_3_test_auto.py. Writes failing tests for all [TEST] tasks, runs the iterative test-critic and test-quality-review two-gate loop, applies fixes, and escalates on failure. Run manually after reviewing tasks.md.
 user-invocable: true
 ---
 
@@ -8,7 +8,7 @@ user-invocable: true
 
 Run the automated test phase loop for the current feature branch.
 
-All orchestration logic lives in `.claude/agents/ch-3-test-auto.py`. This skill is a thin
+All orchestration logic lives in `.claude/agents/ch_3_test_auto.py`. This skill is a thin
 invocation wrapper — do not re-implement the loop here.
 
 ---
@@ -18,14 +18,14 @@ invocation wrapper — do not re-implement the loop here.
 Run from the repo root:
 
 ```bash
-python .claude/agents/ch-3-test-auto.py
+python .claude/agents/ch_3_test_auto.py
 ```
 
 The script derives the feature from the current git branch automatically.
 To target a specific feature, pass `--feature <name>`:
 
 ```bash
-python .claude/agents/ch-3-test-auto.py --feature 015-job-description-rich-text
+python .claude/agents/ch_3_test_auto.py --feature 015-job-description-rich-text
 ```
 
 Wait for the script to complete and relay its output to the user.

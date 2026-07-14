@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-.claude/agents/ch-1-plan-auto.py
+.claude/agents/ch_1_plan_auto.py
 
 Agentic orchestrator for automated plan generation and critic loop.
 Run manually via /ch-1-plan-auto after reviewing the spec.
 Runs independently of any Claude Code interactive session.
 
 Usage:
-  python .claude/agents/ch-1-plan-auto.py
-  python .claude/agents/ch-1-plan-auto.py --feature 013-job-list-sort-filter
+  python .claude/agents/ch_1_plan_auto.py
+  python .claude/agents/ch_1_plan_auto.py --feature 013-job-list-sort-filter
 
 Requirements:
   pip install claude-agent-sdk
@@ -367,7 +367,7 @@ async def run(feature: str):
             "required_action": (
                 f"1. Review the violations above.\n"
                 f"2. Edit specs/{feature}/plan.md manually to address the BLOCKING violations.\n"
-                f"3. Re-run `python .claude/agents/ch-1-plan-auto.py` to restart the automated loop,\n"
+                f"3. Re-run `python .claude/agents/ch_1_plan_auto.py` to restart the automated loop,\n"
                 f"   or run `/ch-1-plan-critic` and `/ch-1-plan-architecture-review` manually to verify your fixes."
             ),
         },

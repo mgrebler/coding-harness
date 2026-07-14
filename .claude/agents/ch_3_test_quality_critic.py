@@ -3,7 +3,7 @@
 .claude/agents/ch_3_test_quality_critic.py
 
 Self-contained test quality review that runs against a local Ollama LLM.
-Called by ch-3-test-auto.py (automated path) when local LLM is configured for
+Called by ch_3_test_auto.py (automated path) when local LLM is configured for
 the "test-quality" gate. This is Gate 2 of the test pipeline — it runs only
 after the test critic (Gate 1) has passed.
 

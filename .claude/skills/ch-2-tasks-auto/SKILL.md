@@ -1,6 +1,6 @@
 ---
 name: ch-2-tasks-auto
-description: Runs the automated task generation and critic loop for the current feature branch by invoking ch-2-tasks-auto.py. Handles task generation, iterative critic review, revision, and escalation. Run manually after reviewing the plan.
+description: Runs the automated task generation and critic loop for the current feature branch by invoking ch_2_tasks_auto.py. Handles task generation, iterative critic review, revision, and escalation. Run manually after reviewing the plan.
 user-invocable: true
 ---
 
@@ -8,7 +8,7 @@ user-invocable: true
 
 Run the automated task generation and critic loop for the current feature branch.
 
-All orchestration logic lives in `.claude/agents/ch-2-tasks-auto.py`. This skill is a thin
+All orchestration logic lives in `.claude/agents/ch_2_tasks_auto.py`. This skill is a thin
 invocation wrapper — do not re-implement the loop here.
 
 ---
@@ -18,14 +18,14 @@ invocation wrapper — do not re-implement the loop here.
 Run from the repo root:
 
 ```bash
-python .claude/agents/ch-2-tasks-auto.py
+python .claude/agents/ch_2_tasks_auto.py
 ```
 
 The script derives the feature from the current git branch automatically.
 To target a specific feature, pass `--feature <name>`:
 
 ```bash
-python .claude/agents/ch-2-tasks-auto.py --feature 015-job-description-rich-text
+python .claude/agents/ch_2_tasks_auto.py --feature 015-job-description-rich-text
 ```
 
 Wait for the script to complete and relay its output to the user.
@@ -49,6 +49,6 @@ incomplete step using result files as idempotency markers.
 
 ## What this skill does not do
 
-- Does not implement task generation or critic logic — that lives in ch-2-tasks-auto.py and its subagents
+- Does not implement task generation or critic logic — that lives in ch_2_tasks_auto.py and its subagents
 - Does not proceed to the test phase — run `/ch-3-test-auto` after reviewing `tasks.md`
 - Does not push to remote

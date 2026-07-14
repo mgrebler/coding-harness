@@ -248,7 +248,7 @@ ruff format .
 ```
 speckit/
 ├── .claude/
-│   ├── agents/             # Python orchestrators (ch-1-plan-auto, ch-2-tasks-auto, etc.)
+│   ├── agents/             # Python orchestrators (ch_1_plan_auto, ch_2_tasks_auto, etc.)
 │   └── skills/             # Upstream /speckit-* commands plus this harness's /ch-* commands
 ├── .specify/
 │   ├── extensions/         # Git integration scripts

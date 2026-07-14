@@ -3,7 +3,7 @@
 .claude/agents/ch_1_plan_architecture_critic.py
 
 Self-contained architecture review that runs against a local Ollama LLM.
-Called by ch-1-plan-auto.py (automated path) when local LLM is configured for
+Called by ch_1_plan_auto.py (automated path) when local LLM is configured for
 the "architecture" gate. This is Gate 2 of the plan pipeline — it runs only
 after the plan critic (Gate 1) has passed.
 

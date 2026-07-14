@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-.claude/agents/ch-4-implement-auto.py
+.claude/agents/ch_4_implement_auto.py
 
 Agentic orchestrator for automated implementation and critic loop.
 Run manually after tasks.md has been reviewed and is ready for implementation.
 Runs independently of any Claude Code interactive session.
 
 Usage:
-  python .claude/agents/ch-4-implement-auto.py
-  python .claude/agents/ch-4-implement-auto.py --feature 015-job-description-rich-text
+  python .claude/agents/ch_4_implement_auto.py
+  python .claude/agents/ch_4_implement_auto.py --feature 015-job-description-rich-text
 
 Requirements:
   pip install claude-agent-sdk
@@ -635,7 +635,7 @@ async def run(feature: str):
             "required_action": (
                 "1. Review the violations above.\n"
                 "2. Fix the BLOCKING violations manually in the relevant source files.\n"
-                "3. Re-run `python .claude/agents/ch-4-implement-auto.py` to restart the automated loop,\n"
+                "3. Re-run `python .claude/agents/ch_4_implement_auto.py` to restart the automated loop,\n"
                 "   or run `/ch-4-implement-critic` and `/ch-4-implement-code-quality-review` manually to verify your fixes."
             ),
         },

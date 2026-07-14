@@ -1,6 +1,6 @@
 ---
 name: ch-1-plan-auto
-description: Runs the automated plan generation and critic loop for the current feature branch by invoking ch-1-plan-auto.py. Handles plan generation, iterative critic review, architecture review, revision, and escalation. Run manually after reviewing the spec.
+description: Runs the automated plan generation and critic loop for the current feature branch by invoking ch_1_plan_auto.py. Handles plan generation, iterative critic review, architecture review, revision, and escalation. Run manually after reviewing the spec.
 user-invocable: true
 ---
 
@@ -8,7 +8,7 @@ user-invocable: true
 
 Run the automated plan generation and critic loop for the current feature branch.
 
-All orchestration logic lives in `.claude/agents/ch-1-plan-auto.py`. This skill is a thin
+All orchestration logic lives in `.claude/agents/ch_1_plan_auto.py`. This skill is a thin
 invocation wrapper — do not re-implement the loop here.
 
 ---
@@ -18,14 +18,14 @@ invocation wrapper — do not re-implement the loop here.
 Run from the repo root:
 
 ```bash
-python .claude/agents/ch-1-plan-auto.py
+python .claude/agents/ch_1_plan_auto.py
 ```
 
 The script derives the feature from the current git branch automatically.
 To target a specific feature, pass `--feature <name>`:
 
 ```bash
-python .claude/agents/ch-1-plan-auto.py --feature 015-job-description-rich-text
+python .claude/agents/ch_1_plan_auto.py --feature 015-job-description-rich-text
 ```
 
 Wait for the script to complete and relay its output to the user.
@@ -50,6 +50,6 @@ incomplete step using result files as idempotency markers.
 
 ## What this skill does not do
 
-- Does not implement planning or critic logic — that lives in ch-1-plan-auto.py and its subagents
+- Does not implement planning or critic logic — that lives in ch_1_plan_auto.py and its subagents
 - Does not proceed to task generation — run `/ch-2-tasks-auto` after reviewing `plan.md`
 - Does not push to remote
