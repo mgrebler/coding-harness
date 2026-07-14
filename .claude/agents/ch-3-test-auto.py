@@ -3,8 +3,8 @@
 .claude/agents/ch-3-test-auto.py
 
 Agentic orchestrator for the automated test phase loop.
-Writes failing tests for all [TEST] tasks in tasks.md, then runs the test-critic
-in a feedback loop until PASS or escalation.
+Writes failing tests for all [TEST] tasks in tasks.md, then runs the test critic and
+test quality review in a two-gate feedback loop until both PASS or escalation.
 
 Usage:
   python .claude/agents/ch-3-test-auto.py
@@ -20,13 +20,17 @@ Loop structure:
   1. Test agent — writes failing tests for all unchecked [TEST] tasks in tasks.md,
      records red-output artifacts in specs/$FEATURE/test-results/<TASKID>-red.txt
   2. Test critic — validates test files against test-principles.md, spec.md, and constitution.md
-  If critic FAIL: fix agent addresses violations in test files only, critic re-runs.
+  3. Test quality review — validates assertion quality, test naming, and CI readiness
+  Gates 2 and 3 must both PASS in the same iteration before the test phase is committed.
+  If either gate FAILs: fix agent addresses violations in test files only, both gates re-run.
   Maximum 3 iterations before escalation.
 
 Resume behaviour:
   Re-running after an interruption continues from the last incomplete step:
-  - result files act as idempotency markers
+  - Result files act as idempotency markers: a gate is skipped if its result already exists
   - If the last critic result was FAIL, fix agent runs before the next critic
+  - If critic PASS but quality review not yet run, resumes at the same iteration number
+  - If the last quality review result was FAIL, fix agent runs before the next critic
   - Test agent is re-run only if unchecked [TEST] tasks remain in tasks.md
 """
 
@@ -35,6 +39,7 @@ import sys
 from pathlib import Path
 
 from ch_3_test_critic import build_test_critic_prompt
+from ch_3_test_quality_critic import build_test_quality_review_prompt
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
 
 from agent_common.console import log_sdk_message, make_logger, setup_log_file
@@ -43,18 +48,19 @@ from agent_common.critic_loop import (
     finish_if_already_passing,
     finish_stage,
     run_cli,
-    run_single_gate_loop,
+    run_two_gate_loop,
 )
 from agent_common.files import read_file, require_spec_files
 from agent_common.resume_state import (
     extend_iterations_if_reviewed,
+    find_two_gate_resume_state,
     format_violations_block,
-    load_prior_violations,
     next_iteration,
 )
 
 AGENT_NAME = "ch-3-test-auto"
 CRITIC_RESULT_PREFIX = "ch-3-test-critic-result"
+TEST_QUALITY_RESULT_PREFIX = "ch-3-test-quality-review-result"
 log = make_logger(AGENT_NAME)
 
 
@@ -192,6 +198,40 @@ def test_critic_agent_definition(
     )
 
 
+def test_quality_review_agent_definition(
+    constitution: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    test_principles: str,
+    feature: str,
+    iteration: int,
+    quality_violations: list | None = None,
+) -> AgentDefinition:
+    violations_block = format_violations_block(
+        quality_violations, iteration, "test quality issues (already addressed by the test agent)"
+    )
+
+    output_instructions = (
+        f"- After producing JSON, write it to specs/{feature}/ch-3-test-quality-review-result-{iteration}.json using Bash\n"
+        f"- Print one line: [ch-3-test-quality-review] iteration {iteration} → PASS or FAIL → path"
+    )
+    return AgentDefinition(
+        description="Reviews test files for assertion quality, test naming, and CI readiness.",
+        prompt=build_test_quality_review_prompt(
+            constitution,
+            spec,
+            plan,
+            tasks,
+            test_principles,
+            iteration,
+            violations_block=violations_block,
+            output_instructions=output_instructions,
+        ),
+        tools=["Read", "Write", "Bash", "Glob", "Grep"],
+    )
+
+
 def test_fix_agent_definition(
     constitution: str,
     spec: str,
@@ -297,32 +337,36 @@ async def run(feature: str):
     else:
         log("All [TEST] tasks already checked off — skipping test agent.")
 
-    # --- Resume guard: done if critic already passed ---
+    # --- Resume guard: done if test quality review already passed ---
     if finish_if_already_passing(
         log,
         spec_dir,
         AGENT_NAME,
-        CRITIC_RESULT_PREFIX,
+        TEST_QUALITY_RESULT_PREFIX,
         MAX_ITERATIONS,
-        "test critic",
+        "test quality review",
         "Test phase is ready for human review. No further action taken.",
         "after_test",
         "ch-3-test",
     ):
         return
 
-    # --- Resume state: load violations from last FAIL so fix agent runs before next critic ---
+    # --- Resume state: determine where we left off ---
+    # Use result files as idempotency markers; carry forward violations from any incomplete gate.
     iteration = next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
-    critic_violations = load_prior_violations(spec_dir, CRITIC_RESULT_PREFIX, iteration)
+    resume_state = find_two_gate_resume_state(
+        spec_dir, CRITIC_RESULT_PREFIX, TEST_QUALITY_RESULT_PREFIX, iteration
+    )
 
-    async def run_fix(pending_iter: int, pending_violations: list) -> None:
+    async def run_revision(pending_iter: int, pending_violations: list, pending_label: str) -> None:
         tasks_content = read_file(spec_dir / "tasks.md")
         log(
-            f"Running fix agent for critic violations from iteration {pending_iter} ({len(pending_violations)} issue(s))..."
+            f"Running fix agent for {pending_label} violations from iteration {pending_iter} "
+            f"({len(pending_violations)} issue(s))..."
         )
         async for message in query(
             prompt=(
-                f"Fix test critic violations for feature {feature}. "
+                f"Fix {pending_label} violations for feature {feature}. "
                 f"Violations: {json.dumps(pending_violations)}"
             ),
             options=ClaudeAgentOptions(
@@ -337,7 +381,7 @@ async def run(feature: str):
         ):
             log_sdk_message(message, prefix="  ")
 
-    async def on_pass(result: dict) -> None:
+    async def on_both_pass(quality_result: dict) -> None:
         finish_stage(
             log,
             spec_dir,
@@ -372,35 +416,72 @@ async def run(feature: str):
             ),
         )
 
-    # --- Step 2: Critic loop ---
-    await run_single_gate_loop(
+    def build_quality_query(iteration: int, quality_violations):
+        tasks_content = read_file(spec_dir / "tasks.md")
+        return query(
+            prompt=(
+                f"Review the test files for feature {feature} for test quality "
+                f"(assertion quality, naming, CI readiness). "
+                f"Write result to specs/{feature}/ch-3-test-quality-review-result-{iteration}.json."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "test-quality-review": test_quality_review_agent_definition(
+                        constitution,
+                        spec,
+                        plan,
+                        tasks_content,
+                        test_principles,
+                        feature,
+                        iteration,
+                        quality_violations,
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        )
+
+    # --- Step 2: Two-gate loop (test critic → test quality review) ---
+    await run_two_gate_loop(
         log,
         spec_dir,
         feature,
         MAX_ITERATIONS,
-        gate=GateSpec(
+        gate1=GateSpec(
             CRITIC_RESULT_PREFIX, "ch_3_test_critic.py", "test", "test critic", build_critic_query
         ),
-        resume_state=(iteration, critic_violations),
+        gate2=GateSpec(
+            TEST_QUALITY_RESULT_PREFIX,
+            "ch_3_test_quality_critic.py",
+            "test-quality",
+            "test quality review",
+            build_quality_query,
+        ),
+        resume_state=resume_state,
         skip_fix_agent=_skip_fix_agent,
-        run_fix=run_fix,
-        on_pass=on_pass,
+        run_revision=run_revision,
+        on_both_pass=on_both_pass,
         escalation_kwargs={
             "escalation_filename": "ch-3-test-critic-escalation.md",
-            "log_description": "test phase failed critic",
-            "review_history_prefixes": [(CRITIC_RESULT_PREFIX, "Test Critic")],
-            "title": "Test Critic Escalation",
+            "log_description": "test phase failed review",
+            "review_history_prefixes": [
+                (CRITIC_RESULT_PREFIX, "Test Critic"),
+                (TEST_QUALITY_RESULT_PREFIX, "Test Quality Review"),
+            ],
+            "title": "Test Review Escalation",
             "summary": (
-                "The automated test-critic loop exhausted its iteration limit without producing\n"
-                "test files that passed all critic rules. Human review is required to resolve\n"
-                "the outstanding violations before implementation can begin."
+                "The automated test review loop exhausted its iteration limit without producing\n"
+                "test files that passed both the test critic and the test quality review. Human\n"
+                "review is required to resolve the outstanding violations before implementation\n"
+                "can begin."
             ),
             "required_action": (
                 "1. Review the violations above.\n"
                 "2. Fix the BLOCKING violations manually in the test files.\n"
                 "3. Re-run `python .claude/agents/ch-3-test-auto.py` to restart the automated loop,\n"
-                "   or run `/ch-3-test-critic` manually to verify your fixes.\n"
-                "4. Once the critic passes, run `/ch-4-implement-auto` to start implementation."
+                "   or run `/ch-3-test-critic` and `/ch-3-test-quality-review` manually to verify your fixes.\n"
+                "4. Once both gates pass, run `/ch-4-implement-auto` to start implementation."
             ),
         },
     )

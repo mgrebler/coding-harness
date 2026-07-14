@@ -1,6 +1,6 @@
 ---
 name: ch-3-test-critic
-description: Validates test files written during the test phase against test-principles.md, spec.md, and constitution.md. Checks red-state confirmation, spec coverage, test isolation, assertion quality, and naming discipline. Returns structured pass/fail output. Use after completing the test phase to gate entry into implementation.
+description: Validates test files written during the test phase against test-principles.md, spec.md, and constitution.md. Checks task traceability, red-state confirmation, spec coverage, implementation leakage, test isolation, and stack compliance. Returns structured pass/fail output. Use after completing the test phase to gate entry into the test quality review.
 user-invocable: true
 ---
 
@@ -8,7 +8,7 @@ user-invocable: true
 
 Validate the test files written on the current branch against `test-principles.md`, `spec.md`, `tasks.md`, and `constitution.md`. Return structured pass/fail output. Do not suggest rewrites. Do not write code. Do not fix violations. You identify violations only.
 
-A violation is a specific, citable deviation from a rule below — a missing artifact, a tautological assertion, an untested acceptance criterion, shared mutable state between tests. Vague observations ("this could be cleaner") are not violations and must not appear in output.
+A violation is a specific, citable deviation from a rule below — a missing artifact, an untested acceptance criterion, shared mutable state between tests, an unapproved test library import. Vague observations ("this could be cleaner") are not violations and must not appear in output.
 
 Return ONLY valid JSON matching the output schema below. No preamble. No explanation outside the JSON. No markdown fences.
 
@@ -101,24 +101,8 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - No unapproved test libraries or test runners introduced
 - If a test file imports from an unapproved library, cite the import statement
 
-### §TQ7 — Assertion Quality [WARNING]
-- No tautological assertions where the expected and actual values are always equal regardless
-  of implementation (e.g. `expect(true).toBe(true)`, `expect(mock.returnValue).toBe(mock.returnValue)`)
-- Each assertion must be capable of failing if the implementation is wrong
-- If a tautological assertion is found, cite the specific `expect()` call
-
-### §TQ8 — Test Naming [WARNING]
-- Test names (in `it()`, `test()`, `describe()`) must describe the behaviour or scenario
-  under test, not the implementation detail
-- Names like "calls the service", "invokes the function", "runs the query" are implementation-
-  coupled and should be cited
-- Names like "returns 404 when job not found", "shows error message when form is invalid"
-  are acceptable
-
-### §TQ9 — CI Readiness [WARNING]
-- No `test.only`, `describe.only`, or `it.only` in any changed test file — these cause
-  other tests to be silently skipped in CI
-- If found, cite the specific file and line
+Assertion quality (§TQ7), test naming (§TQ8), and CI readiness (§TQ9) are validated
+separately by `/ch-3-test-quality-review` — do not check for them here.
 
 ---
 
@@ -199,4 +183,6 @@ This skill does not:
 - Run the test suite — it reads test files and artifact content only
 - Validate plan.md or spec.md themselves — use `/ch-1-plan-critic` for that
 - Validate tasks.md — use `/ch-2-tasks-critic` for that
+- Validate assertion quality, test naming, or CI-only-directive readiness — use
+  `/ch-3-test-quality-review` for that
 - Replace human review or CI

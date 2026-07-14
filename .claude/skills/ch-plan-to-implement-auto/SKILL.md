@@ -58,7 +58,7 @@ Runs four stages in sequence. Each stage must pass before the next begins.
 
 **Stage 3 — Test** (`ch-3-test-auto.py`):
 - Writes failing tests for all `[TEST]` tasks in `tasks.md`
-- Runs iterative test-critic review (up to 3 iterations)
+- Runs iterative two-gate review (test critic + test quality review, up to 3 iterations)
 - On PASS: triggers auto-commit via the git extension
 
 **Stage 4 — Implement** (`ch-4-implement-auto.py`):
@@ -79,7 +79,7 @@ files each sub-script produces:
 |---|---|
 | Plan | `specs/<feature>/ch-1-plan-architecture-review-result-*.json` |
 | Tasks | `specs/<feature>/ch-2-tasks-critic-result-*.json` |
-| Test | `specs/<feature>/ch-3-test-critic-result-*.json` |
+| Test | `specs/<feature>/ch-3-test-quality-review-result-*.json` |
 | Implement | `specs/<feature>/ch-4-implement-code-quality-review-result-*.json` |
 
 ---

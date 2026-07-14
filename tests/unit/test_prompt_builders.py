@@ -9,6 +9,7 @@ from ch_1_plan_architecture_critic import build_architecture_review_prompt
 from ch_1_plan_critic import build_plan_critic_prompt
 from ch_2_tasks_critic import build_tasks_critic_prompt
 from ch_3_test_critic import build_test_critic_prompt
+from ch_3_test_quality_critic import build_test_quality_review_prompt
 from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
 
@@ -105,6 +106,14 @@ class TestTestCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
         prompt = self._build()
         self.assertIn("§TQ1", prompt)
         self.assertIn("§TQ2", prompt)
+        self.assertIn("§TQ5", prompt)
+        self.assertIn("§TQ6", prompt)
+
+    def test_quality_rules_not_present(self):
+        prompt = self._build()
+        self.assertNotIn("§TQ7", prompt)
+        self.assertNotIn("§TQ8", prompt)
+        self.assertNotIn("§TQ9", prompt)
 
     def test_architecture_optional_included_when_provided(self):
         self.assertIn("MY_ARCH", self._build(architecture="MY_ARCH"))
@@ -204,6 +213,59 @@ class TestQualityReviewPrompt(unittest.TestCase):
 
     def test_quality_principles_injected(self):
         self.assertIn("MY_PRINCIPLES", self._build(quality_principles="MY_PRINCIPLES"))
+
+    def test_violations_block_included_when_provided(self):
+        self.assertIn("PREV_VIOL", self._build(violations_block="PREV_VIOL"))
+
+    def test_git_diff_instructions_on_claude_path(self):
+        self.assertIn("git diff", self._build())
+
+    def test_changed_files_embedded_on_local_llm_path(self):
+        prompt = self._build(changed_files_section="MY_FILES")
+        self.assertIn("MY_FILES", prompt)
+
+    def test_json_schema_instruction_present(self):
+        prompt = self._build()
+        self.assertIn('"status"', prompt)
+        self.assertIn('"blocking_issues"', prompt)
+        self.assertIn("PASS or FAIL", prompt)
+
+    def test_location_field_present_in_schema(self):
+        self.assertIn('"location"', self._build())
+
+    def test_fail_threshold_is_two_high(self):
+        self.assertIn("more than 2 High", self._build())
+
+
+class TestTestQualityReviewPrompt(unittest.TestCase):
+    def _build(self, **kwargs):
+        defaults = {
+            "constitution": "CONST",
+            "spec": "SPEC",
+            "plan": "PLAN",
+            "tasks": "TASKS",
+            "test_principles": "PRINCIPLES",
+            "iteration": 1,
+        }
+        defaults.update(kwargs)
+        return build_test_quality_review_prompt(**defaults)
+
+    def test_constitution_content_injected(self):
+        self.assertIn("MY_CONST", self._build(constitution="MY_CONST"))
+
+    def test_test_principles_injected(self):
+        self.assertIn("MY_PRINCIPLES", self._build(test_principles="MY_PRINCIPLES"))
+
+    def test_rule_labels_present(self):
+        prompt = self._build()
+        self.assertIn("§TQ7", prompt)
+        self.assertIn("§TQ8", prompt)
+        self.assertIn("§TQ9", prompt)
+
+    def test_structural_rules_not_present(self):
+        prompt = self._build()
+        self.assertNotIn("§TQ1", prompt)
+        self.assertNotIn("§TQ5", prompt)
 
     def test_violations_block_included_when_provided(self):
         self.assertIn("PREV_VIOL", self._build(violations_block="PREV_VIOL"))

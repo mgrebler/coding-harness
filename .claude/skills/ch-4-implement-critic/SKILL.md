@@ -70,7 +70,7 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - Spec or plan documents in `specs/` are excluded from this check
 
 ### §I2 — Test Phase Gate [BLOCKING]
-- `specs/$FEATURE/ch-3-test-critic-result-*.json` must exist with `"status": "PASS"` — if no passing result exists, the implementation phase should not have started
+- `specs/$FEATURE/ch-3-test-quality-review-result-*.json` must exist with `"status": "PASS"` — if no passing result exists, the implementation phase should not have started
 - Test files (`backend/tests/`, `frontend/tests/`) must NOT have been created or modified during the implement phase — test files belong to the test phase and are read-only during implementation; cite any test file that appears in the implement-phase changed set
 - For every changed implementation file, a corresponding test file must exist on the branch (written during the test phase)
 - Schema migration files (`prisma/migrations/`) are exempt from this rule (constitution §5 explicitly waives test requirements for migrations)

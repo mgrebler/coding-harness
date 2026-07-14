@@ -68,7 +68,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 3. If no unchecked [TEST] tasks exist in tasks.md, print:
    ```
-   [ch-3-test] All [TEST] tasks already complete. Run /ch-3-test-critic to validate.
+   [ch-3-test] All [TEST] tasks already complete. Run /ch-3-test-critic, then /ch-3-test-quality-review, to validate.
    ```
    and stop.
 
@@ -107,7 +107,7 @@ You **MUST** consider the user input before proceeding (if not empty).
    - Print:
      ```
      [ch-3-test] Test phase complete. Next steps:
-       Run /ch-3-test-critic to validate test quality
+       Run /ch-3-test-critic, then /ch-3-test-quality-review, to validate
        or /ch-3-test-auto for the automated loop.
      ```
 

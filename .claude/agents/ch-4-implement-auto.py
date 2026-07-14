@@ -63,13 +63,13 @@ log = make_logger(AGENT_NAME)
 def preflight(spec_dir: Path, feature: str):
     require_spec_files(log, spec_dir, "spec.md", "plan.md", "tasks.md")
 
-    test_critic_results = list(spec_dir.glob("ch-3-test-critic-result-*.json"))
-    if not test_critic_results:
+    test_quality_results = list(spec_dir.glob("ch-3-test-quality-review-result-*.json"))
+    if not test_quality_results:
         log("ERROR: Test phase not complete. Run /ch-3-test-auto first.")
         sys.exit(1)
-    passing = find_passing_iteration(spec_dir, "ch-3-test-critic-result", 3)
+    passing = find_passing_iteration(spec_dir, "ch-3-test-quality-review-result", 3)
     if passing is None:
-        log("ERROR: No passing test-critic result found. Run /ch-3-test-auto to resolve.")
+        log("ERROR: No passing test-quality-review result found. Run /ch-3-test-auto to resolve.")
         sys.exit(1)
 
     tasks_content = (spec_dir / "tasks.md").read_text(encoding="utf-8")

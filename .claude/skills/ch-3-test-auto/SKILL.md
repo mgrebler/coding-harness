@@ -1,6 +1,6 @@
 ---
 name: ch-3-test-auto
-description: Runs the automated test phase loop for the current feature branch by invoking ch-3-test-auto.py. Writes failing tests for all [TEST] tasks, runs iterative test-critic review, applies fixes, and escalates on failure. Run manually after reviewing tasks.md.
+description: Runs the automated test phase loop for the current feature branch by invoking ch-3-test-auto.py. Writes failing tests for all [TEST] tasks, runs the iterative test-critic and test-quality-review two-gate loop, applies fixes, and escalates on failure. Run manually after reviewing tasks.md.
 user-invocable: true
 ---
 
@@ -37,11 +37,13 @@ Wait for the script to complete and relay its output to the user.
 1. Validates pre-flight conditions (spec.md, plan.md, tasks.md exist)
 2. Runs the test agent to write failing tests for all unchecked [TEST] tasks in tasks.md
    (skipped if all [TEST] tasks are already checked off)
-3. Runs an iterative test-critic review loop (up to 3 iterations):
-   - **Gate — Test critic**: validates red-state confirmation, spec coverage, test isolation,
-     assertion quality, stack compliance, and test naming
-   - FAIL → fix agent addresses violations in test files only → re-run critic
-   - PASS → done
+3. Runs an iterative two-gate review loop (up to 3 iterations):
+   - **Gate 1 — Test critic**: validates task traceability, red-state confirmation, spec
+     coverage, implementation leakage, test isolation, and stack compliance
+   - **Gate 2 — Test quality review**: validates assertion quality, test naming, and CI
+     readiness (runs only after Gate 1 passes)
+   - Either gate FAIL → fix agent addresses violations in test files only → both gates re-run
+   - Both gates PASS in the same iteration → done
 4. On PASS: triggers auto-commit via the `after_test` git extension hook
 5. On 3-iteration exhaustion: writes `specs/$FEATURE/ch-3-test-critic-escalation.md` and exits non-zero
 

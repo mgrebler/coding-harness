@@ -34,7 +34,7 @@ Wait for the script to complete and relay its output to the user.
 
 ## What the script does
 
-1. Validates pre-flight conditions (spec.md, plan.md, tasks.md exist; a passing ch-3-test-critic-result exists)
+1. Validates pre-flight conditions (spec.md, plan.md, tasks.md exist; a passing ch-3-test-quality-review-result exists)
 2. Runs the implementation agent to complete all unchecked tasks (`- [ ]`) in tasks.md following TDD order (skipped if all tasks already checked off)
 3. Runs an iterative two-gate review loop (up to 3 iterations):
    - **Gate 1 — Implement critic**: validates task traceability, TDD compliance, layer separation, test coverage, contract compliance, spec adherence, and styling

@@ -21,7 +21,7 @@ Resume behaviour:
 
   Plan stage done:      ch-1-plan-architecture-review-result-*.json with status PASS
   Tasks stage done:     ch-2-tasks-critic-result-*.json with status PASS
-  Test stage done:      ch-3-test-critic-result-*.json with status PASS
+  Test stage done:      ch-3-test-quality-review-result-*.json with status PASS
   Implement stage done: ch-4-implement-code-quality-review-result-*.json with status PASS
 
   Each sub-script also has its own internal resume guards for mid-stage
@@ -53,7 +53,7 @@ log = make_logger(AGENT_NAME)
 
 PLAN_ARCH_PREFIX = "ch-1-plan-architecture-review-result"
 TASKS_CRITIC_PREFIX = "ch-2-tasks-critic-result"
-TEST_CRITIC_PREFIX = "ch-3-test-critic-result"
+TEST_QUALITY_PREFIX = "ch-3-test-quality-review-result"
 IMPL_QUALITY_PREFIX = "ch-4-implement-code-quality-review-result"
 
 
@@ -141,7 +141,7 @@ def run(feature: str):
     # --- Stage 3: Test ---
     if (
         stage_is_complete(spec_dir, "ch-3-test")
-        or find_passing_iteration(spec_dir, TEST_CRITIC_PREFIX) is not None
+        or find_passing_iteration(spec_dir, TEST_QUALITY_PREFIX) is not None
     ):
         log("Stage 3/4 (test): already complete — skipping.")
     else:
