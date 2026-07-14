@@ -20,7 +20,7 @@ from common import (
     run_critic,
 )
 
-LOCAL_LLM_CONFIG = make_llm_config("architecture")
+LOCAL_LLM_CONFIG = make_llm_config("plan-architecture-review")
 RESULT_PREFIX = "ch-1-plan-architecture-review-result"
 
 
@@ -47,7 +47,7 @@ class TestArchitectureReviewGoodPlan(unittest.TestCase):
 
     def test_good_plan_passes(self):
         tmpdir = _setup_tmpdir(FIXTURES / "good" / "plan.md")
-        result = run_critic(tmpdir, "architecture", result_prefix=RESULT_PREFIX)
+        result = run_critic(tmpdir, "plan-architecture-review", result_prefix=RESULT_PREFIX)
         self.assertEqual(
             result["status"],
             "PASS",
@@ -62,7 +62,7 @@ class TestArchitectureReviewViolation(unittest.TestCase):
 
     def test_plan_with_unjustified_microservice_fails(self):
         tmpdir = _setup_tmpdir(FIXTURES / "bad" / "plan-architecture-violation.md")
-        result = run_critic(tmpdir, "architecture", result_prefix=RESULT_PREFIX)
+        result = run_critic(tmpdir, "plan-architecture-review", result_prefix=RESULT_PREFIX)
         self.assertEqual(
             result["status"],
             "FAIL",

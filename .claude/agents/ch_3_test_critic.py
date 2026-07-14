@@ -268,7 +268,7 @@ def main():
             test_results=test_results,
         )
 
-    run_local_critic_cli("test-critic", "test", CRITIC_RESULT_PREFIX, _build)
+    run_local_critic_cli("test", CRITIC_RESULT_PREFIX, _build)
 
 
 if __name__ == "__main__":

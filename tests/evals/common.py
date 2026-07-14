@@ -38,12 +38,18 @@ def make_llm_config(critic_name: str) -> dict:
 # plain lookup rather than a derivation.
 _CRITIC_SCRIPTS = {
     "plan": ("ch_1_plan_critic.py", "ch-1-plan-critic-result"),
-    "architecture": ("ch_1_plan_architecture_critic.py", "ch-1-plan-architecture-review-result"),
+    "plan-architecture-review": (
+        "ch_1_plan_architecture_critic.py",
+        "ch-1-plan-architecture-review-result",
+    ),
     "tasks": ("ch_2_tasks_critic.py", "ch-2-tasks-critic-result"),
     "test": ("ch_3_test_critic.py", "ch-3-test-critic-result"),
     "implement": ("ch_4_implement_critic.py", "ch-4-implement-critic-result"),
-    "quality": ("ch_4_implement_quality_critic.py", "ch-4-implement-code-quality-review-result"),
-    "test-quality": ("ch_3_test_quality_critic.py", "ch-3-test-quality-review-result"),
+    "implement-quality-review": (
+        "ch_4_implement_quality_critic.py",
+        "ch-4-implement-code-quality-review-result",
+    ),
+    "test-quality-review": ("ch_3_test_quality_critic.py", "ch-3-test-quality-review-result"),
 }
 
 

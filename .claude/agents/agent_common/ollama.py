@@ -293,7 +293,6 @@ def strip_fences(text: str) -> str:
 
 
 def run_local_critic_cli(
-    name: str,
     critic_type: str,
     result_prefix: str,
     build_prompt: Callable[[Path, int], str],
@@ -305,6 +304,10 @@ def run_local_critic_cli(
     -> str; this handles arg parsing, config loading, the model call, and writing
     the result.
 
+    critic_type doubles as the local-llm.json config key and the log-line label —
+    both were previously separate params, but they diverged only cosmetically
+    (e.g. "plan-critic" vs "plan"), so a single value now serves both purposes.
+
     summary_style: "violations" counts BLOCKING/WARNING entries in
     result["violations"] (plan/tasks/test/implement critics); "confidence" reports
     result["confidence"] and len(result["blocking_issues"]) (architecture/quality
@@ -312,7 +315,7 @@ def run_local_critic_cli(
 
     Exit codes: 0 success, 1 runtime error, 2 local LLM not configured.
     """
-    parser = argparse.ArgumentParser(description=f"{name} using local LLM")
+    parser = argparse.ArgumentParser(description=f"{critic_type} using local LLM")
     parser.add_argument(
         "--feature", help="Feature folder name (derived from git branch if omitted)"
     )
@@ -323,7 +326,7 @@ def run_local_critic_cli(
     if config is None:
         sys.exit(2)
 
-    feature = args.feature or git.get_feature_from_branch(name)
+    feature = args.feature or git.get_feature_from_branch(critic_type)
     spec_dir = Path(f"specs/{feature}")
     iteration = (
         args.iteration
@@ -334,19 +337,22 @@ def run_local_critic_cli(
     prompt = build_prompt(spec_dir, iteration)
 
     print(
-        f"[{name}] Running iteration {iteration} via local LLM ({config['model']})...", flush=True
+        f"[{critic_type}] Running iteration {iteration} via local LLM ({config['model']})...",
+        flush=True,
     )
 
     def _progress(token_count: int, elapsed_s: float, done: bool = False) -> None:
         if done:
-            print(f"[{name}]   done — {token_count} tokens in {elapsed_s:.0f}s", flush=True)
+            print(f"[{critic_type}]   done — {token_count} tokens in {elapsed_s:.0f}s", flush=True)
         else:
-            print(f"[{name}]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True)
+            print(
+                f"[{critic_type}]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True
+            )
 
     try:
         raw = call_local_llm(prompt, config, progress_fn=_progress)
     except Exception as e:
-        print(f"[{name}] ERROR: local LLM call failed: {e}", flush=True)
+        print(f"[{critic_type}] ERROR: local LLM call failed: {e}", flush=True)
         sys.exit(1)
 
     cleaned = strip_fences(raw)
@@ -354,8 +360,8 @@ def run_local_critic_cli(
     try:
         result = json.loads(cleaned)
     except json.JSONDecodeError as e:
-        print(f"[{name}] ERROR: could not parse LLM response as JSON: {e}", flush=True)
-        print(f"[{name}] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
+        print(f"[{critic_type}] ERROR: could not parse LLM response as JSON: {e}", flush=True)
+        print(f"[{critic_type}] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
         sys.exit(1)
 
     result["iteration"] = iteration
@@ -369,12 +375,12 @@ def run_local_critic_cli(
         blocking = len(result.get("blocking_issues", []))
         if status == "PASS":
             print(
-                f"[{name}] iteration {iteration} → PASS (confidence {confidence}/10) → {result_path}",
+                f"[{critic_type}] iteration {iteration} → PASS (confidence {confidence}/10) → {result_path}",
                 flush=True,
             )
         else:
             print(
-                f"[{name}] iteration {iteration} → FAIL ({blocking} blocking issue(s), confidence {confidence}/10) → {result_path}",
+                f"[{critic_type}] iteration {iteration} → FAIL ({blocking} blocking issue(s), confidence {confidence}/10) → {result_path}",
                 flush=True,
             )
     else:
@@ -382,10 +388,10 @@ def run_local_critic_cli(
         blocking = sum(1 for v in violations if v.get("severity") == "BLOCKING")
         warnings = sum(1 for v in violations if v.get("severity") == "WARNING")
         if status == "PASS":
-            print(f"[{name}] iteration {iteration} → PASS → {result_path}", flush=True)
+            print(f"[{critic_type}] iteration {iteration} → PASS → {result_path}", flush=True)
         else:
             print(
-                f"[{name}] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}",
+                f"[{critic_type}] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}",
                 flush=True,
             )
 

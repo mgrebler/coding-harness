@@ -23,7 +23,7 @@ from common import (
     setup_git_repo,
 )
 
-LOCAL_LLM_CONFIG = make_llm_config("test-quality")
+LOCAL_LLM_CONFIG = make_llm_config("test-quality-review")
 
 TEST_FILE_IN_REPO = "backend/tests/routes/health.test.ts"
 
@@ -56,7 +56,7 @@ class TestTestQualityReviewGoodTests(unittest.TestCase):
 
     def test_good_tests_pass(self):
         tmpdir = _setup_tmpdir(FIXTURES / "good" / "health.test.ts")
-        result = run_critic(tmpdir, "test-quality")
+        result = run_critic(tmpdir, "test-quality-review")
         self.assertEqual(
             result["status"],
             "PASS",
@@ -71,7 +71,7 @@ class TestTestQualityReviewOnlyDirective(unittest.TestCase):
 
     def test_test_with_only_directive_fails(self):
         tmpdir = _setup_tmpdir(FIXTURES / "bad" / "health-test-with-only.ts")
-        result = run_critic(tmpdir, "test-quality")
+        result = run_critic(tmpdir, "test-quality-review")
         self.assertEqual(result["status"], "FAIL", "Expected FAIL for test file using it.only")
         issue_texts = " ".join(
             issue.get("title", "") + " " + issue.get("finding", "")

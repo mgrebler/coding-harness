@@ -23,7 +23,7 @@ from common import (
     setup_git_repo,
 )
 
-LOCAL_LLM_CONFIG = make_llm_config("quality")
+LOCAL_LLM_CONFIG = make_llm_config("implement-quality-review")
 RESULT_PREFIX = "ch-4-implement-code-quality-review-result"
 
 IMPL_FILE_IN_REPO = "backend/src/api/health.ts"
@@ -65,7 +65,7 @@ class TestQualityReviewGoodImpl(unittest.TestCase):
 
     def test_clean_implementation_passes(self):
         tmpdir = _setup_tmpdir(FIXTURES / "good" / "health.ts")
-        result = run_critic(tmpdir, "quality", result_prefix=RESULT_PREFIX)
+        result = run_critic(tmpdir, "implement-quality-review", result_prefix=RESULT_PREFIX)
         self.assertEqual(
             result["status"],
             "PASS",
@@ -80,7 +80,7 @@ class TestQualityReviewSwallowedException(unittest.TestCase):
 
     def test_swallowed_exception_fails(self):
         tmpdir = _setup_tmpdir(FIXTURES / "bad" / "health-swallowed-exception.ts")
-        result = run_critic(tmpdir, "quality", result_prefix=RESULT_PREFIX)
+        result = run_critic(tmpdir, "implement-quality-review", result_prefix=RESULT_PREFIX)
         self.assertEqual(
             result["status"],
             "FAIL",

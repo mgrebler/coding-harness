@@ -194,7 +194,7 @@ def main():
             constitution, spec, plan, tasks, iteration, task_format_analysis=task_format_analysis
         )
 
-    run_local_critic_cli("tasks-critic", "tasks", CRITIC_RESULT_PREFIX, _build)
+    run_local_critic_cli("tasks", CRITIC_RESULT_PREFIX, _build)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 
 Self-contained test quality review that runs against a local Ollama LLM.
 Called by ch_3_test_auto.py (automated path) when local LLM is configured for
-the "test-quality" gate. This is Gate 2 of the test pipeline — it runs only
+the "test-quality-review" gate. This is Gate 2 of the test pipeline — it runs only
 after the test critic (Gate 1) has passed.
 
 Usage:
@@ -171,7 +171,10 @@ def main():
         )
 
     run_local_critic_cli(
-        "test-quality-review", "test-quality", RESULT_PREFIX, _build, summary_style="confidence"
+        "test-quality-review",
+        RESULT_PREFIX,
+        _build,
+        summary_style="confidence",
     )
 
 

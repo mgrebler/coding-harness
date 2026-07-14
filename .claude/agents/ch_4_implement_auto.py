@@ -610,7 +610,7 @@ async def run(feature: str):
         gate2=GateSpec(
             QUALITY_RESULT_PREFIX,
             "ch_4_implement_quality_critic.py",
-            "quality",
+            "implement-quality-review",
             "code quality review",
             build_quality_query,
         ),

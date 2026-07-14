@@ -106,18 +106,30 @@ Critic passes can run against a local [Ollama](https://ollama.com) instance inst
   "keep_alive": -1,
   "default": { "enabled": false, "model": "" },
   "critics": {
-    "plan":         { "enabled": true,  "model": "qwen3:30b-a3b" },
-    "architecture": { "enabled": true,  "model": "qwen3:30b-a3b" },
-    "tasks":        { "enabled": false, "model": "" },
-    "implement":    { "enabled": false, "model": "" },
-    "quality":      { "enabled": false, "model": "qwen3-coder:30b-a3b" },
-    "test":         { "enabled": false, "model": "" },
-    "test-quality": { "enabled": false, "model": "" }
+    "plan":                     { "enabled": true,  "model": "qwen3:30b-a3b" },
+    "plan-architecture-review": { "enabled": true,  "model": "qwen3:30b-a3b" },
+
+    "tasks":                    { "enabled": false, "model": "" },
+
+    "test":                     { "enabled": false, "model": "" },
+    "test-quality-review":      { "enabled": false, "model": "" },
+
+    "implement":                { "enabled": false, "model": "" },
+    "implement-quality-review": { "enabled": false, "model": "qwen3-coder:30b-a3b" }
   }
 }
 ```
 
-`plan`/`architecture`, `implement`/`quality`, and `test`/`test-quality` are each two-gate pipelines — the first key is the structural/TDD-compliance critic, the second is the independent architecture-quality, code-quality, or test-quality review that runs after it.
+Each phase's secondary review key is named after the primary key it follows, so the
+pairing is explicit from the name alone: `plan` → `plan-architecture-review`, `test` →
+`test-quality-review`, `implement` → `implement-quality-review`. `tasks` has no
+secondary gate.
+
+**Upgrading from an older harness version:** if your `.specify/local-llm.json` still uses
+the old key names (`architecture`, `quality`, `test-quality`), rename them to
+`plan-architecture-review`, `implement-quality-review`, and `test-quality-review`
+respectively — the old keys will silently stop matching (that gate falls back to Claude
+rather than erroring) until renamed.
 
 `num_ctx` caps the Ollama KV-cache context window. Without it, Ollama uses the model's default (often 32k–128k), which can overflow VRAM and spill to system RAM, making inference very slow. `16384` is a good default for an 8 GB GPU: critic prompts fit comfortably and the KV cache stays in VRAM. Tune down if your GPU is smaller, or up if your prompts are very large.
 

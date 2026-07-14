@@ -343,7 +343,7 @@ async def run(feature: str):
         gate2=GateSpec(
             ARCH_RESULT_PREFIX,
             "ch_1_plan_architecture_critic.py",
-            "architecture",
+            "plan-architecture-review",
             "architecture review",
             build_arch_query,
         ),

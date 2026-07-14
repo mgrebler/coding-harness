@@ -4,7 +4,7 @@
 
 Self-contained code quality review that runs against a local Ollama LLM.
 Called by ch_4_implement_auto.py (automated path) when local LLM is configured for
-the "quality" gate. This is Gate 2 of the implement pipeline — it runs only
+the "implement-quality-review" gate. This is Gate 2 of the implement pipeline — it runs only
 after the implement critic (Gate 1) has passed.
 
 Usage:
@@ -159,8 +159,7 @@ def main():
         )
 
     run_local_critic_cli(
-        "ch-4-implement-code-quality-review",
-        "quality",
+        "implement-quality-review",
         RESULT_PREFIX,
         _build,
         summary_style="confidence",

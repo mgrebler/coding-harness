@@ -271,7 +271,7 @@ def main():
             changed_files_section=changed_sources,
         )
 
-    run_local_critic_cli("implement-critic", "implement", CRITIC_RESULT_PREFIX, _build)
+    run_local_critic_cli("implement", CRITIC_RESULT_PREFIX, _build)
 
 
 if __name__ == "__main__":

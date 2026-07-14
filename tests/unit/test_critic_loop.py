@@ -316,7 +316,7 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
         gate2 = GateSpec(
             "ch-1-plan-architecture-review-result",
             "ch_1_plan_architecture_critic.py",
-            "architecture",
+            "plan-architecture-review",
             "architecture review",
             build_query2,
         )

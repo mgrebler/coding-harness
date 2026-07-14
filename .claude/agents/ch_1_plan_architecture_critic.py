@@ -4,7 +4,7 @@
 
 Self-contained architecture review that runs against a local Ollama LLM.
 Called by ch_1_plan_auto.py (automated path) when local LLM is configured for
-the "architecture" gate. This is Gate 2 of the plan pipeline — it runs only
+the "plan-architecture-review" gate. This is Gate 2 of the plan pipeline — it runs only
 after the plan critic (Gate 1) has passed.
 
 Usage:
@@ -119,7 +119,10 @@ def main():
         )
 
     run_local_critic_cli(
-        "architecture-review", "architecture", RESULT_PREFIX, _build, summary_style="confidence"
+        "plan-architecture-review",
+        RESULT_PREFIX,
+        _build,
+        summary_style="confidence",
     )
 
 

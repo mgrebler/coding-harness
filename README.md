@@ -180,17 +180,30 @@ Critic passes can optionally run against a local [Ollama](https://ollama.com) in
   "ollama_url": "http://host.docker.internal:11434",
   "default": { "enabled": false, "model": "" },
   "critics": {
-    "plan":         { "enabled": true,  "model": "qwen3:30b-a3b" },
-    "architecture": { "enabled": true,  "model": "qwen3:30b-a3b" },
-    "tasks":        { "enabled": false, "model": "" },
-    "implement":    { "enabled": false, "model": "" },
-    "quality":      { "enabled": false, "model": "qwen3-coder:30b-a3b" },
-    "test":         { "enabled": false, "model": "" }
+    "plan":                     { "enabled": true,  "model": "qwen3:30b-a3b" },
+    "plan-architecture-review": { "enabled": true,  "model": "qwen3:30b-a3b" },
+
+    "tasks":                    { "enabled": false, "model": "" },
+
+    "test":                     { "enabled": false, "model": "" },
+    "test-quality-review":      { "enabled": false, "model": "" },
+
+    "implement":                { "enabled": false, "model": "" },
+    "implement-quality-review": { "enabled": false, "model": "qwen3-coder:30b-a3b" }
   }
 }
 ```
 
-`architecture` and `quality` are the second-gate reviews for the plan and implement pipelines respectively (run after the `plan`/`implement` critic passes). Test-principles checking has no separate key — it's folded into the `test` critic.
+Each phase's secondary review key is named after the primary key it follows, so the
+pairing is explicit from the name alone: `plan` → `plan-architecture-review`, `test` →
+`test-quality-review`, `implement` → `implement-quality-review`. `tasks` has no
+secondary gate.
+
+**Upgrading from an older harness version:** if your `.specify/local-llm.json` still uses
+the old key names (`architecture`, `quality`, `test-quality`), rename them to
+`plan-architecture-review`, `implement-quality-review`, and `test-quality-review`
+respectively — the old keys will silently stop matching (that gate falls back to Claude
+rather than erroring) until renamed.
 
 ---
 

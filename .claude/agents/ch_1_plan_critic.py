@@ -120,7 +120,7 @@ def main():
 
         return build_plan_critic_prompt(constitution, architecture, spec, plan, iteration)
 
-    run_local_critic_cli("plan-critic", "plan", CRITIC_RESULT_PREFIX, _build)
+    run_local_critic_cli("plan", CRITIC_RESULT_PREFIX, _build)
 
 
 if __name__ == "__main__":
