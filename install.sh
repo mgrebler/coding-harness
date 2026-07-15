@@ -31,6 +31,10 @@
 #     .devcontainer/Dockerfile
 #     .devcontainer/devcontainer.json
 #     CLAUDE.md
+#
+#   MANAGED SECTION REFRESHED EVERY RUN (rest of the file stays project-owned):
+#     .gitignore
+#     CLAUDE.md
 
 set -euo pipefail
 
@@ -98,34 +102,43 @@ always_copy() {
   log "  OVERWRITE: $1"
 }
 
+# Strip any existing managed section (delimited by begin/end marker lines)
+# from a file and append a fresh one built from the given body. Creates the
+# file if absent. Idempotent — safe to re-run.
+write_managed_section() {
+  local file="$1" begin_marker="$2" end_marker="$3" body="$4"
+
+  touch "$file"
+
+  # Strip existing section, then remove any trailing blank lines it leaves behind
+  if grep -qF "$begin_marker" "$file"; then
+    local tmp
+    tmp=$(mktemp)
+    awk -v b="$begin_marker" -v e="$end_marker" \
+      '$0==b{skip=1} !skip{print} $0==e{skip=0}' "$file" > "$tmp"
+    # Strip trailing blank lines: only print up to the last non-empty line
+    awk 'NF{found=NR} {lines[NR]=$0} END{for(i=1;i<=found;i++) print lines[i]}' "$tmp" > "$file"
+    rm -f "$tmp"
+  fi
+
+  # Add a single blank line separator only if the file already has content
+  [[ -s "$file" ]] && echo >> "$file"
+
+  # Append updated section (no leading blank line — separator is added above)
+  { printf '%s\n' "$begin_marker"; printf '%s\n' "$body"; printf '%s\n' "$end_marker"; } >> "$file"
+}
+
 # Write/replace the coding-harness-managed section in the project's .gitignore.
 manage_gitignore() {
   local gitignore="$TARGET_DIR/.gitignore"
-  local begin_marker="# BEGIN coding-harness-managed"
 
   if [[ "$DRY_RUN" == "true" ]]; then
     log "  UPDATE .gitignore: coding-harness-managed section"
     return
   fi
 
-  touch "$gitignore"
-
-  # Strip existing section, then remove any trailing blank lines it leaves behind
-  if grep -qF "$begin_marker" "$gitignore"; then
-    local tmp
-    tmp=$(mktemp)
-    awk '/# BEGIN coding-harness-managed/{skip=1} !skip{print} /# END coding-harness-managed/{skip=0}' "$gitignore" > "$tmp"
-    # Strip trailing blank lines: only print up to the last non-empty line
-    awk 'NF{found=NR} {lines[NR]=$0} END{for(i=1;i<=found;i++) print lines[i]}' "$tmp" > "$gitignore"
-    rm -f "$tmp"
-  fi
-
-  # Add a single blank line separator only if the file already has content
-  [[ -s "$gitignore" ]] && echo >> "$gitignore"
-
-  # Append updated section (no leading blank line — separator is added above)
-  cat >> "$gitignore" <<'GITIGNORE'
-# BEGIN coding-harness-managed
+  local body
+  body=$(cat <<'GITIGNORE'
 # Managed by coding-harness/install.sh — do not edit this section manually.
 # Re-run install.sh after updating the harness to keep this section current.
 
@@ -147,10 +160,41 @@ manage_gitignore() {
 .specify/scripts/
 .specify/templates/
 .specify/workflows/
-# END coding-harness-managed
 GITIGNORE
+)
+
+  write_managed_section "$gitignore" "# BEGIN coding-harness-managed" "# END coding-harness-managed" "$body"
 
   log "  UPDATE .gitignore: coding-harness-managed section"
+}
+
+# Write/replace the coding-harness-managed section in the project's CLAUDE.md.
+manage_claude_md() {
+  local claude_md="$TARGET_DIR/CLAUDE.md"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "  UPDATE CLAUDE.md: coding-harness-managed section"
+    return
+  fi
+
+  local body
+  body=$(cat <<'CLAUDEMD'
+## Spec-Driven Development
+
+This project follows the coding-harness spec-driven pipeline by default:
+`specify → plan → tasks → test → implement`. New features and non-trivial
+changes should go through this pipeline (starting with `/speckit-specify`)
+rather than being implemented directly, unless the user explicitly asks to
+skip it. Full governance rules are in `.specify/memory/constitution.md`.
+
+Managed by coding-harness/install.sh — do not edit this section manually.
+Re-run install.sh after updating the harness to keep this section current.
+CLAUDEMD
+)
+
+  write_managed_section "$claude_md" "<!-- BEGIN coding-harness-managed -->" "<!-- END coding-harness-managed -->" "$body"
+
+  log "  UPDATE CLAUDE.md: coding-harness-managed section"
 }
 
 # Copy a file from examples/, but only if it doesn't already exist in the target.
@@ -210,6 +254,8 @@ init_copy "docker-compose.yml"
 init_copy ".devcontainer/Dockerfile"
 init_copy ".devcontainer/devcontainer.json"
 init_copy "CLAUDE.md"
+
+manage_claude_md
 
 # ---------------------------------------------------------------------------
 # Post-install reminders
