@@ -35,16 +35,7 @@ specify → plan → tasks → test → implement → human PR review + merge
 
 Each stage produces a markdown artifact in `specs/NNN-feature/` within the target project. Humans review each stage's artifact, then manually run the next stage's command. No agent ever merges to `main`.
 
-**Starting a session in an installed project:**
-```bash
-UID=$(id -u) GID=$(id -g) docker compose run --rm dev
-# Inside the container:
-claude
-```
-
-**Two execution modes in installed projects:**
-- **Human-in-the-loop**: review each stage's artifact, then manually run the next `/speckit-*-auto` (or plain `/speckit-*`) command yourself
-- **Fully automatic**: `/ch-plan-to-implement-auto` chains all stages unattended after `spec.md` is reviewed
+See README.md for the full pipeline walkthrough, docker setup, and command reference.
 
 ## Harness Architecture
 
@@ -96,39 +87,7 @@ Tasks are split into `[TEST]` and `[IMPL]` pairs. The test phase writes only fai
 
 ### Local LLM Support
 
-Critic passes can run against a local [Ollama](https://ollama.com) instance instead of Claude. Configure via `.specify/local-llm.json` in the target project root:
-
-```json
-{
-  "ollama_url": "http://host.docker.internal:11434",
-  "num_ctx": 16384,
-  "keep_alive": -1,
-  "default": { "enabled": false, "model": "" },
-  "critics": {
-    "plan":                     { "enabled": true,  "model": "qwen3:30b-a3b" },
-    "plan-architecture-review": { "enabled": true,  "model": "qwen3:30b-a3b" },
-
-    "tasks":                    { "enabled": false, "model": "" },
-
-    "test":                     { "enabled": false, "model": "" },
-    "test-quality-review":      { "enabled": false, "model": "" },
-
-    "implement":                { "enabled": false, "model": "" },
-    "implement-quality-review": { "enabled": false, "model": "qwen3-coder:30b-a3b" }
-  }
-}
-```
-
-Each phase's secondary review key is named after the primary key it follows, so the
-pairing is explicit from the name alone: `plan` → `plan-architecture-review`, `test` →
-`test-quality-review`, `implement` → `implement-quality-review`. `tasks` has no
-secondary gate.
-
-**Upgrading from an older harness version:** if your `.specify/local-llm.json` still uses
-the old key names (`architecture`, `quality`, `test-quality`), rename them to
-`plan-architecture-review`, `implement-quality-review`, and `test-quality-review`
-respectively — the old keys will silently stop matching (that gate falls back to Claude
-rather than erroring) until renamed.
+Critic passes can run against a local [Ollama](https://ollama.com) instance instead of Claude, configured via `.specify/local-llm.json` in the target project root. See README.md § Local LLM Support for the full config schema and critic key naming. Tuning notes for the Ollama-specific fields (not covered in README):
 
 `num_ctx` caps the Ollama KV-cache context window. Without it, Ollama uses the model's default (often 32k–128k), which can overflow VRAM and spill to system RAM, making inference very slow. `16384` is a good default for an 8 GB GPU: critic prompts fit comfortably and the KV cache stays in VRAM. Tune down if your GPU is smaller, or up if your prompts are very large.
 

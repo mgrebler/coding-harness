@@ -1,6 +1,8 @@
 # coding-harness
 
-A spec-driven coding harness built on Claude Code and SpecKit. Features go through a structured pipeline — specification → planning → tasks → tests → implementation — with AI-generated artifacts at each stage and optional human review gates.
+coding-harness builds on [GitHub's SpecKit](https://github.com/github/spec-kit) spec-driven flow — specify → plan → tasks → implement — and adds autonomous agents that drive each stage, plus a strict test-first split between writing tests and writing implementation code: `specify → ch-1-plan-auto → ch-2-tasks-auto → ch-3-test-auto → ch-4-implement-auto`.
+
+**Why this matters:** agentic development is fast, but code that "looks right" can quietly drift from your architecture, skip tests, or break conventions. coding-harness keeps agents fast *and* maintainable by gating every stage behind critic agents grounded in documents your team owns — `constitution.md`, `architecture.md`, `test-principles.md`, and more. A plan must pass an architecture review before tasks are generated; tests and implementation must pass a quality review before they're considered done. Humans remain the only ones who can merge to `main`.
 
 ---
 
@@ -82,7 +84,7 @@ Two modes are supported:
 Before running any SpecKit command, start a Claude Code session inside Docker:
 
 ```bash
-UID=$(id -u) GID=$(id -g) docker compose run --rm dev
+docker compose run --rm dev
 # Inside the container:
 claude
 ```
@@ -161,18 +163,17 @@ This chains four stages — plan, tasks, test, implement — with built-in criti
 
 ## Quick Reference
 
-| Command | What it does |
-|---------|-------------|
-| `/speckit-specify <desc>` | Create spec + feature branch |
-| `/speckit-plan` | Generate implementation plan (manual) |
-| `/ch-1-plan-auto` | Generate plan with automatic critic loop |
-| `/speckit-tasks` | Generate task list (manual) |
-| `/ch-2-tasks-auto` | Generate tasks with automatic critic loop |
-| `/ch-3-test` | Write failing tests for all `[TEST]` tasks (manual) |
-| `/ch-3-test-auto` | Write tests with automatic critic loop |
-| `/speckit-implement` | Implement all tasks (manual) |
-| `/ch-4-implement-auto` | Implement with automatic critic loop |
-| `/ch-plan-to-implement-auto` | Full pipeline: plan → tasks → test → implement |
+`/speckit-specify` starts every feature. After that, the `/ch-*` commands below are what you actually run — each wraps a SpecKit generation step in an iterative critic loop:
+
+| Command | Generation step | Critic gate(s) |
+|---------|-----------------|-----------------|
+| `/ch-1-plan-auto` | `/speckit-plan` | plan critic → plan-architecture-review |
+| `/ch-2-tasks-auto` | `/speckit-tasks` | tasks critic |
+| `/ch-3-test-auto` | `/ch-3-test` | test critic → test-quality-review |
+| `/ch-4-implement-auto` | `/speckit-implement` | implement critic → implement-quality-review |
+| `/ch-plan-to-implement-auto` | all of the above | all of the above, chained |
+
+The plain `/speckit-plan`, `/speckit-tasks`, `/speckit-implement`, and `/ch-3-test` commands generate a single artifact with **no critic loop** — use them only if you want to hand-edit before any automated critique runs, not as the default path.
 
 ---
 
@@ -204,12 +205,6 @@ pairing is explicit from the name alone: `plan` → `plan-architecture-review`, 
 `test-quality-review`, `implement` → `implement-quality-review`. `tasks` has no
 secondary gate.
 
-**Upgrading from an older harness version:** if your `.specify/local-llm.json` still uses
-the old key names (`architecture`, `quality`, `test-quality`), rename them to
-`plan-architecture-review`, `implement-quality-review`, and `test-quality-review`
-respectively — the old keys will silently stop matching (that gate falls back to Claude
-rather than erroring) until renamed.
-
 ---
 
 ## Key Rules
@@ -236,7 +231,7 @@ python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
 
 ### Layer 2 — Critic evals (requires local Ollama)
 
-Each critic script (`ch_1_plan_critic.py`, `ch_2_tasks_critic.py`, `ch_3_test_critic.py`, `ch_4_implement_critic.py`, `ch_1_plan_architecture_critic.py`, `ch_4_implement_quality_critic.py`) is run against known-good and known-bad fixture artifacts. The result JSON is asserted. This catches prompt degradation, rule drift, or regressions in critic logic. Not run in CI — no local Ollama instance available there; run locally before pushing changes that touch a critic's prompt or scoring logic.
+Each critic script (`ch_1_plan_critic.py`, `ch_1_plan_architecture_critic.py`, `ch_2_tasks_critic.py`, `ch_3_test_critic.py`, `ch_3_test_quality_critic.py`, `ch_4_implement_critic.py`, `ch_4_implement_quality_critic.py`) is run against known-good and known-bad fixture artifacts. The result JSON is asserted. This catches prompt degradation, rule drift, or regressions in critic logic. Not run in CI — no local Ollama instance available there; run locally before pushing changes that touch a critic's prompt or scoring logic.
 
 Fixtures live in `tests/evals/fixtures/` — a minimal "health endpoint" feature with good and bad variants for each pipeline stage.
 
@@ -262,6 +257,8 @@ ruff format .
 ---
 
 ## What This Repo Contains
+
+The `speckit-*` skills (including the `speckit-git-*` git extension) and the five templates in `.specify/templates/` come from upstream [SpecKit](https://github.com/github/spec-kit). Everything else — the `ch-*` skills and agents, the critic loop pattern, and the principle docs beyond `constitution.md` (`architecture.md`, `architecture-principles.md`, `code-quality-principles.md`, `test-principles.md`, `product-context.md`) — is coding-harness's own addition.
 
 ```
 speckit/
@@ -298,10 +295,14 @@ speckit/
 │   │   ├── test_critic_loop.py
 │   │   └── test_prompt_builders.py
 │   └── evals/                  # Critic evals against fixture artifacts (requires Ollama)
-│       ├── fixtures/           # Good and bad artifacts for the health-endpoint feature
+│       ├── fixtures/                       # Good and bad artifacts for the health-endpoint feature
+│       ├── common.py, _ollama.py           # Shared eval helpers
 │       ├── test_plan_critic_eval.py
+│       ├── test_architecture_critic_eval.py
 │       ├── test_tasks_critic_eval.py
 │       ├── test_test_critic_eval.py
-│       └── test_implement_critic_eval.py
+│       ├── test_test_quality_critic_eval.py
+│       ├── test_implement_critic_eval.py
+│       └── test_quality_critic_eval.py
 └── install.sh              # Install/update script
 ```
