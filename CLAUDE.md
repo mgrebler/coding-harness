@@ -59,12 +59,11 @@ claude
 - `.specify/scripts/` — Shared Bash utilities
 - `.specify/templates/` — Markdown templates for specs/plans/tasks
 - `.specify/workflows/` — Workflow registry
-- `.devcontainer/Dockerfile`, `.devcontainer/entrypoint.sh`
 
 **Writes only if absent (project-customized by humans, never overwritten):**
 - `.specify/memory/constitution.md` — Supreme governance law for that project
 - `.specify/memory/architecture.md`, `architecture-principles.md`, `code-quality-principles.md`, `test-principles.md`, `product-context.md`
-- `docker-compose.yml`, `.devcontainer/devcontainer.json`
+- `docker-compose.yml`, `.devcontainer/Dockerfile`, `.devcontainer/devcontainer.json`
 - `CLAUDE.md`
 
 ### Key Directories
@@ -79,9 +78,9 @@ claude
 
 **`.specify/extensions/git/`** — Optional module for sequential/timestamp branch numbering and auto-commit hooks. Config: `.specify/extensions/git/git-config.yml`.
 
-**`.devcontainer/`** — Docker-based dev environment with Node 22, Python 3, Docker-in-Docker, GitHub CLI, and Playwright browser dependencies.
+**`.devcontainer/`** — Docker-based dev environment with Node 22, Python 3, Docker-in-Docker, and GitHub CLI. `Dockerfile` here is the source for the published `ghcr.io/mgrebler/coding-harness-base` image (built by `.github/workflows/publish-base-image.yml` on every change) and is also what the repo's own root `docker-compose.yml` builds, so `claude` can be run in a container while developing the harness itself. It intentionally omits project-specific runtime deps (e.g. Playwright) — those belong in each installed project's own `.devcontainer/Dockerfile`, which is a thin `FROM ghcr.io/.../coding-harness-base:latest` template (see `examples/.devcontainer/Dockerfile`).
 
-**`examples/`** — Templates for project-specific files that `install.sh` copies on first install (constitution annotated with `[PROJECT: ...]` placeholders, docker-compose with `<project-name>` placeholder, etc.).
+**`examples/`** — Templates for project-specific files that `install.sh` copies on first install (constitution annotated with `[PROJECT: ...]` placeholders, docker-compose with `<project-name>` placeholder, `.devcontainer/Dockerfile` that extends the published base image, etc.).
 
 ### Artifact Paths in Installed Projects
 

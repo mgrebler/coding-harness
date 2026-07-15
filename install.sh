@@ -19,7 +19,6 @@
 #   ALWAYS OVERWRITES (harness-managed — no project customisation):
 #     .claude/agents/, .claude/skills/
 #     .specify/extensions/, .specify/scripts/, .specify/templates/, .specify/workflows/
-#     .devcontainer/Dockerfile, .devcontainer/entrypoint.sh
 #
 #   WRITES ONLY IF FILE DOES NOT EXIST (project-initialised — customise after first install):
 #     .specify/memory/constitution.md
@@ -29,6 +28,7 @@
 #     .specify/memory/test-principles.md
 #     .specify/memory/product-context.md
 #     docker-compose.yml
+#     .devcontainer/Dockerfile
 #     .devcontainer/devcontainer.json
 #     CLAUDE.md
 
@@ -147,10 +147,6 @@ manage_gitignore() {
 .specify/scripts/
 .specify/templates/
 .specify/workflows/
-
-# .devcontainer — specific files only (devcontainer.json stays tracked)
-.devcontainer/Dockerfile
-.devcontainer/entrypoint.sh
 # END coding-harness-managed
 GITIGNORE
 
@@ -194,8 +190,6 @@ always_copy ".specify/extensions"
 always_copy ".specify/scripts"
 always_copy ".specify/templates"
 always_copy ".specify/workflows"
-always_copy ".devcontainer/Dockerfile"
-always_copy ".devcontainer/entrypoint.sh"
 
 manage_gitignore
 
@@ -213,6 +207,7 @@ init_copy ".specify/memory/code-quality-principles.md"
 init_copy ".specify/memory/test-principles.md"
 init_copy ".specify/memory/product-context.md"
 init_copy "docker-compose.yml"
+init_copy ".devcontainer/Dockerfile"
 init_copy ".devcontainer/devcontainer.json"
 init_copy "CLAUDE.md"
 
@@ -228,4 +223,11 @@ if [[ -f "$TARGET_DIR/.specify/memory/constitution.md" && "$DRY_RUN" == "false" 
   log "  1. Customise .specify/memory/constitution.md — fill in [PROJECT: ...] placeholders"
   log "  2. Customise .specify/memory/architecture.md and product-context.md"
   log "  3. Customise docker-compose.yml — replace <project-name> with your project name"
+fi
+
+if [[ "$DRY_RUN" == "false" && -f "$TARGET_DIR/.devcontainer/Dockerfile" ]] \
+   && ! grep -q "^FROM ghcr.io/" "$TARGET_DIR/.devcontainer/Dockerfile" 2>/dev/null; then
+  log "  4. .devcontainer/Dockerfile is now a project-owned template (FROM ghcr.io/.../coding-harness-base)"
+  log "     instead of a harness-managed file. Your existing Dockerfile predates this change and is no"
+  log "     longer gitignored — replace it with the new template or 'git add' your customised version."
 fi

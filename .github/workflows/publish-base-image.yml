@@ -1,0 +1,33 @@
+name: Publish base image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .devcontainer/Dockerfile
+      - .devcontainer/entrypoint.sh
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .devcontainer/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/coding-harness-base:latest
+            ghcr.io/${{ github.repository_owner }}/coding-harness-base:${{ github.sha }}

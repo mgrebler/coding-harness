@@ -29,8 +29,11 @@ cd /path/to/your-project
 #   .specify/memory/product-context.md — describe your product and users
 #   docker-compose.yml                — replace <project-name>
 
-# Add your Playwright browser install to .devcontainer/Dockerfile
-# (see the comment block in that file)
+# .devcontainer/Dockerfile extends the published coding-harness base image
+# (ghcr.io/mgrebler/coding-harness-base:latest). Add Playwright or other
+# project-specific dependencies in the PROJECT-SPECIFIC blocks in that file.
+# Pin the FROM tag to a specific commit SHA instead of :latest if you want
+# reproducible builds.
 ```
 
 ### Updating an Existing Project
@@ -83,6 +86,8 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm dev
 # Inside the container:
 claude
 ```
+
+This same command also works at the root of this repo (coding-harness itself has its own `docker-compose.yml`), for developing the harness's own agents and skills.
 
 ---
 
@@ -270,11 +275,13 @@ speckit/
 │   ├── templates/          # Spec/plan/tasks/constitution templates
 │   └── workflows/          # Workflow registry
 ├── .devcontainer/
-│   ├── Dockerfile          # Base dev container (Claude Code + Python SDK + system deps)
+│   ├── Dockerfile          # Source for the published ghcr.io/mgrebler/coding-harness-base image
 │   └── entrypoint.sh       # Docker socket + user management
+├── docker-compose.yml      # Builds this repo's own dev container from .devcontainer/Dockerfile
 ├── examples/               # Templates for project-specific files (written once, never updated)
 │   ├── docker-compose.yml
 │   ├── CLAUDE.md
+│   ├── .devcontainer/Dockerfile      # FROM ghcr.io/mgrebler/coding-harness-base:latest
 │   ├── .devcontainer/devcontainer.json
 │   └── .specify/memory/
 │       ├── constitution.md     # Annotated template — fill in project-specific sections
