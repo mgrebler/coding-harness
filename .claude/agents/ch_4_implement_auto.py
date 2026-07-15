@@ -42,6 +42,7 @@ from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
 from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
 from agent_common.files import read_file, require_spec_files
+from agent_common.project_conventions import is_slow_check, resolve_ci_commands
 from agent_common.resume_state import (
     extend_iterations_if_reviewed,
     find_passing_iteration,
@@ -118,7 +119,8 @@ For each [IMPL] task:
 5. Commit the implementation: git add <impl files> && git commit -m "feat: <task description>"
 6. Mark the task as - [x] in tasks.md and commit: git add specs/.../tasks.md && git commit -m "chore: complete <task id>"
 
-Inputs already loaded for you:
+Inputs already loaded for you (this project's constitution.md is human-customized, so any
+section number referenced below may not match — locate the section by heading text instead):
 
 --- CONSTITUTION ---
 {constitution}
@@ -138,12 +140,9 @@ Inputs already loaded for you:
 Key rules:
 - Read the full tasks.md to understand all tasks and their dependencies before starting
 - Respect task order; honour [P] markers (parallel tasks may be done in any order relative to each other)
-- Use only the approved stack: TypeScript, React, Hono, Prisma, tRPC + Zod, Vitest, Playwright, Tailwind
-- No new npm dependencies
-- Backend: router layer (backend/src/api/) calls service layer (backend/src/services/) only — no Prisma in the router
-- Frontend: components (frontend/src/components/) receive props only — no tRPC hooks in components
-- Styling: Tailwind utility classes only — no CSS Modules, no inline style props
-- After each task, run: pnpm --filter backend exec tsc --noEmit && pnpm --filter frontend exec tsc --noEmit
+- Use only the approved stack and respect the layer-separation boundaries defined in the CONSTITUTION above — do not introduce a dependency, framework, or architectural pattern it doesn't cover
+- No new dependencies beyond what the constitution's approved stack allows
+- After each task, run this project's typecheck command as declared in constitution §12 (CI Requirements)
 - The code will be evaluated by a Code Quality Review agent using the principles above — implement accordingly
 - Do not stop until all - [ ] tasks are marked - [x] in tasks.md
 """,
@@ -191,8 +190,9 @@ def ci_fix_agent_definition(
         description="Fixes failing CI checks (typecheck, unit tests, e2e) after both review gates passed.",
         prompt=f"""You are the CI Fix Agent for a spec-kit project.
 
-Both the implement critic and code quality review have passed. However, the CI checks
-(typecheck, unit tests, e2e) failed. Your sole function is to fix those failures.
+Both the implement critic and code quality review have passed. However, one or more of
+this project's CI checks (see the constitution's CI Requirements section, §12) failed.
+Your sole function is to fix those failures.
 
 Fix only what is broken by the failures below. Do not add features, do not refactor
 passing code, do not change passing test assertions.
@@ -200,7 +200,8 @@ passing code, do not change passing test assertions.
 --- CI FAILURES ---
 {ci_failures}
 
---- CONSTITUTION ---
+--- CONSTITUTION --- (this project's constitution.md is human-customized, so any section
+number referenced above/below may not match — locate the section by heading text instead)
 {constitution}
 
 --- SPEC ---
@@ -215,11 +216,8 @@ passing code, do not change passing test assertions.
 Key rules:
 - Read every file mentioned in the failure output before modifying it
 - Apply the minimum change that makes the failing check pass
-- After all fixes, re-run the failing check to confirm it now passes:
-    pnpm typecheck          (for typecheck failures)
-    pnpm test:backend       (for backend unit test failures)
-    pnpm test:frontend      (for frontend unit test failures)
-    pnpm test:e2e           (for e2e failures)
+- After all fixes, re-run each failing check listed above (its exact command is defined in
+  constitution §12 CI Requirements) to confirm it now passes
 - Commit all fixed files: git add <files> && git commit -m "fix: address CI failures"
 - Do not stop until every failing check listed above passes
 """,
@@ -244,7 +242,8 @@ Fix only what is listed. Do not add features. Do not change passing test asserti
 --- VIOLATIONS TO FIX ---
 {json.dumps(violations, indent=2)}
 
---- CONSTITUTION ---
+--- CONSTITUTION --- (this project's constitution.md is human-customized, so any section
+number referenced above/below may not match — locate the section by heading text instead)
 {constitution}
 
 --- SPEC ---
@@ -259,7 +258,7 @@ Fix only what is listed. Do not add features. Do not change passing test asserti
 Key rules:
 - Read the file at each violation's location before modifying it
 - Apply the minimum change that addresses the violation
-- After all fixes, run: pnpm --filter backend exec tsc --noEmit && pnpm --filter frontend exec tsc --noEmit
+- After all fixes, run this project's typecheck command as declared in constitution §12 (CI Requirements)
 - Run the relevant test suite to confirm nothing is broken
 - Commit fixed files: git add <files> && git commit -m "fix: address violations"
 - Do not stop until every violation in the list is addressed and committed
@@ -303,15 +302,16 @@ def quality_review_agent_definition(
 
 # CI check
 
-CI_QUICK_COMMANDS = [
-    ("typecheck", ["pnpm", "typecheck"]),
-    ("backend unit tests", ["pnpm", "test:backend"]),
-    ("frontend unit tests", ["pnpm", "test:frontend"]),
-]
 
-CI_FULL_COMMANDS = CI_QUICK_COMMANDS + [
-    ("e2e tests", ["pnpm", "test:e2e"]),
-]
+def _build_ci_commands(*, include_slow: bool) -> list[tuple[str, list[str]]]:
+    """Every CI check the project declared (constitution §12 / README.md), in its
+    own words — not forced into a fixed typecheck/lint/unit/e2e taxonomy. The quick
+    pre-critic gate excludes anything that looks e2e/integration-shaped (see
+    is_slow_check); the full gate after both review gates pass runs everything."""
+    checks = resolve_ci_commands()
+    if include_slow:
+        return checks
+    return [(label, cmd) for label, cmd in checks if not is_slow_check(label)]
 
 
 def _run_commands(commands: list[tuple[str, list[str]]]) -> tuple[bool, str]:
@@ -337,13 +337,15 @@ def _run_commands(commands: list[tuple[str, list[str]]]) -> tuple[bool, str]:
 
 
 def run_quick_ci_checks() -> tuple[bool, str]:
-    """Run typecheck + unit tests only. Fast gate before the critic loop."""
-    return _run_commands(CI_QUICK_COMMANDS)
+    """Run all declared CI checks except e2e/integration-shaped ones. Fast gate
+    before the critic loop."""
+    return _run_commands(_build_ci_commands(include_slow=False))
 
 
 def run_full_ci_checks() -> tuple[bool, str]:
-    """Run all CI checks including e2e. Slow gate after both review gates pass."""
-    return _run_commands(CI_FULL_COMMANDS)
+    """Run every declared CI check, including e2e. Slow gate after both review
+    gates pass."""
+    return _run_commands(_build_ci_commands(include_slow=True))
 
 
 # Main orchestration loop

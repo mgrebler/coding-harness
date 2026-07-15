@@ -132,9 +132,11 @@ For each [TEST] task (lines containing "[TEST]" and marked "- [ ]"):
            git commit -m "test: <TASKID> write failing tests for <description>"
 
 Do NOT touch [IMPL] tasks. Do NOT write any implementation code. Do NOT modify
-backend/src/ or frontend/src/ directories.
+any of the source (non-test) directories declared under the constitution's
+"Test file location" bullets (§5, Test-Driven Development).
 
-Inputs already loaded for you:
+Inputs already loaded for you (this project's constitution.md is human-customized, so any
+section number referenced above/below may not match — locate the section by heading text instead):
 
 --- CONSTITUTION ---
 {constitution}
@@ -153,10 +155,8 @@ Inputs already loaded for you:
 
 Key rules:
 - Read test-principles.md fully before writing any test
-- Backend tests: pnpm --filter backend test -- <test-file-path>
-- Frontend component tests: pnpm --filter frontend test -- <test-file-path>
-- E2E tests: pnpm test:e2e -- <test-file-path>
-- Use only Vitest (unit/integration) or Playwright (e2e) — no other test libraries
+- Run tests using the commands declared in the constitution's CI Requirements section (§12), targeting the new file
+- Use only the test libraries in the constitution's Stack Constraints section (§2) — no other test libraries
 - Test names must describe behaviour, not implementation details
 - No shared mutable state between test cases
 - Do not stop until all [TEST] tasks are marked [x] in tasks.md
@@ -245,13 +245,15 @@ def test_fix_agent_definition(
         prompt=f"""You are the Test Fix Agent for a spec-kit project.
 
 Your sole function is to fix the specific violations listed below in the test files.
-Fix ONLY test files. Do NOT touch implementation files (backend/src/, frontend/src/).
+Fix ONLY test files. Do NOT touch implementation (non-test) files, per the source
+directories declared under the constitution's "Test file location" bullets (§5, Test-Driven Development).
 Do not add features. Do not change test assertions that are not part of a listed violation.
 
 --- VIOLATIONS TO FIX ---
 {json.dumps(violations, indent=2)}
 
---- CONSTITUTION ---
+--- CONSTITUTION --- (this project's constitution.md is human-customized, so any section
+number referenced above/below may not match — locate the section by heading text instead)
 {constitution}
 
 --- SPEC ---

@@ -22,6 +22,8 @@ If `$ARGUMENTS` is provided, use it as `FEATURE`. Otherwise derive `FEATURE` fro
 
 Set `SPEC_DIR` to `specs/$FEATURE/`.
 
+Section numbers below (e.g. "constitution §2") refer to this project's own `constitution.md` — every installed project customizes that file, so numbering may not match the harness's default template. Locate the referenced content by its heading text if the number has drifted.
+
 ---
 
 ## Input Package
@@ -42,20 +44,7 @@ Set `SPEC_DIR` to `specs/$FEATURE/`.
 
 Run: `git diff main...HEAD --name-only`
 
-This gives the full list of source files changed on the feature branch. Read each changed file that is relevant to the checklist rules below. Focus on:
-
-- `backend/src/api/` — tRPC router files
-- `backend/src/services/` — service layer files
-- `backend/tests/` — backend test files
-- `frontend/src/components/` — component files
-- `frontend/src/hooks/` — hook files
-- `frontend/src/pages/` — page files
-- `frontend/tests/` — frontend test files
-- `prisma/schema.prisma` — schema file
-- `prisma/migrations/` — migration SQL files
-- `package.json`, `frontend/package.json`, `backend/package.json` — dependency files
-
-Do not read files outside these paths unless a specific artifact references them.
+This gives the full list of source files changed on the feature branch. Read each changed file that is relevant to the checklist rules below — the source/test directories declared in `architecture.md` and constitution §5 (Test-Driven Development), plus any dependency manifest(s) for the project's package manager. Do not read files outside these paths unless a specific artifact references them.
 
 ---
 
@@ -71,34 +60,25 @@ Check each rule in order. Every rule must appear in the output as either a viola
 
 ### §I2 — Test Phase Gate [BLOCKING]
 - `specs/$FEATURE/ch-3-test-quality-review-result-*.json` must exist with `"status": "PASS"` — if no passing result exists, the implementation phase should not have started
-- Test files (`backend/tests/`, `frontend/tests/`) must NOT have been created or modified during the implement phase — test files belong to the test phase and are read-only during implementation; cite any test file that appears in the implement-phase changed set
+- Test files (per the "Test file location" bullets under constitution §5) must NOT have been created or modified during the implement phase — test files belong to the test phase and are read-only during implementation; cite any test file that appears in the implement-phase changed set
 - For every changed implementation file, a corresponding test file must exist on the branch (written during the test phase)
-- Schema migration files (`prisma/migrations/`) are exempt from this rule (constitution §5 explicitly waives test requirements for migrations)
+- Schema migration files are exempt from this rule (constitution's Test-Driven Development section, §5, explicitly waives test requirements for migrations)
 
 ### §I3 — Stack Constraints [BLOCKING]
-- No import statement in any changed file references a package not in the constitution §2 approved stack
-- No new entry added to any `package.json` `dependencies` or `devDependencies` that is not already present in the codebase or covered by a constitution amendment in `plan.md`
-- Verify against the approved stack: TypeScript, React, Vite, Hono, Prisma, PostgreSQL, Zod, tRPC, Vitest, Playwright, Tailwind, pnpm, Resend
+- No import statement in any changed file references a package outside the approved stack in the constitution's Stack Constraints section (§2)
+- No new entry added to any dependency manifest (`package.json`, `pyproject.toml`, `go.mod`, etc.) that is not already present in the codebase or covered by a constitution amendment in `plan.md`
 - If `plan.md` proposes a constitution amendment for a new dependency, and that dependency matches what was added, this rule passes for that package
 
-### §I4 — Backend Layer Separation [BLOCKING]
-- No Prisma client calls (`prisma.`, `db.`) in any file under `backend/src/api/` (router layer)
-- No tRPC procedure definitions in any file under `backend/src/services/` (service layer)
-- Business logic (data transformation, validation beyond input shapes, orchestration) must not appear in `backend/src/api/` files
-- The router layer calls service functions only; service functions call Prisma only
-- If any of these boundaries are crossed, cite the exact file and line
-
-### §I5 — Frontend Layer Separation [BLOCKING]
-- No direct `trpc.` hook calls (`useQuery`, `useMutation`) inside files under `frontend/src/components/`
-- No direct `trpc.` hook calls inside files under `frontend/src/pages/` — pages must call custom hooks from `frontend/src/hooks/` only
-- Components receive data and callbacks via props only; they do not fetch data directly
-- If any of these boundaries are crossed, cite the exact file and import or call
+### §I4 — Layer Separation [BLOCKING]
+- No layer boundary declared in `architecture.md` (e.g. router/handler layer vs. service layer vs. data-access layer, or component vs. data-fetching layer on the frontend) is bypassed — cite the specific boundary from `architecture.md` that was crossed
+- Business logic (data transformation, validation beyond input shapes, orchestration) must not appear in a layer `architecture.md` designates as thin routing/presentation only
+- If any of these boundaries are crossed, cite the exact file and line, and name the `architecture.md` rule it violates
 
 ### §I6 — Test Coverage [BLOCKING]
-- Every modified or added tRPC procedure has at least one Vitest integration test in `backend/tests/integration/`
-- Every modified or added service function has at least one Vitest unit test in `backend/tests/unit/`
-- Every modified or added UI component has at least one Vitest component test in `frontend/tests/component/` or is covered by a Playwright e2e test in `frontend/tests/e2e/`
-- Test files must contain assertions that cover the happy path; an empty test file or a test with no `expect()` calls is a violation
+- Every modified or added API procedure/endpoint has at least one integration test, per the coverage requirements in constitution §5
+- Every modified or added service/utility function has at least one unit test, per the coverage requirements in constitution §5
+- Every modified or added UI component has at least one component or e2e test, per the coverage requirements in constitution §5
+- Test files must contain assertions that cover the happy path; an empty test file or a test with no assertions is a violation
 - If a test file is referenced in `tasks.md` but is absent from the changed files, flag it
 
 ### §I7 — Spec Compliance [BLOCKING]
@@ -108,33 +88,28 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - Out-of-scope items explicitly noted in `plan.md` are exempt
 
 ### §I8 — Contract Compliance [BLOCKING]
-- Implemented Zod input schemas in `backend/src/api/` must match the schemas defined in `$SPEC_DIR/contracts/`
-- Implemented output types must match the output schemas in `$SPEC_DIR/contracts/`
-- No procedure may widen or narrow its input/output type beyond the contract without a new decision record in constitution §17
+- Implemented input/output schemas match the contracts defined in `$SPEC_DIR/contracts/`
+- No procedure/endpoint may widen or narrow its input/output type beyond the contract without a new decision record in the constitution's Decision Records section (§17)
 - If no `contracts/` directory exists for this feature, this rule is not_applicable
 
 ### §I9 — Schema Migration [BLOCKING]
-- If `plan.md` or `data-model.md` describes schema changes, a migration file must exist in `prisma/migrations/` that was added on this branch
-- The `prisma/schema.prisma` changes must match `data-model.md` exactly (field names, types, optionality, relations)
-- Hand-written SQL in migration files is only permitted for data backfills explicitly justified in `data-model.md` or `tasks.md`; flag any other hand-written SQL
+- If `plan.md` or `data-model.md` describes schema changes, a migration file must exist that was added on this branch, using the migration mechanism declared in constitution §3 (Data Model Authority)
+- The schema source of truth (per constitution §3) must match `data-model.md` exactly (field names, types, optionality, relations)
+- Hand-written migration code is only permitted for data backfills explicitly justified in `data-model.md` or `tasks.md`; flag any other hand-written migration SQL/code
 - If no schema changes are described in `plan.md`, this rule is not_applicable
 
 ### §I10 — Styling Compliance [BLOCKING]
-- No CSS Modules (`.module.css` files) in any changed frontend file
-- No `style={}` inline style props in any changed JSX/TSX
-- No new global stylesheet imports beyond the Tailwind base import
-- Tailwind utility classes are the only permitted styling mechanism
+- If `constitution.md` or `architecture.md` names an approved styling mechanism, no other styling approach (e.g. an unapproved CSS-in-JS library, inline styles, ad hoc global stylesheets) is introduced without justification
+- If no styling constraint is declared in the loaded documents, this rule is not_applicable
 
-### §I11 — TypeScript Safety [WARNING]
-- No `as any` casts in changed files without a comment on the same or preceding line explaining why
-- No `// @ts-ignore` or `// @ts-expect-error` in changed files without a comment explaining the specific reason
-- No implicit `any` from untyped function parameters
-- Non-null assertions (`!`) are permitted but flag any that operate on values that could genuinely be null at runtime
+### §I11 — Type Safety [WARNING]
+- If the approved stack (constitution §2) includes a statically-typed language, no unjustified escape hatches from that type system (e.g. `as any`/`@ts-ignore` in TypeScript, `# type: ignore` in Python, `interface{}` casts in Go) appear without a comment explaining why
+- No implicit loosening of function-parameter or return types
+- If the approved stack has no static typing, this rule is not_applicable
 
 ### §I12 — CI Readiness [WARNING]
-- No patterns that would cause `tsc --noEmit` to fail: missing type annotations on exported functions, incompatible type assignments, missing return types on public API functions
-- No patterns that would cause `eslint` to flag errors: unused imports, unused variables, `console.log` statements left in production code
-- No test files with `test.only` or `describe.only` that would cause other tests to be silently skipped in CI
+- No patterns that would cause any check declared in constitution §12 (CI Requirements) to fail — e.g. missing type annotations where typecheck is required, lint violations (unused imports/variables, stray debug statements) where lint is required
+- No test files disable/skip other tests in a way that would cause them to be silently skipped in CI (e.g. an exclusive-run marker left in place)
 
 ---
 
@@ -146,7 +121,7 @@ Check each rule in order. Every rule must appear in the output as either a viola
   "status": "PASS | FAIL",
   "violations": [
     {
-      "rule": "<rule label, e.g. §I4 — Backend Layer Separation>",
+      "rule": "<rule label, e.g. §I4 — Layer Separation>",
       "severity": "BLOCKING | WARNING",
       "location": "<file path and line number or function name>",
       "finding": "<specific, citable description of the violation>"

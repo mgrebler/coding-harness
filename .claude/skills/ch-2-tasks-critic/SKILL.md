@@ -23,6 +23,8 @@ Read the following files exactly. Do not traverse the repo beyond these paths. D
 
 If `$ARGUMENTS` is not provided, identify the current feature branch name and derive the spec folder from it (e.g. branch `014-rich-text-formatting` → `specs/014-rich-text-formatting/`).
 
+Section numbers below (e.g. "constitution §2") refer to this project's own `constitution.md` — every installed project customizes that file, so numbering may not match the harness's default template. Locate the referenced content by its heading text if the number has drifted.
+
 ---
 
 ## Instructions
@@ -60,12 +62,12 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - Within each user story phase, `[TEST]` tasks must appear before their paired `[IMPL]` tasks
 
 ### §T4 — Stack Constraints [BLOCKING]
-- File paths referenced in tasks must use the approved directory structure: `backend/src/api/`, `backend/src/services/`, `backend/src/models/`, `frontend/src/`, `frontend/tests/`
-- Technology references in task descriptions must match the approved stack: TypeScript, React, Hono, Prisma, PostgreSQL, Zod/tRPC, Vitest, Playwright
+- File paths referenced in tasks use the directory structure defined in `architecture.md` and the "Test file location" bullets under constitution §5 (Test-Driven Development)
+- Technology references in task descriptions match the constitution's Stack Constraints table (§2)
 - No unapproved library or tool introduced without a constitution amendment proposed in `plan.md`
 
 ### §T5 — Schema Migration [BLOCKING]
-- If `plan.md` describes any Prisma schema changes (new model, new field, modified field, relation change), a migration task must exist in the Foundational phase referencing `prisma migrate dev`
+- If `plan.md` describes any data model schema changes (new model, new field, modified field, relation change), a migration task must exist in the Foundational phase referencing the migration command defined in the constitution's Data Model Authority section (§3)
 - If no schema changes are described in `plan.md`, this rule is not_applicable
 
 ### §T6 — v1 Scope [BLOCKING]

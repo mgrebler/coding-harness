@@ -117,7 +117,7 @@ Key rules:
 - Organise tasks by phase: Setup → Foundational → one phase per user story (in spec priority order) → Polish
 - Every task must follow the checklist format: - [ ] T### [P?] [US#?] Description — file/path
 - Mark tasks [P] when they target different files with no dependencies
-- Every implementation task must have a paired test task (Vitest unit/component or Playwright e2e)
+- Every implementation task must have a paired test task (unit/component or e2e, per the project's approved test stack in the constitution's Stack Constraints section)
 - Include a Checkpoint at the end of each phase with a concrete runnable verification command
 - Write tasks.md to the correct specs/$FEATURE/ path
 - Do not stop until tasks.md is written to disk

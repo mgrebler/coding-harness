@@ -49,20 +49,27 @@ No agent may introduce a dependency, framework, or tool outside this list withou
 
 ## 3. Data Model Authority
 
-- `schema.prisma` is the single source of truth for the data model.
-- `data-model.md` documents intent. Any drift between `data-model.md` and `schema.prisma` is a defect.
+<!-- Replace with whatever this project's actual schema/migration mechanism is
+     (Prisma schema file, Django models, SQL migration directory, etc.) -->
+
+- [PROJECT: e.g. `schema.prisma`] is the single source of truth for the data model.
+- `data-model.md` documents intent. Any drift between `data-model.md` and [PROJECT: the schema source] is a defect.
 - No field, table, or relation may be added, removed, or renamed outside a completed spec → plan → task chain.
-- Migrations are generated from schema changes only (`prisma migrate dev`). Hand-written migrations are prohibited except for data backfills, which require explicit justification in the task entry.
-- The Prisma client is the only permitted database access path. No raw SQL in application code.
+- Migrations are generated from schema changes only ([PROJECT: e.g. `prisma migrate dev`]). Hand-written migrations are prohibited except for data backfills, which require explicit justification in the task entry.
+- [PROJECT: e.g. The Prisma client] is the only permitted database access path. [PROJECT: e.g. No raw SQL in application code.]
 
 ---
 
 ## 4. API Contract Rules
 
-- tRPC router definitions in `specs/[###-feature]/contracts/` are the binding contract.
-- **Breaking changes** — removing a procedure, changing an input shape, removing an output field — require a decision record committed to this constitution before the implementing task begins.
-- **Additive changes** — new optional input field, new output field, new procedure — do not require a decision record but must be reflected in `contracts/` before code is written.
-- No REST endpoints. No GraphQL. tRPC is the only API surface.
+<!-- Replace with whatever this project's actual API surface is (tRPC, REST,
+     GraphQL, gRPC, ...) — the rule that matters is "one binding contract
+     format, defined here" regardless of which one is chosen. -->
+
+- [PROJECT: e.g. tRPC router definitions] in `specs/[###-feature]/contracts/` are the binding contract.
+- **Breaking changes** — removing a procedure/endpoint, changing an input shape, removing an output field — require a decision record committed to this constitution before the implementing task begins.
+- **Additive changes** — new optional input field, new output field, new procedure/endpoint — do not require a decision record but must be reflected in `contracts/` before code is written.
+- [PROJECT: e.g. No REST endpoints. No GraphQL. tRPC is the only API surface.]
 
 ---
 
@@ -89,24 +96,28 @@ An implementation agent that writes new test files or adds/modifies test cases (
 
 | Artifact | Required tests |
 |---|---|
-| tRPC procedure | Vitest integration test: happy path + at least one error/edge case |
-| UI component | Playwright or Vitest component test: primary interaction |
-| Service/utility function | Vitest unit test: happy path + edge cases |
+| [PROJECT: e.g. API procedure/endpoint] | [PROJECT: e.g. Vitest integration test]: happy path + at least one error/edge case |
+| [PROJECT: e.g. UI component] | [PROJECT: e.g. Playwright or Vitest component test]: primary interaction |
+| [PROJECT: e.g. Service/utility function] | [PROJECT: e.g. Vitest unit test]: happy path + edge cases |
 | Schema migration | No test required, but migration must be reviewed by human before merge |
 
 A task is not closed until all required tests exist, were written before the implementation, and pass in CI.
 
 ### Test file location
 
-- Backend tests: `backend/tests/` mirroring the `src/` structure.
-- Frontend tests: `frontend/tests/` mirroring the `src/` structure.
+<!-- List every directory where tests live, with a backtick-quoted path per
+     line — the harness parses this to know where to look for test files.
+     A single-package project only needs one line. -->
+
+- [PROJECT: e.g. Backend tests]: `[PROJECT: e.g. backend/tests/]` mirroring the `src/` structure.
+- [PROJECT: e.g. Frontend tests]: `[PROJECT: e.g. frontend/tests/]` mirroring the `src/` structure.
 - Test files are committed on the same branch as the feature code.
 
 ---
 
 ## 6. Task Atomicity
 
-- One [TEST]/[IMPL] pair = one of: a single schema change, a single tRPC procedure, or a single UI component. The pair is the unit of atomicity — both tasks together cover one deliverable.
+- One [TEST]/[IMPL] pair = one of: a single schema change, a single API procedure/endpoint, or a single UI component. The pair is the unit of atomicity — both tasks together cover one deliverable.
 - A deliverable that touches both backend and frontend is two [TEST]/[IMPL] pairs (four tasks).
 - Tasks that violate atomicity are rejected before implementation begins.
 - Parallel tasks are marked `[P]` in `tasks.md` and may be implemented concurrently only when they have no shared schema or contract dependency.
@@ -136,7 +147,7 @@ implementation → CI pass + human review → merged
 - Every 5 merged tasks: one dedicated refactor session before the next feature begins.
 - Refactor mandate: drift correction and structural cleanup only. No new behaviour.
 - Refactor sessions are scheduled, not reactive. Do not wait for failure to trigger them.
-- A refactor session must not change any tRPC contract or Prisma schema without going through the full spec gate.
+- A refactor session must not change any API contract or data schema without going through the full spec gate.
 - Run `/speckit.checklist` after every merge to surface drift before it accumulates.
 - **Refactor sessions use a branch and PR, identical to feature work.** All CI checks must pass locally before pushing (§12), and the PR requires human review before merge. No changes of any kind may be committed directly to `main`.
 
@@ -198,14 +209,19 @@ main
 
 ## 12. CI Requirements
 
+<!-- The harness parses these bullets to find the actual command for each
+     check — keep each one as "<Label> (`<command>`)" with the real,
+     runnable command in backticks, not just a tool name. Delete any row
+     that doesn't apply to this project (e.g. no e2e suite). -->
+
 Every push to a feature branch must pass:
 
-- TypeScript typecheck (`tsc --noEmit`)
-- Lint (`eslint`)
-- Vitest test suite
-- Playwright e2e suite
+- Typecheck (`[PROJECT: e.g. pnpm typecheck]`)
+- Lint (`[PROJECT: e.g. pnpm lint]`)
+- Unit tests (`[PROJECT: e.g. pnpm test:unit]`)
+- E2E tests (`[PROJECT: e.g. pnpm test:e2e]`)
 
-**The implementation agent must run all four checks locally and confirm they pass before pushing to a feature branch.** Pushing and waiting for CI to catch failures is not acceptable. If a check cannot be run locally, the agent must state this explicitly and explain why before pushing.
+**The implementation agent must run all listed checks locally and confirm they pass before pushing to a feature branch.** Pushing and waiting for CI to catch failures is not acceptable. If a check cannot be run locally, the agent must state this explicitly and explain why before pushing.
 
 **If any code changes are made after the checks were last run, all four checks must be re-run before pushing.**
 
@@ -256,7 +272,7 @@ The following are out of scope for v1 but the architecture must not make them im
 | Specify Agent | Produce `spec.md` from constitution + product context + human intent. No plan or code. |
 | Plan Agent | Read `architecture.md` and `architecture-principles.md`, produce `plan.md`, `research.md`, `data-model.md`, `contracts/`, and proposed `architecture.md` additions from approved `spec.md`. No code. |
 | Tasks Agent | Produce `tasks.md` from approved `plan.md` and supporting docs. No code. |
-| Test Agent | Read `test-principles.md`. Write failing test(s) for assigned [TEST] tasks. Confirm red state. Record failing output. No implementation code. No modification of `backend/src/` or `frontend/src/`. |
+| Test Agent | Read `test-principles.md`. Write failing test(s) for assigned [TEST] tasks. Confirm red state. Record failing output. No implementation code. No modification of the source directories declared in §5. |
 | Implementation Agent | Read `code-quality-principles.md`. Load red-output artifact from paired [TEST] task. Write implementation to pass failing tests. Refactor under green. No new test files. No adding or modifying test cases. Modifying test setup (mocks, fixtures, helpers, `setup.ts`) is permitted when the implementation requires additional test infrastructure not established during the test phase. No spec, plan, or architecture changes. |
 | Verification Agent | Report pass/fail and defects against spec. No fixes. |
 | Refactor Agent | Structural cleanup and drift correction only. Read `architecture.md` and report drift. No new behaviour, no contract changes, no self-directed architectural corrections. |
