@@ -41,9 +41,7 @@ Set `SPEC_DIR` to `specs/$FEATURE/`.
 
 Run: `git diff main...HEAD --name-only`
 
-Filter results to test files only:
-- `backend/tests/` — backend test files
-- `frontend/tests/` — frontend test files
+Filter results to test files only, using the "Test file location" bullets under constitution §5 (Test-Driven Development) — locate by heading text if the number has drifted in this project's constitution.
 
 Read each changed test file in full. Do NOT read implementation files — none should exist at this stage.
 
@@ -96,8 +94,7 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - If ordering dependency or shared state is found, cite the specific test block
 
 ### §TQ6 — Stack Compliance [BLOCKING]
-- Test files must import only from approved test libraries: Vitest (unit/integration) or
-  Playwright (e2e)
+- Test files must import only from the approved test libraries defined in the constitution's Stack Constraints section (§2)
 - No unapproved test libraries or test runners introduced
 - If a test file imports from an unapproved library, cite the import statement
 
@@ -178,7 +175,7 @@ or
 ## Scope Limits
 
 This skill does not:
-- Read implementation files (`backend/src/`, `frontend/src/`) — none should exist yet
+- Read implementation (non-test) files — none should exist yet
 - Write, edit, or fix any test file
 - Run the test suite — it reads test files and artifact content only
 - Validate plan.md or spec.md themselves — use `/ch-1-plan-critic` for that

@@ -23,21 +23,6 @@ from agent_common.ollama import run_local_critic_cli
 
 CRITIC_RESULT_PREFIX = "ch-4-implement-critic-result"
 
-_PROHIBITED_PACKAGES = (
-    "'express'",
-    '"express"',
-    "'fastify'",
-    '"fastify"',
-    "'koa'",
-    '"koa"',
-    "'jest'",
-    '"jest"',
-    "'mocha'",
-    '"mocha"',
-    "'jasmine'",
-    '"jasmine"',
-)
-
 _ROUTE_METHOD_PATTERNS = (".get(", ".post(", ".put(", ".delete(", ".patch(", ".options(", ".head(")
 
 
@@ -47,9 +32,7 @@ def _extract_imports(content: str) -> str:
     for i, line in enumerate(lines, 1):
         stripped = line.strip()
         if stripped.startswith("import ") or stripped.startswith("from "):
-            prohibited = any(pkg in stripped for pkg in _PROHIBITED_PACKAGES)
-            flag = " ← PROHIBITED PACKAGE" if prohibited else ""
-            hits.append(f"  Line {i}: {stripped}{flag}")
+            hits.append(f"  Line {i}: {stripped}")
     return "\n".join(hits)
 
 
@@ -150,9 +133,8 @@ def build_implement_critic_prompt(
         file_input = (
             "Validation process:\n"
             "1. Run `git diff main...HEAD --name-only` and `git status --short` to identify all changed files\n"
-            "2. Read each changed source file under backend/src/, frontend/src/, prisma/, and package.json files\n"
-            "3. Read each changed test file under backend/tests/ and frontend/tests/\n"
-            "4. Validate against every rule below"
+            "2. Read each changed source and test file — see the 'Test file location' bullets under constitution §5 (Test-Driven Development) for where test files live in this project\n"
+            "3. Validate against every rule below"
         )
     else:
         file_input = f"--- CHANGED SOURCE FILES (git diff main...HEAD) ---\n{changed_files_section}"
@@ -190,24 +172,27 @@ IMPORTANT context: this critic runs AFTER all tasks are complete. The branch con
 Validate against ALL rules in the embedded CONSTITUTION and ARCHITECTURE documents above.
 Those documents are the authoritative source for all project-specific constraints — stack,
 layer separation, TDD compliance, test coverage, contract compliance, schema migration,
-styling, TypeScript safety, and CI readiness. Read and apply every section.
+styling, type safety, and CI readiness. Read and apply every section. This project's
+constitution.md is human-customized, so its section numbers may not match any numbers
+used below — when a rule below references a constitution/architecture section, locate it
+by heading text (e.g. "Stack Constraints") rather than assuming the number lines up.
 
-For violations derived from the memory documents, use the section as the rule label,
-e.g. "Constitution §2 — Stack Constraints", "Architecture §2 — Backend Layer Separation".
+For violations derived from the memory documents, use the section heading as the rule
+label, e.g. "Constitution — Stack Constraints", "Architecture — Layer Separation".
 
 Harness process checks (apply in addition to the above):
 
 §I1 Task Traceability [BLOCKING]: every changed source file corresponds to a path or component listed in tasks.md; no phantom files
 §I7 Spec Compliance [BLOCKING]: implemented behaviour covers every acceptance criterion in spec.md; nothing added beyond what spec.md requires
 
-§2 Stack Constraints — detection method: check IMPORT STATEMENTS ONLY (use the pre-extracted "Imports in this file" lists above). A violation exists ONLY IF an import line contains a prohibited package: 'express', 'fastify', 'koa', 'jest', 'mocha', or 'jasmine'. NOT violations: `import {{ Hono }} from 'hono'` (Hono package and class share the same name — this IS correct Hono usage), `new Hono()` (correct Hono app/router instantiation), `app.route()`, `route.get()`, `route.post()` (standard Hono routing API). If the pre-extracted import list shows no prohibited packages, §2 PASSES — do not add it to violations.
+Stack Constraints — detection method: check IMPORT STATEMENTS ONLY (use the pre-extracted "Imports in this file" lists above) against the approved stack table in the constitution's Stack Constraints section. A violation exists ONLY IF an import line is for a package that is clearly outside that approved list — an import of the project's own approved framework/library, or its standard usage patterns, is NEVER a violation even if the import name resembles a class or route method name. If the pre-extracted import list shows no packages outside the approved stack, this check PASSES — do not add it to violations.
 
-Architecture §2 — Backend Layer Separation: a violation requires a route handler to DIRECTLY contain SQL queries, raw DB instantiation (e.g. `new PrismaClient()`), or embedded business logic algorithms. NOT violations: `app.route(path, subRouter)` in index.ts (the correct entry-point pattern for mounting sub-routers), a route handler calling a helper function or service, imports between project files. Registering a sub-router in index.ts is the correct architecture — it does not violate layer separation.
+Architecture — Layer Separation: a violation requires application code to directly bypass a layer boundary declared in architecture.md or constitution.md (e.g. raw database queries or client instantiation, or embedded business logic, inside a layer that document designates as thin routing/presentation only). Mounting/registering sub-routers, calling a helper function or service, and imports between project files are NEVER violations on their own — only cite a violation when the specific boundary crossed is named in the embedded ARCHITECTURE/CONSTITUTION documents.
 
 §I7 Spec Compliance — detection method: use the pre-extracted "Routes in this file" lists to compare implemented route paths against spec acceptance criteria. A §I7 violation exists when a route path, HTTP method, or response shape does not match what spec.md requires.
 
 Evidence standard — before adding any item to the violations array you MUST:
-- Quote the exact line(s) that constitute the violation AND name the specific prohibited behavior (e.g. "imports from 'express'" for §2, "implements /status but spec requires /health" for §I7)
+- Quote the exact line(s) that constitute the violation AND name the specific prohibited behavior (e.g. "imports a package outside the approved stack" for Stack Constraints, "implements /status but spec requires /health" for §I7)
 - If the quoted code does not show a specific prohibited behavior, it belongs in not_applicable, not violations
 - If your analysis concludes "does not violate" or "no violation found", add it to not_applicable instead — do NOT put it in violations
 - Never report a violation based on hypothetical future scenarios, code that might be added later, or conditions that "could" arise

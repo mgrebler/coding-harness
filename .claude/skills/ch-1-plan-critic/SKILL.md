@@ -37,6 +37,8 @@ Read the following files exactly. Do not traverse the repo beyond these paths. D
 
 If `$ARGUMENTS` is not provided, identify the current feature branch name and derive the spec folder from it (e.g. branch `012-passwordless-auth` → `specs/012-passwordless-auth/`).
 
+Section numbers below (e.g. "constitution §2") refer to this project's own `constitution.md` — every installed project customizes that file, so numbering may not match the harness's default template. Locate the referenced content by its heading text (e.g. "Stack Constraints") if the number has drifted.
+
 ---
 
 ## Instructions
@@ -56,9 +58,9 @@ Return ONLY valid JSON matching the output schema below. No preamble. No explana
 Check each rule in order. Every rule must appear in the output as either a violation, a not_applicable entry, or an implicit pass (no entry needed for clean passes — violations and not_applicable entries are sufficient).
 
 ### §2 — Stack Constraints [BLOCKING]
-- Every dependency named in `plan.md` appears in the constitution §2 stack table, OR a constitution amendment is explicitly proposed in the plan with exact amendment text
+- Every dependency named in `plan.md` appears in the constitution's Stack Constraints section (§2), OR a constitution amendment is explicitly proposed in the plan with exact amendment text
 - No dependency introduced without justification in the Complexity Tracking section
-- No banned tool used (check constitution §2 for explicit exclusions)
+- No banned tool used (check the constitution's Stack Constraints section for explicit exclusions)
 
 ### §3 — Data Model Authority [BLOCKING]
 - All new or modified models are listed in `plan.md` and cross-referenced to `data-model.md`
@@ -66,9 +68,8 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - If a hand-edited migration is required, explicit justification is present per the §3 exception rule
 
 ### §4 — API Contract Rules [BLOCKING]
-- All breaking API changes (input/output shape, procedure visibility change, context type change) have a decision record in the plan with: date, change type, summary, scope of impact
-- Additive-only changes (new router, new procedure) are identified as additive and do not carry a breaking-change decision record
-- tRPC context type changes are treated as breaking and have a decision record
+- All breaking API changes (input/output shape, procedure/endpoint visibility change, shared context/middleware change) have a decision record in the plan with: date, change type, summary, scope of impact
+- Additive-only changes (new router/endpoint, new procedure) are identified as additive and do not carry a breaking-change decision record
 
 ### §5 — TDD [BLOCKING]
 - Every new endpoint has a corresponding test file listed in the project structure
@@ -89,12 +90,11 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - `plan.md` contains an explicit statement that the feature is consistent with `architecture.md`, OR discloses specific conflicts and defers them to the human for resolution before `plan.md` is finalised [BLOCKING if neither present]
 - No conflict with `architecture.md` is silently resolved by the plan — every divergence must be surfaced, not absorbed [BLOCKING]
 - If the feature introduces a new architectural decision (a new layer, a new integration pattern, a new external dependency category, a new data flow), the plan includes a proposed addition to `architecture.md` with the exact text to be added [WARNING if omitted]
-- New backend files follow the three-layer model defined in `architecture.md` §2: router layer (`backend/src/api/`) → service layer (`backend/src/services/`) → Prisma client (`backend/src/models/`). No Prisma calls outside the service layer. [WARNING if violated]
-- New frontend files follow the three-layer model defined in `architecture.md` §3: pages own layout and state → custom hooks own data fetching (the only layer that calls tRPC) → shared components receive props only and contain no tRPC calls or hook invocations [WARNING if violated]
-- If `architecture.md` is absent or cannot be read, flag this as a BLOCKING violation: the Plan Agent is required to read it before producing `plan.md` (constitution §9)
+- New files follow the layer model and directory structure defined in `architecture.md` — no layer bypasses the boundaries it declares (e.g. direct database access from a layer designated as routing/presentation-only) [WARNING if violated]
+- If `architecture.md` is absent or cannot be read, flag this as a BLOCKING violation: the Plan Agent is required to read it before producing `plan.md` (constitution's Architecture Document section, §9)
 
 ### §12 — CI [WARNING]
-- The plan does not introduce changes that would break typecheck, lint, vitest, or Playwright without a corresponding mitigation noted
+- The plan does not introduce changes that would break any of the CI checks declared in the constitution's CI Requirements section (§12) without a corresponding mitigation noted
 
 ### §13 — v1 Scope Boundaries [BLOCKING]
 - If the plan crosses any boundary listed in §13, a constitution amendment is explicitly proposed with exact amendment text

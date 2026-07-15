@@ -168,14 +168,14 @@ Every task MUST strictly follow this format:
 **Examples**:
 
 - ✅ CORRECT: `- [ ] T001 Create project structure per implementation plan (no test — infrastructure setup)`
-- ✅ CORRECT: `- [ ] T010 [TEST] [P] [US1] Write failing tests for createJob endpoint in backend/tests/integration/jobs.test.ts`
-- ✅ CORRECT: `- [ ] T011 [IMPL] [US1] Implement createJob service in backend/src/services/jobs.service.ts (depends on T010)`
-- ✅ CORRECT: `- [ ] T004 Create Prisma migration for Job model (no test required — schema migration)`
-- ❌ WRONG: `- [ ] T010 [US1] Write tests for createJob` (missing [TEST] type label)
-- ❌ WRONG: `- [ ] T011 [US1] Implement createJob` (missing [IMPL] type label, missing dependency reference)
+- ✅ CORRECT: `- [ ] T010 [TEST] [P] [US1] Write failing tests for createWidget endpoint in tests/integration/widgets.test.ts`
+- ✅ CORRECT: `- [ ] T011 [IMPL] [US1] Implement createWidget service in src/services/widgets.service.ts (depends on T010)`
+- ✅ CORRECT: `- [ ] T004 Create schema migration for Widget model (no test required — schema migration)`
+- ❌ WRONG: `- [ ] T010 [US1] Write tests for createWidget` (missing [TEST] type label)
+- ❌ WRONG: `- [ ] T011 [US1] Implement createWidget` (missing [IMPL] type label, missing dependency reference)
 - ❌ WRONG: `T001 [TEST] Create test` (missing checkbox)
 - ❌ WRONG: `- [ ] [TEST] [US1] Write tests` (missing Task ID)
-- ❌ WRONG: `- [ ] T010 [TEST] [US1] Write tests for createJob` (missing file path)
+- ❌ WRONG: `- [ ] T010 [TEST] [US1] Write tests for createWidget` (missing file path)
 
 ### Task Organization
 

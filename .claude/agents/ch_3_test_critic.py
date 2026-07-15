@@ -20,10 +20,9 @@ from pathlib import Path
 from agent_common.files import read_changed_files, read_optional, require_files
 from agent_common.git import get_changed_files
 from agent_common.ollama import run_local_critic_cli
+from agent_common.project_conventions import resolve_test_dirs
 
 CRITIC_RESULT_PREFIX = "ch-3-test-critic-result"
-
-TEST_DIRS = ("backend/tests/", "frontend/tests/")
 
 _ASSERTION_KEYWORDS = (
     "expect(",
@@ -137,7 +136,7 @@ def build_test_critic_prompt(
         file_input = (
             "Validation process:\n"
             f"1. Run `git diff main...HEAD --name-only` to identify all changed files\n"
-            "2. Filter to test files only: backend/tests/ and frontend/tests/\n"
+            "2. Filter to test files only, per the 'Test file location' bullets under constitution §5 (Test-Driven Development)\n"
             "3. Read each changed test file in full\n"
             f"4. Read all files under specs/{feature}/test-results/ (red-output artifacts)\n"
             "5. Do NOT read implementation files — none should exist yet\n"
@@ -163,7 +162,8 @@ def build_test_critic_prompt(
 Your sole function is to validate the test files written on this branch against the rules below.
 You do not fix code. You do not write code. You identify violations only.
 {violations_block}
-Inputs already loaded for you:
+Inputs already loaded for you (this project's constitution.md is human-customized, so any
+section number referenced above/below may not match — locate the section by heading text instead):
 
 --- CONSTITUTION ---
 {constitution}
@@ -193,9 +193,9 @@ Harness process checks:
 §TQ1 Task Traceability [BLOCKING]: every changed test file corresponds to a [TEST] task in tasks.md; no test file added without a matching [TEST] task entry
 §TQ2 Red State Confirmed [BLOCKING]: a test-results/<TASKID>-red.txt artifact exists for every completed [TEST] task; artifact shows tests failing with assertion errors (e.g. "AssertionError: expected 404 to be 200") or module-not-found errors — an "AssertionError" line in the artifact IS a meaningful failure and PASSES §TQ2. §TQ2 only fails when: (a) the artifact file is missing, (b) the artifact shows zero failing tests, or (c) every failure is a syntax error in the test file itself.
 §TQ3 Spec Coverage [BLOCKING]: every SUCCESS CRITERION (SC-NNN line) in spec.md must have at least one corresponding assertion in the test file. If the spec contains no SC-NNN lines, every FUNCTIONAL REQUIREMENT (FR-NNN line) must have at least one corresponding assertion instead. Use the "Assertions in this file (pre-extracted for §TQ3 lookup)" list to check coverage — if a matching assertion appears in the list the requirement is covered. Notes: `expect(res.ok).toBe(true)` satisfies any SC/FR requiring a 2xx or "success" response; `.toContain('application/json')` on a header value IS a value assertion (it checks the header CONTAINS that string, not just that the header exists).
-§TQ4 No Implementation Code [BLOCKING]: asserting response status, headers, and body with expect() calls IS correct test code and is NEVER a violation — `expect(res.status).toBe(200)`, `expect(body).toEqual({...})`, `expect(res.headers.get(...)).toContain(...)`, `expect(res.ok).toBe(true)` are ALL normal test assertions. A violation is ONLY when the test file directly contains: SQL queries, raw DB instantiation (new PrismaClient()), route handler setup (new Hono(), app.get()), or service class instantiation. IMPORTANT: code in plan.md, tasks.md, or other context documents is NOT in the test file — only check lines in the "CHANGED TEST FILES" section above.
+§TQ4 No Implementation Code [BLOCKING]: asserting response status, headers, and body with expect() calls IS correct test code and is NEVER a violation — `expect(res.status).toBe(200)`, `expect(body).toEqual({...})`, `expect(res.headers.get(...)).toContain(...)`, `expect(res.ok).toBe(true)` are ALL normal test assertions. A violation is ONLY when the test file directly contains real implementation logic: raw database queries or client instantiation, route/handler setup, or service class instantiation of the kind the constitution's stack forbids outside implementation code. IMPORTANT: code in plan.md, tasks.md, or other context documents is NOT in the test file — only check lines in the "CHANGED TEST FILES" section above.
 §TQ5 Test Isolation [BLOCKING]: no shared mutable state between test cases (e.g. a module-level variable mutated by one test and read by another); if a test creates database records, external files, or other stateful artifacts, cleanup/teardown (afterEach, afterAll, or equivalent) must be present; tests must not depend on execution order to pass — cite the specific test block if a violation is found.
-§TQ6 Stack Compliance [BLOCKING]: test files must import only from approved test libraries — Vitest for unit/integration tests, Playwright for e2e tests; no other test library or runner may be imported — cite the specific import statement if a violation is found.
+§TQ6 Stack Compliance [BLOCKING]: test files must import only from the approved test libraries defined in the constitution's Stack Constraints section (§2); no other test library or runner may be imported — cite the specific import statement if a violation is found.
 
 Evidence standard — before reporting any violation you MUST:
 - Copy the exact line(s) verbatim from the "CHANGED TEST FILES" section above — not from plan.md, tasks.md, or any other document
@@ -251,7 +251,7 @@ def main():
         tasks = tasks_path.read_text(encoding="utf-8")
 
         changed_files = get_changed_files()
-        changed_test_files = read_changed_files(changed_files, TEST_DIRS)
+        changed_test_files = read_changed_files(changed_files, resolve_test_dirs())
         changed_test_files = _annotate_test_files(changed_test_files)
         test_results = read_test_results(spec_dir)
 

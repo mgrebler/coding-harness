@@ -61,6 +61,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 2. Load implementation context:
    - **REQUIRED**: Read `tasks.md` — identify all unchecked [TEST] tasks (`- [ ]` lines containing `[TEST]`)
    - **REQUIRED**: Read `plan.md` — tech stack, architecture, file structure
+   - **REQUIRED**: Read `.specify/memory/constitution.md` — approved test stack (§2) and CI check commands (§12); this project's constitution.md is human-customized, so section numbers may not match — locate by heading text if they've drifted
    - **REQUIRED**: Read `.specify/memory/test-principles.md` — authoritative quality bar for all tests written in this phase
    - **IF EXISTS**: Read `data-model.md` for entities and relationships
    - **IF EXISTS**: Read `contracts/` for API specifications and acceptance criteria
@@ -79,10 +80,8 @@ You **MUST** consider the user input before proceeding (if not empty).
       - Tests must encode the acceptance criteria from spec.md for this unit of behaviour.
       - No implementation code under any circumstances — test files only.
       - If the test file already exists (from a prior interrupted run), read it first.
-   b. Run the test suite targeting the new test file. Use the appropriate command:
-      - Backend tests: `pnpm --filter backend test -- <test-file-path>`
-      - Frontend component tests: `pnpm --filter frontend test -- <test-file-path>`
-      - E2E tests: `pnpm test:e2e -- <test-file-path>`
+   b. Run the test suite targeting the new test file, using the command declared for that
+      check in constitution §12 (CI Requirements), scoped to the new file.
    c. Confirm the test **FAILS for the expected reason**:
       - ACCEPTABLE failures: assertion failure (`Expected X, received Y`), "not implemented"
         error, "cannot find module/export" error when the code does not yet exist.
