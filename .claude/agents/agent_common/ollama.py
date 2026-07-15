@@ -443,5 +443,4 @@ async def run_gate(
             sys.exit(1)
 
     if not llm_config:
-        async for message in claude_fallback():
-            console.log_sdk_message(message, prefix="  ")
+        await console.stream_query(claude_fallback())

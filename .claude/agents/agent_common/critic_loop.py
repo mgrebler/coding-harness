@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from agent_common import files, git, ollama
+from agent_common import console, files, git, ollama
 from agent_common import resume_state as rstate
 
 
@@ -305,7 +305,16 @@ def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitab
     args = parser.parse_args()
 
     feature = args.feature or git.get_feature_from_branch(agent_name)
-    asyncio.run(run_coro(feature))
+    try:
+        asyncio.run(run_coro(feature))
+    except console.SessionLimitError as e:
+        log = console.make_logger(agent_name)
+        log(f"PAUSED — hit a Claude usage/session limit: {e}")
+        log(
+            "This is not a critic or code failure — re-run this command once the "
+            "limit resets. Progress made so far (commits, result files) is preserved."
+        )
+        sys.exit(console.USAGE_LIMIT_EXIT_CODE)
 
 
 def write_escalation(

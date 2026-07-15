@@ -44,7 +44,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_common.console import make_logger, setup_log_file
+from agent_common.console import USAGE_LIMIT_EXIT_CODE, make_logger, setup_log_file
 from agent_common.git import get_feature_from_branch
 from agent_common.resume_state import find_passing_iteration, stage_is_complete
 
@@ -89,6 +89,25 @@ def get_current_branch() -> str:
     return result.stdout.strip()
 
 
+def _check_stage_result(rc: int, stage_num: int, stage_name: str, escalation_hint: str) -> None:
+    """
+    Log the outcome of a stage subprocess and exit if it didn't pass. A usage-limit
+    pause (USAGE_LIMIT_EXIT_CODE) is distinguished from a real failure — no
+    escalation file exists to review in that case, so re-running later is the
+    correct next step rather than reviewing an escalation doc.
+    """
+    if rc == USAGE_LIMIT_EXIT_CODE:
+        log(
+            f"Stage {stage_num}/4 ({stage_name}): PAUSED — hit a Claude usage/session "
+            f"limit. Re-run this command once the limit resets; progress so far is preserved."
+        )
+        sys.exit(rc)
+    if rc != 0:
+        log(f"Stage {stage_num}/4 ({stage_name}): FAILED. Review {escalation_hint} and re-run.")
+        sys.exit(1)
+    log(f"Stage {stage_num}/4 ({stage_name}): PASSED.")
+
+
 # Main
 
 
@@ -117,10 +136,7 @@ def run(feature: str):
     else:
         log("Stage 1/4 (plan): running ch-1-plan-auto...")
         rc = stream_subprocess(["python", ".claude/agents/ch_1_plan_auto.py", "--feature", feature])
-        if rc != 0:
-            log("Stage 1/4 (plan): FAILED. Review ch-1-plan-critic-escalation.md and re-run.")
-            sys.exit(1)
-        log("Stage 1/4 (plan): PASSED.")
+        _check_stage_result(rc, 1, "plan", "ch-1-plan-critic-escalation.md")
 
     # --- Stage 2: Tasks ---
     if (
@@ -133,10 +149,7 @@ def run(feature: str):
         rc = stream_subprocess(
             ["python", ".claude/agents/ch_2_tasks_auto.py", "--feature", feature]
         )
-        if rc != 0:
-            log("Stage 2/4 (tasks): FAILED. Review ch-2-tasks-critic-escalation.md and re-run.")
-            sys.exit(1)
-        log("Stage 2/4 (tasks): PASSED.")
+        _check_stage_result(rc, 2, "tasks", "ch-2-tasks-critic-escalation.md")
 
     # --- Stage 3: Test ---
     if (
@@ -147,10 +160,7 @@ def run(feature: str):
     else:
         log("Stage 3/4 (test): running ch-3-test-auto...")
         rc = stream_subprocess(["python", ".claude/agents/ch_3_test_auto.py", "--feature", feature])
-        if rc != 0:
-            log("Stage 3/4 (test): FAILED. Review ch-3-test-critic-escalation.md and re-run.")
-            sys.exit(1)
-        log("Stage 3/4 (test): PASSED.")
+        _check_stage_result(rc, 3, "test", "ch-3-test-critic-escalation.md")
 
     # --- Stage 4: Implement ---
     if (
@@ -163,12 +173,7 @@ def run(feature: str):
         rc = stream_subprocess(
             ["python", ".claude/agents/ch_4_implement_auto.py", "--feature", feature]
         )
-        if rc != 0:
-            log(
-                "Stage 4/4 (implement): FAILED. Review ch-4-implement-critic-escalation.md and re-run."
-            )
-            sys.exit(1)
-        log("Stage 4/4 (implement): PASSED.")
+        _check_stage_result(rc, 4, "implement", "ch-4-implement-critic-escalation.md")
 
     log("Pipeline complete. All stages passed.")
 
