@@ -31,7 +31,7 @@ def _extract_imports(content: str) -> str:
     hits = []
     for i, line in enumerate(lines, 1):
         stripped = line.strip()
-        if stripped.startswith("import ") or stripped.startswith("from "):
+        if stripped.startswith(("import ", "from ")):
             hits.append(f"  Line {i}: {stripped}")
     return "\n".join(hits)
 

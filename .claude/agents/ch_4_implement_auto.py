@@ -30,6 +30,7 @@ Resume behaviour:
   - Implementation agent is re-run only if unchecked tasks (- [ ]) remain in tasks.md
 """
 
+import functools
 import json
 import subprocess
 import sys
@@ -351,6 +352,260 @@ def run_full_ci_checks() -> tuple[bool, str]:
 # Main orchestration loop
 
 
+async def _run_implementation_agent(
+    feature: str,
+    spec_dir: Path,
+    constitution: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    quality_principles: str,
+) -> str:
+    """Run the implementation agent if unchecked tasks remain. Returns the latest
+    tasks.md content."""
+    if "- [ ]" not in tasks:
+        log("All tasks already checked off — skipping implementation agent.")
+        return tasks
+
+    log("Running implementation agent...")
+    await stream_query(
+        query(
+            prompt=(
+                f"Implement all unchecked tasks in specs/{feature}/tasks.md. "
+                f"Follow TDD order: write failing tests first, commit, then implement, commit. "
+                f"Mark each task - [x] in tasks.md after completing it."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "impl-agent": impl_agent_definition(
+                        constitution, spec, plan, tasks, quality_principles
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        )
+    )
+
+    tasks = read_file(spec_dir / "tasks.md")
+    if "- [ ]" in tasks:
+        log(
+            "WARNING: implementation agent did not complete all tasks. Proceeding to critic anyway."
+        )
+    return tasks
+
+
+async def _run_ci_fix_agent(
+    feature: str, constitution: str, spec: str, plan: str, tasks: str, failure_summary: str
+) -> None:
+    """Run the CI fix agent once for the given failure summary."""
+    await stream_query(
+        query(
+            prompt=f"Fix CI failures for feature {feature}. Failures:\n{failure_summary}",
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "ci-fix-agent": ci_fix_agent_definition(
+                        constitution, spec, plan, tasks, failure_summary
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        )
+    )
+
+
+async def _run_quick_ci_gate(
+    feature: str, spec_dir: Path, constitution: str, spec: str, plan: str, max_iterations: int
+) -> None:
+    """Run quick CI checks (typecheck + unit tests) before the critic loop, unless a
+    passing critic iteration already exists. Exits the process if CI still fails
+    after one fix attempt. e2e is deferred until both review gates pass, to avoid
+    its ~3 min cost on every iteration."""
+    if find_passing_iteration(spec_dir, CRITIC_RESULT_PREFIX, max_iterations):
+        return
+
+    log("Running quick CI checks (typecheck + unit tests) before critic loop...")
+    quick_passed, quick_failure_summary = run_quick_ci_checks()
+    if not quick_passed:
+        log("Quick CI failed — running CI fix agent (one attempt) before entering critic loop...")
+        tasks = read_file(spec_dir / "tasks.md")
+        await _run_ci_fix_agent(feature, constitution, spec, plan, tasks, quick_failure_summary)
+
+        log("Re-running quick CI checks after fix attempt...")
+        quick_passed, quick_failure_summary = run_quick_ci_checks()
+        if not quick_passed:
+            log("FAIL: Quick CI still failing after fix attempt. Human review required.")
+            log(f"Remaining failures:\n{quick_failure_summary}")
+            sys.exit(1)
+
+    log("Quick CI passed — proceeding to critic loop.")
+
+
+async def _finalize_if_quality_already_passed(
+    spec_dir: Path, feature: str, constitution: str, spec: str, plan: str, max_iterations: int
+) -> bool:
+    """If quality review already passed in a prior iteration, run full CI (with one
+    fix-agent attempt) and finish the stage. Returns True if it finalized the stage,
+    in which case the caller should return immediately."""
+    passing = find_passing_iteration(spec_dir, QUALITY_RESULT_PREFIX, max_iterations)
+    if passing is None:
+        return False
+
+    log(f"Already PASS from quality review iteration {passing}.")
+    log("Running CI checks before finalising...")
+    ci_passed, ci_failure_summary = run_full_ci_checks()
+    if not ci_passed:
+        log("CI checks failed — running CI fix agent (one attempt)...")
+        tasks = read_file(spec_dir / "tasks.md")
+        await _run_ci_fix_agent(feature, constitution, spec, plan, tasks, ci_failure_summary)
+
+        log("Re-running CI checks after fix attempt...")
+        ci_passed, ci_failure_summary = run_full_ci_checks()
+        if not ci_passed:
+            log("FAIL: CI checks still failing after fix attempt. Human review required.")
+            log(f"Remaining failures:\n{ci_failure_summary}")
+            sys.exit(1)
+
+    finish_stage(
+        log,
+        spec_dir,
+        AGENT_NAME,
+        "after_implement",
+        "ch-4-implement",
+        "All CI checks passed. Implementation is ready for human review.",
+    )
+    return True
+
+
+async def _run_revision(
+    feature: str,
+    spec_dir: Path,
+    constitution: str,
+    spec: str,
+    plan: str,
+    pending_iter: int,
+    pending_violations: list,
+    pending_label: str,
+) -> None:
+    tasks_content = read_file(spec_dir / "tasks.md")
+    log(
+        f"Running fix agent for {pending_label} violations from iteration {pending_iter} ({len(pending_violations)} issue(s))..."
+    )
+    await stream_query(
+        query(
+            prompt=(
+                f"Fix violations for feature {feature}. "
+                f"Violations: {json.dumps(pending_violations)}"
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "fix-agent": fix_agent_definition(
+                        constitution, spec, plan, tasks_content, pending_violations
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        )
+    )
+
+
+async def _on_both_pass(
+    feature: str,
+    spec_dir: Path,
+    constitution: str,
+    spec: str,
+    plan: str,
+    quality_result: dict,
+) -> None:
+    log("Running CI checks before finalising...")
+    ci_passed, ci_failure_summary = run_full_ci_checks()
+    if not ci_passed:
+        log("CI checks failed — running CI fix agent (one attempt)...")
+        tasks_content = read_file(spec_dir / "tasks.md")
+        await _run_ci_fix_agent(
+            feature, constitution, spec, plan, tasks_content, ci_failure_summary
+        )
+
+        log("Re-running CI checks after fix attempt...")
+        ci_passed, ci_failure_summary = run_full_ci_checks()
+        if not ci_passed:
+            log("FAIL: CI checks still failing after fix attempt. Human review required.")
+            log(f"Remaining failures:\n{ci_failure_summary}")
+            sys.exit(1)
+
+    finish_stage(
+        log,
+        spec_dir,
+        AGENT_NAME,
+        "after_implement",
+        "ch-4-implement",
+        "All CI checks passed. Implementation is ready for human review.",
+    )
+
+
+def _build_critic_query(
+    feature: str,
+    spec_dir: Path,
+    constitution: str,
+    spec: str,
+    plan: str,
+    iteration: int,
+    prev_violations,
+):
+    tasks_content = read_file(spec_dir / "tasks.md")
+    return query(
+        prompt=(
+            f"Validate the implementation for feature {feature}. "
+            f"Write result to specs/{feature}/ch-4-implement-critic-result-{iteration}.json."
+        ),
+        options=ClaudeAgentOptions(
+            allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+            agents={
+                "implement-critic": critic_agent_definition(
+                    constitution, spec, plan, tasks_content, iteration, prev_violations
+                )
+            },
+            setting_sources=["project"],
+        ),
+    )
+
+
+def _build_quality_query(
+    feature: str,
+    spec_dir: Path,
+    constitution: str,
+    spec: str,
+    plan: str,
+    quality_principles: str,
+    iteration: int,
+    quality_violations,
+):
+    tasks_content = read_file(spec_dir / "tasks.md")
+    return query(
+        prompt=(
+            f"Review the implementation for feature {feature} for code quality. "
+            f"Write result to specs/{feature}/ch-4-implement-code-quality-review-result-{iteration}.json."
+        ),
+        options=ClaudeAgentOptions(
+            allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+            agents={
+                "quality-review": quality_review_agent_definition(
+                    constitution,
+                    spec,
+                    plan,
+                    tasks_content,
+                    quality_principles,
+                    iteration,
+                    quality_violations,
+                )
+            },
+            setting_sources=["project"],
+        ),
+    )
+
+
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -379,117 +634,17 @@ async def run(feature: str):
     )
 
     # --- Step 1: Run implementation if unchecked tasks remain ---
-    if "- [ ]" in tasks:
-        log("Running implementation agent...")
-        await stream_query(
-            query(
-                prompt=(
-                    f"Implement all unchecked tasks in specs/{feature}/tasks.md. "
-                    f"Follow TDD order: write failing tests first, commit, then implement, commit. "
-                    f"Mark each task - [x] in tasks.md after completing it."
-                ),
-                options=ClaudeAgentOptions(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "impl-agent": impl_agent_definition(
-                            constitution, spec, plan, tasks, quality_principles
-                        )
-                    },
-                    setting_sources=["project"],
-                ),
-            )
-        )
+    tasks = await _run_implementation_agent(
+        feature, spec_dir, constitution, spec, plan, tasks, quality_principles
+    )
 
-        tasks = read_file(spec_dir / "tasks.md")
-        if "- [ ]" in tasks:
-            log(
-                "WARNING: implementation agent did not complete all tasks. Proceeding to critic anyway."
-            )
-    else:
-        log("All tasks already checked off — skipping implementation agent.")
-
-    # --- Step 1b: Quick CI check (typecheck + unit tests) — e2e is deferred until
-    # both review gates pass, to avoid its ~3 min cost on every iteration.
-    if not find_passing_iteration(spec_dir, CRITIC_RESULT_PREFIX, MAX_ITERATIONS):
-        log("Running quick CI checks (typecheck + unit tests) before critic loop...")
-        quick_passed, quick_failure_summary = run_quick_ci_checks()
-        if not quick_passed:
-            log(
-                "Quick CI failed — running CI fix agent (one attempt) before entering critic loop..."
-            )
-            await stream_query(
-                query(
-                    prompt=(
-                        f"Fix CI failures for feature {feature}. Failures:\n{quick_failure_summary}"
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "ci-fix-agent": ci_fix_agent_definition(
-                                constitution, spec, plan, tasks, quick_failure_summary
-                            )
-                        },
-                        setting_sources=["project"],
-                    ),
-                )
-            )
-
-            log("Re-running quick CI checks after fix attempt...")
-            quick_passed, quick_failure_summary = run_quick_ci_checks()
-            if not quick_passed:
-                log("FAIL: Quick CI still failing after fix attempt. Human review required.")
-                log(f"Remaining failures:\n{quick_failure_summary}")
-                sys.exit(1)
-
-        log("Quick CI passed — proceeding to critic loop.")
+    # --- Step 1b: Quick CI check before the critic loop ---
+    await _run_quick_ci_gate(feature, spec_dir, constitution, spec, plan, MAX_ITERATIONS)
 
     # --- Resume guard: done if quality review already passed AND full CI is clean ---
-    passing = find_passing_iteration(spec_dir, QUALITY_RESULT_PREFIX, MAX_ITERATIONS)
-    if passing is not None:
-        log(f"Already PASS from quality review iteration {passing}.")
-        log("Running CI checks before finalising...")
-        ci_passed, ci_failure_summary = run_full_ci_checks()
-        if ci_passed:
-            finish_stage(
-                log,
-                spec_dir,
-                AGENT_NAME,
-                "after_implement",
-                "ch-4-implement",
-                "All CI checks passed. Implementation is ready for human review.",
-            )
-            return
-        log("CI checks failed — running CI fix agent (one attempt)...")
-        await stream_query(
-            query(
-                prompt=(f"Fix CI failures for feature {feature}. Failures:\n{ci_failure_summary}"),
-                options=ClaudeAgentOptions(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "ci-fix-agent": ci_fix_agent_definition(
-                            constitution, spec, plan, tasks, ci_failure_summary
-                        )
-                    },
-                    setting_sources=["project"],
-                ),
-            )
-        )
-
-        log("Re-running CI checks after fix attempt...")
-        ci_passed, ci_failure_summary = run_full_ci_checks()
-        if not ci_passed:
-            log("FAIL: CI checks still failing after fix attempt. Human review required.")
-            log(f"Remaining failures:\n{ci_failure_summary}")
-            sys.exit(1)
-
-        finish_stage(
-            log,
-            spec_dir,
-            AGENT_NAME,
-            "after_implement",
-            "ch-4-implement",
-            "All CI checks passed. Implementation is ready for human review.",
-        )
+    if await _finalize_if_quality_already_passed(
+        spec_dir, feature, constitution, spec, plan, MAX_ITERATIONS
+    ):
         return
 
     # --- Resume state: determine where we left off ---
@@ -498,110 +653,6 @@ async def run(feature: str):
     resume_state = find_two_gate_resume_state(
         spec_dir, CRITIC_RESULT_PREFIX, QUALITY_RESULT_PREFIX, iteration
     )
-
-    async def run_revision(pending_iter: int, pending_violations: list, pending_label: str) -> None:
-        tasks_content = read_file(spec_dir / "tasks.md")
-        log(
-            f"Running fix agent for {pending_label} violations from iteration {pending_iter} ({len(pending_violations)} issue(s))..."
-        )
-        await stream_query(
-            query(
-                prompt=(
-                    f"Fix violations for feature {feature}. "
-                    f"Violations: {json.dumps(pending_violations)}"
-                ),
-                options=ClaudeAgentOptions(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "fix-agent": fix_agent_definition(
-                            constitution, spec, plan, tasks_content, pending_violations
-                        )
-                    },
-                    setting_sources=["project"],
-                ),
-            )
-        )
-
-    async def on_both_pass(quality_result: dict) -> None:
-        log("Running CI checks before finalising...")
-        ci_passed, ci_failure_summary = run_full_ci_checks()
-        if not ci_passed:
-            log("CI checks failed — running CI fix agent (one attempt)...")
-            tasks_content = read_file(spec_dir / "tasks.md")
-            await stream_query(
-                query(
-                    prompt=(
-                        f"Fix CI failures for feature {feature}. Failures:\n{ci_failure_summary}"
-                    ),
-                    options=ClaudeAgentOptions(
-                        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                        agents={
-                            "ci-fix-agent": ci_fix_agent_definition(
-                                constitution, spec, plan, tasks_content, ci_failure_summary
-                            )
-                        },
-                        setting_sources=["project"],
-                    ),
-                )
-            )
-
-            log("Re-running CI checks after fix attempt...")
-            ci_passed, ci_failure_summary = run_full_ci_checks()
-            if not ci_passed:
-                log("FAIL: CI checks still failing after fix attempt. Human review required.")
-                log(f"Remaining failures:\n{ci_failure_summary}")
-                sys.exit(1)
-
-        finish_stage(
-            log,
-            spec_dir,
-            AGENT_NAME,
-            "after_implement",
-            "ch-4-implement",
-            "All CI checks passed. Implementation is ready for human review.",
-        )
-
-    def build_critic_query(iteration: int, prev_violations):
-        tasks_content = read_file(spec_dir / "tasks.md")
-        return query(
-            prompt=(
-                f"Validate the implementation for feature {feature}. "
-                f"Write result to specs/{feature}/ch-4-implement-critic-result-{iteration}.json."
-            ),
-            options=ClaudeAgentOptions(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "implement-critic": critic_agent_definition(
-                        constitution, spec, plan, tasks_content, iteration, prev_violations
-                    )
-                },
-                setting_sources=["project"],
-            ),
-        )
-
-    def build_quality_query(iteration: int, quality_violations):
-        tasks_content = read_file(spec_dir / "tasks.md")
-        return query(
-            prompt=(
-                f"Review the implementation for feature {feature} for code quality. "
-                f"Write result to specs/{feature}/ch-4-implement-code-quality-review-result-{iteration}.json."
-            ),
-            options=ClaudeAgentOptions(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "quality-review": quality_review_agent_definition(
-                        constitution,
-                        spec,
-                        plan,
-                        tasks_content,
-                        quality_principles,
-                        iteration,
-                        quality_violations,
-                    )
-                },
-                setting_sources=["project"],
-            ),
-        )
 
     # --- Step 2: Two-gate loop (implement critic → code quality review) ---
     await run_two_gate_loop(
@@ -614,19 +665,27 @@ async def run(feature: str):
             "ch_4_implement_critic.py",
             "implement",
             "implement critic",
-            build_critic_query,
+            functools.partial(_build_critic_query, feature, spec_dir, constitution, spec, plan),
         ),
         gate2=GateSpec(
             QUALITY_RESULT_PREFIX,
             "ch_4_implement_quality_critic.py",
             "implement-quality-review",
             "code quality review",
-            build_quality_query,
+            functools.partial(
+                _build_quality_query,
+                feature,
+                spec_dir,
+                constitution,
+                spec,
+                plan,
+                quality_principles,
+            ),
         ),
         resume_state=resume_state,
         skip_fix_agent=_skip_fix_agent,
-        run_revision=run_revision,
-        on_both_pass=on_both_pass,
+        run_revision=functools.partial(_run_revision, feature, spec_dir, constitution, spec, plan),
+        on_both_pass=functools.partial(_on_both_pass, feature, spec_dir, constitution, spec, plan),
         escalation_kwargs={
             "escalation_filename": "ch-4-implement-critic-escalation.md",
             "log_description": "implementation failed review",

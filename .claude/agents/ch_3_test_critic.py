@@ -182,7 +182,7 @@ section number referenced above/below may not match — locate the section by he
 
 {file_input}
 
-Validate against ONLY the harness rules (§TQ1–§TQ6) and the embedded CONSTITUTION and
+Validate against ONLY the harness rules (§TQ1-§TQ6) and the embedded CONSTITUTION and
 TEST PRINCIPLES documents above. Constitution and Test Principles are the authoritative source
 for all project-specific test constraints. Test quality concerns (assertion quality, test
 naming, CI-only-directive readiness) are validated separately by the Test Quality Review agent

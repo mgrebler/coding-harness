@@ -194,23 +194,11 @@ def _ensure_model_context(
         # else: best-effort; inference will still proceed
 
 
-def call_local_llm(
-    prompt: str, config: dict, progress_fn=None, progress_interval: int = 250
-) -> str:
-    """
-    Send prompt to Ollama via the native /api/chat endpoint (streaming, to keep the
-    socket alive during generation). Thinking mode disabled for lower latency;
-    format="json" grammar-constrains decoding to valid JSON. Uses the native endpoint
-    rather than /v1/chat/completions because the OpenAI-compatible one ignores
-    options.num_ctx at load time, defeating VRAM optimisation.
-
-    progress_fn: optional callable(token_count, elapsed_s) invoked every
-                 progress_interval content tokens, for logging heartbeats.
-    """
+def _build_chat_request(prompt: str, config: dict) -> urllib.request.Request:
+    """Build the /api/chat streaming request. Uses the native endpoint rather than
+    /v1/chat/completions because the OpenAI-compatible one ignores options.num_ctx
+    at load time, defeating VRAM optimisation."""
     url = f"{config['ollama_url']}/api/chat"
-    # num_gpu is a model-load-time decision already applied (with fallback) by
-    # _ensure_model_context(); repeating it here on every call would trigger an
-    # unguarded reload whenever the fallback took a different value.
     options: dict = {"temperature": config.get("temperature", 0.1)}
     if config.get("num_ctx"):
         options["num_ctx"] = config["num_ctx"]
@@ -228,22 +216,19 @@ def call_local_llm(
         body["keep_alive"] = config["keep_alive"]
     payload = json.dumps(body).encode("utf-8")
 
-    if config.get("num_ctx") or config.get("num_gpu") is not None:
-        _ensure_model_context(
-            config["ollama_url"],
-            config["model"],
-            config.get("num_ctx"),
-            config.get("keep_alive"),
-            config.get("num_gpu"),
-        )
-
-    req = urllib.request.Request(
+    return urllib.request.Request(
         url,
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
 
+
+def _stream_chat_response(
+    req: urllib.request.Request, progress_fn=None, progress_interval: int = 250
+) -> str:
+    """Consume a streaming /api/chat response, invoking progress_fn(token_count,
+    elapsed_s) every progress_interval content tokens for logging heartbeats."""
     content_parts = []
     token_count = 0
     thinking_count = 0
@@ -276,12 +261,42 @@ def call_local_llm(
             except (KeyError, json.JSONDecodeError):
                 continue
 
-    _log_vram_state(config["ollama_url"], config["model"])
-
     if progress_fn and token_count > 0:
         progress_fn(token_count, time.monotonic() - start, done=True)
 
     return "".join(content_parts)
+
+
+def call_local_llm(
+    prompt: str, config: dict, progress_fn=None, progress_interval: int = 250
+) -> str:
+    """
+    Send prompt to Ollama via the native /api/chat endpoint (streaming, to keep the
+    socket alive during generation). Thinking mode disabled for lower latency;
+    format="json" grammar-constrains decoding to valid JSON.
+
+    progress_fn: optional callable(token_count, elapsed_s) invoked every
+                 progress_interval content tokens, for logging heartbeats.
+    """
+    req = _build_chat_request(prompt, config)
+
+    # num_gpu is a model-load-time decision already applied (with fallback) by
+    # _ensure_model_context(); repeating it here on every call would trigger an
+    # unguarded reload whenever the fallback took a different value.
+    if config.get("num_ctx") or config.get("num_gpu") is not None:
+        _ensure_model_context(
+            config["ollama_url"],
+            config["model"],
+            config.get("num_ctx"),
+            config.get("keep_alive"),
+            config.get("num_gpu"),
+        )
+
+    result = _stream_chat_response(req, progress_fn, progress_interval)
+
+    _log_vram_state(config["ollama_url"], config["model"])
+
+    return result
 
 
 def strip_fences(text: str) -> str:

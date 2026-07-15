@@ -65,7 +65,7 @@ def setup_log_file(path: Path):
     A run-separator line is written so successive runs are easy to distinguish.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    log_fh = open(path, "a", encoding="utf-8")  # noqa: SIM115 (kept open for process lifetime)
+    log_fh = path.open("a", encoding="utf-8")
     ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     log_fh.write(f"\n{'=' * 60}\n[run started {ts}]\n{'=' * 60}\n")
     log_fh.flush()
