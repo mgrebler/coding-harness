@@ -302,7 +302,7 @@ async def run(feature: str):
         else "(test-principles.md not found)"
     )
 
-    MAX_ITERATIONS, _skip_fix_agent = extend_iterations_if_reviewed(
+    max_iterations, _skip_fix_agent = extend_iterations_if_reviewed(
         spec_dir, "ch-3-test-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
     )
 
@@ -346,7 +346,7 @@ async def run(feature: str):
         spec_dir,
         AGENT_NAME,
         TEST_QUALITY_RESULT_PREFIX,
-        MAX_ITERATIONS,
+        max_iterations,
         "test quality review",
         "Test phase is ready for human review. No further action taken.",
         "after_test",
@@ -456,7 +456,7 @@ async def run(feature: str):
         log,
         spec_dir,
         feature,
-        MAX_ITERATIONS,
+        max_iterations,
         gate1=GateSpec(
             CRITIC_RESULT_PREFIX, "ch_3_test_critic.py", "test", "test critic", build_critic_query
         ),

@@ -629,7 +629,7 @@ async def run(feature: str):
         else "(code-quality-principles.md not found)"
     )
 
-    MAX_ITERATIONS, _skip_fix_agent = extend_iterations_if_reviewed(
+    max_iterations, _skip_fix_agent = extend_iterations_if_reviewed(
         spec_dir, "ch-4-implement-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
     )
 
@@ -639,11 +639,11 @@ async def run(feature: str):
     )
 
     # --- Step 1b: Quick CI check before the critic loop ---
-    await _run_quick_ci_gate(feature, spec_dir, constitution, spec, plan, MAX_ITERATIONS)
+    await _run_quick_ci_gate(feature, spec_dir, constitution, spec, plan, max_iterations)
 
     # --- Resume guard: done if quality review already passed AND full CI is clean ---
     if await _finalize_if_quality_already_passed(
-        spec_dir, feature, constitution, spec, plan, MAX_ITERATIONS
+        spec_dir, feature, constitution, spec, plan, max_iterations
     ):
         return
 
@@ -659,7 +659,7 @@ async def run(feature: str):
         log,
         spec_dir,
         feature,
-        MAX_ITERATIONS,
+        max_iterations,
         gate1=GateSpec(
             CRITIC_RESULT_PREFIX,
             "ch_4_implement_critic.py",

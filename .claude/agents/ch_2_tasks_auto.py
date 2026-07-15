@@ -174,7 +174,7 @@ async def run(feature: str):
     data_model_path = spec_dir / "data-model.md"
     data_model = read_file(data_model_path) if data_model_path.exists() else ""
 
-    MAX_ITERATIONS, _skip_fix_agent = extend_iterations_if_reviewed(
+    max_iterations, _skip_fix_agent = extend_iterations_if_reviewed(
         spec_dir, "ch-2-tasks-critic-escalation-review.md", RESULT_PREFIX, 3, log
     )
 
@@ -204,7 +204,7 @@ async def run(feature: str):
         spec_dir,
         AGENT_NAME,
         RESULT_PREFIX,
-        MAX_ITERATIONS,
+        max_iterations,
         "tasks critic",
         "Tasks are ready for human review. No further action taken.",
         "after_tasks",
@@ -270,7 +270,7 @@ async def run(feature: str):
         log,
         spec_dir,
         feature,
-        MAX_ITERATIONS,
+        max_iterations,
         gate=GateSpec(
             RESULT_PREFIX, "ch_2_tasks_critic.py", "tasks", "tasks critic", build_critic_query
         ),
