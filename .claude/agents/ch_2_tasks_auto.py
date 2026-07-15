@@ -29,7 +29,7 @@ from pathlib import Path
 from ch_2_tasks_critic import build_tasks_critic_prompt
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
 
-from agent_common.console import log_sdk_message, make_logger, setup_log_file
+from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import (
     GateSpec,
     finish_if_already_passing,
@@ -181,17 +181,18 @@ async def run(feature: str):
     # --- Step 1: Generate tasks.md if needed ---
     if not (spec_dir / "tasks.md").exists() or force_regen:
         log("Running tasks agent...")
-        async for message in query(
-            prompt=f"Generate tasks.md for feature {feature}. Write it to specs/{feature}/tasks.md.",
-            options=ClaudeAgentOptions(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
-                },
-                setting_sources=["project"],
-            ),
-        ):
-            log_sdk_message(message, prefix="  ")
+        await stream_query(
+            query(
+                prompt=f"Generate tasks.md for feature {feature}. Write it to specs/{feature}/tasks.md.",
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
+                    },
+                    setting_sources=["project"],
+                ),
+            )
+        )
 
         if not (spec_dir / "tasks.md").exists():
             log("ERROR: tasks agent did not produce tasks.md. Aborting.")
@@ -219,21 +220,22 @@ async def run(feature: str):
         log(
             f"Running revision agent to address {len(pending_violations)} violation(s) from iteration {pending_iter}..."
         )
-        async for message in query(
-            prompt=(
-                f"Revise tasks.md for feature {feature} to fix critic violations. "
-                f"Read specs/{feature}/ch-2-tasks-critic-result-{pending_iter}.json for the violation list. "
-                f"Write updated tasks.md to specs/{feature}/tasks.md."
-            ),
-            options=ClaudeAgentOptions(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
-                },
-                setting_sources=["project"],
-            ),
-        ):
-            log_sdk_message(message, prefix="  ")
+        await stream_query(
+            query(
+                prompt=(
+                    f"Revise tasks.md for feature {feature} to fix critic violations. "
+                    f"Read specs/{feature}/ch-2-tasks-critic-result-{pending_iter}.json for the violation list. "
+                    f"Write updated tasks.md to specs/{feature}/tasks.md."
+                ),
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
+                    },
+                    setting_sources=["project"],
+                ),
+            )
+        )
 
     async def on_pass(result: dict) -> None:
         finish_stage(

@@ -36,7 +36,7 @@ from ch_1_plan_architecture_critic import build_architecture_review_prompt
 from ch_1_plan_critic import build_plan_critic_prompt
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
 
-from agent_common.console import log_sdk_message, make_logger, setup_log_file
+from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import (
     GateSpec,
     finish_if_already_passing,
@@ -221,15 +221,18 @@ async def run(feature: str):
     # --- Step 1: Generate plan.md if needed ---
     if not (spec_dir / "plan.md").exists() or force_regen:
         log("Running plan agent...")
-        async for message in query(
-            prompt=f"Generate plan.md for feature {feature}. Write it to specs/{feature}/plan.md.",
-            options=ClaudeAgentOptions(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={"plan-agent": plan_agent_definition(constitution, spec, arch_principles)},
-                setting_sources=["project"],
-            ),
-        ):
-            log_sdk_message(message, prefix="  ")
+        await stream_query(
+            query(
+                prompt=f"Generate plan.md for feature {feature}. Write it to specs/{feature}/plan.md.",
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "plan-agent": plan_agent_definition(constitution, spec, arch_principles)
+                    },
+                    setting_sources=["project"],
+                ),
+            )
+        )
 
         if not (spec_dir / "plan.md").exists():
             log("ERROR: plan agent did not produce plan.md. Aborting.")
@@ -265,19 +268,22 @@ async def run(feature: str):
         log(
             f"Running plan revision for {pending_label} violations from iteration {pending_iter}..."
         )
-        async for message in query(
-            prompt=(
-                f"Revise plan.md for feature {feature}. "
-                f"Read {pending_file} for the full violation list. "
-                f"Write updated plan.md to specs/{feature}/plan.md."
-            ),
-            options=ClaudeAgentOptions(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={"plan-agent": plan_agent_definition(constitution, spec, arch_principles)},
-                setting_sources=["project"],
-            ),
-        ):
-            log_sdk_message(message, prefix="  ")
+        await stream_query(
+            query(
+                prompt=(
+                    f"Revise plan.md for feature {feature}. "
+                    f"Read {pending_file} for the full violation list. "
+                    f"Write updated plan.md to specs/{feature}/plan.md."
+                ),
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "plan-agent": plan_agent_definition(constitution, spec, arch_principles)
+                    },
+                    setting_sources=["project"],
+                ),
+            )
+        )
 
     async def on_both_pass(arch_result: dict) -> None:
         finish_stage(

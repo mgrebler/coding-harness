@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
-from agent_common import critic_loop, git, ollama, resume_state
+from agent_common import console, critic_loop, git, ollama, resume_state
 from agent_common.critic_loop import GateSpec
 
 
@@ -101,6 +101,22 @@ class TestRunCli(unittest.TestCase):
 
         mock_branch.assert_called_once_with("plan-auto")
         run_coro.assert_called_once_with("017-my-feature")
+        mock_run.assert_called_once_with(run_coro.return_value)
+
+    def test_session_limit_error_exits_with_usage_limit_code(self):
+        run_coro = MagicMock()
+        with (
+            patch.object(sys, "argv", ["ch_1_plan_auto.py", "--feature", "foo"]),
+            patch.object(
+                critic_loop.asyncio,
+                "run",
+                side_effect=console.SessionLimitError("hit your session limit"),
+            ) as mock_run,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            critic_loop.run_cli("plan-auto", "Plan auto-orchestrator", run_coro)
+
+        self.assertEqual(cm.exception.code, console.USAGE_LIMIT_EXIT_CODE)
         mock_run.assert_called_once_with(run_coro.return_value)
 
 

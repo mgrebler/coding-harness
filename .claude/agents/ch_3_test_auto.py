@@ -42,7 +42,7 @@ from ch_3_test_critic import build_test_critic_prompt
 from ch_3_test_quality_critic import build_test_quality_review_prompt
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
 
-from agent_common.console import log_sdk_message, make_logger, setup_log_file
+from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import (
     GateSpec,
     finish_if_already_passing,
@@ -309,24 +309,25 @@ async def run(feature: str):
 
     if has_unchecked_tests:
         log("Running test agent...")
-        async for message in query(
-            prompt=(
-                f"Write failing tests for all unchecked [TEST] tasks in specs/{feature}/tasks.md. "
-                f"No implementation code. Confirm each test fails for the expected reason. "
-                f"Save failing output to specs/{feature}/test-results/<TASKID>-red.txt. "
-                f"Mark each [TEST] task [x] in tasks.md after completing it."
-            ),
-            options=ClaudeAgentOptions(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "test-agent": test_agent_definition(
-                        constitution, spec, plan, tasks, test_principles, feature
-                    )
-                },
-                setting_sources=["project"],
-            ),
-        ):
-            log_sdk_message(message, prefix="  ")
+        await stream_query(
+            query(
+                prompt=(
+                    f"Write failing tests for all unchecked [TEST] tasks in specs/{feature}/tasks.md. "
+                    f"No implementation code. Confirm each test fails for the expected reason. "
+                    f"Save failing output to specs/{feature}/test-results/<TASKID>-red.txt. "
+                    f"Mark each [TEST] task [x] in tasks.md after completing it."
+                ),
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "test-agent": test_agent_definition(
+                            constitution, spec, plan, tasks, test_principles, feature
+                        )
+                    },
+                    setting_sources=["project"],
+                ),
+            )
+        )
 
         tasks = read_file(spec_dir / "tasks.md")
         still_unchecked = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
@@ -364,22 +365,28 @@ async def run(feature: str):
             f"Running fix agent for {pending_label} violations from iteration {pending_iter} "
             f"({len(pending_violations)} issue(s))..."
         )
-        async for message in query(
-            prompt=(
-                f"Fix {pending_label} violations for feature {feature}. "
-                f"Violations: {json.dumps(pending_violations)}"
-            ),
-            options=ClaudeAgentOptions(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "test-fix-agent": test_fix_agent_definition(
-                        constitution, spec, plan, tasks_content, test_principles, pending_violations
-                    )
-                },
-                setting_sources=["project"],
-            ),
-        ):
-            log_sdk_message(message, prefix="  ")
+        await stream_query(
+            query(
+                prompt=(
+                    f"Fix {pending_label} violations for feature {feature}. "
+                    f"Violations: {json.dumps(pending_violations)}"
+                ),
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "test-fix-agent": test_fix_agent_definition(
+                            constitution,
+                            spec,
+                            plan,
+                            tasks_content,
+                            test_principles,
+                            pending_violations,
+                        )
+                    },
+                    setting_sources=["project"],
+                ),
+            )
+        )
 
     async def on_both_pass(quality_result: dict) -> None:
         finish_stage(

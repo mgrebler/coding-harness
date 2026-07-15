@@ -39,7 +39,7 @@ from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
 
-from agent_common.console import log_sdk_message, make_logger, setup_log_file
+from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
 from agent_common.files import read_file, require_spec_files
 from agent_common.resume_state import (
@@ -379,23 +379,24 @@ async def run(feature: str):
     # --- Step 1: Run implementation if unchecked tasks remain ---
     if "- [ ]" in tasks:
         log("Running implementation agent...")
-        async for message in query(
-            prompt=(
-                f"Implement all unchecked tasks in specs/{feature}/tasks.md. "
-                f"Follow TDD order: write failing tests first, commit, then implement, commit. "
-                f"Mark each task - [x] in tasks.md after completing it."
-            ),
-            options=ClaudeAgentOptions(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "impl-agent": impl_agent_definition(
-                        constitution, spec, plan, tasks, quality_principles
-                    )
-                },
-                setting_sources=["project"],
-            ),
-        ):
-            log_sdk_message(message, prefix="  ")
+        await stream_query(
+            query(
+                prompt=(
+                    f"Implement all unchecked tasks in specs/{feature}/tasks.md. "
+                    f"Follow TDD order: write failing tests first, commit, then implement, commit. "
+                    f"Mark each task - [x] in tasks.md after completing it."
+                ),
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "impl-agent": impl_agent_definition(
+                            constitution, spec, plan, tasks, quality_principles
+                        )
+                    },
+                    setting_sources=["project"],
+                ),
+            )
+        )
 
         tasks = read_file(spec_dir / "tasks.md")
         if "- [ ]" in tasks:
@@ -414,21 +415,22 @@ async def run(feature: str):
             log(
                 "Quick CI failed — running CI fix agent (one attempt) before entering critic loop..."
             )
-            async for message in query(
-                prompt=(
-                    f"Fix CI failures for feature {feature}. Failures:\n{quick_failure_summary}"
-                ),
-                options=ClaudeAgentOptions(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "ci-fix-agent": ci_fix_agent_definition(
-                            constitution, spec, plan, tasks, quick_failure_summary
-                        )
-                    },
-                    setting_sources=["project"],
-                ),
-            ):
-                log_sdk_message(message, prefix="  ")
+            await stream_query(
+                query(
+                    prompt=(
+                        f"Fix CI failures for feature {feature}. Failures:\n{quick_failure_summary}"
+                    ),
+                    options=ClaudeAgentOptions(
+                        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                        agents={
+                            "ci-fix-agent": ci_fix_agent_definition(
+                                constitution, spec, plan, tasks, quick_failure_summary
+                            )
+                        },
+                        setting_sources=["project"],
+                    ),
+                )
+            )
 
             log("Re-running quick CI checks after fix attempt...")
             quick_passed, quick_failure_summary = run_quick_ci_checks()
@@ -456,19 +458,20 @@ async def run(feature: str):
             )
             return
         log("CI checks failed — running CI fix agent (one attempt)...")
-        async for message in query(
-            prompt=(f"Fix CI failures for feature {feature}. Failures:\n{ci_failure_summary}"),
-            options=ClaudeAgentOptions(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "ci-fix-agent": ci_fix_agent_definition(
-                        constitution, spec, plan, tasks, ci_failure_summary
-                    )
-                },
-                setting_sources=["project"],
-            ),
-        ):
-            log_sdk_message(message, prefix="  ")
+        await stream_query(
+            query(
+                prompt=(f"Fix CI failures for feature {feature}. Failures:\n{ci_failure_summary}"),
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "ci-fix-agent": ci_fix_agent_definition(
+                            constitution, spec, plan, tasks, ci_failure_summary
+                        )
+                    },
+                    setting_sources=["project"],
+                ),
+            )
+        )
 
         log("Re-running CI checks after fix attempt...")
         ci_passed, ci_failure_summary = run_full_ci_checks()
@@ -499,22 +502,23 @@ async def run(feature: str):
         log(
             f"Running fix agent for {pending_label} violations from iteration {pending_iter} ({len(pending_violations)} issue(s))..."
         )
-        async for message in query(
-            prompt=(
-                f"Fix violations for feature {feature}. "
-                f"Violations: {json.dumps(pending_violations)}"
-            ),
-            options=ClaudeAgentOptions(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "fix-agent": fix_agent_definition(
-                        constitution, spec, plan, tasks_content, pending_violations
-                    )
-                },
-                setting_sources=["project"],
-            ),
-        ):
-            log_sdk_message(message, prefix="  ")
+        await stream_query(
+            query(
+                prompt=(
+                    f"Fix violations for feature {feature}. "
+                    f"Violations: {json.dumps(pending_violations)}"
+                ),
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "fix-agent": fix_agent_definition(
+                            constitution, spec, plan, tasks_content, pending_violations
+                        )
+                    },
+                    setting_sources=["project"],
+                ),
+            )
+        )
 
     async def on_both_pass(quality_result: dict) -> None:
         log("Running CI checks before finalising...")
@@ -522,19 +526,22 @@ async def run(feature: str):
         if not ci_passed:
             log("CI checks failed — running CI fix agent (one attempt)...")
             tasks_content = read_file(spec_dir / "tasks.md")
-            async for message in query(
-                prompt=(f"Fix CI failures for feature {feature}. Failures:\n{ci_failure_summary}"),
-                options=ClaudeAgentOptions(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "ci-fix-agent": ci_fix_agent_definition(
-                            constitution, spec, plan, tasks_content, ci_failure_summary
-                        )
-                    },
-                    setting_sources=["project"],
-                ),
-            ):
-                log_sdk_message(message, prefix="  ")
+            await stream_query(
+                query(
+                    prompt=(
+                        f"Fix CI failures for feature {feature}. Failures:\n{ci_failure_summary}"
+                    ),
+                    options=ClaudeAgentOptions(
+                        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                        agents={
+                            "ci-fix-agent": ci_fix_agent_definition(
+                                constitution, spec, plan, tasks_content, ci_failure_summary
+                            )
+                        },
+                        setting_sources=["project"],
+                    ),
+                )
+            )
 
             log("Re-running CI checks after fix attempt...")
             ci_passed, ci_failure_summary = run_full_ci_checks()
