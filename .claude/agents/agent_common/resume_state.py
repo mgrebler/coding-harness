@@ -11,6 +11,22 @@ def next_iteration(spec_dir: Path, result_prefix: str) -> int:
     return len(existing) + 1
 
 
+def max_existing_iteration(spec_dir: Path, result_prefix: str, default: int = 3) -> int:
+    """
+    Return the highest iteration number among existing result files for result_prefix,
+    or default if none exist. Use this (rather than a hardcoded 3) when checking a
+    stage that may have escalated past the usual iteration limit via
+    extend_iterations_if_reviewed — otherwise find_passing_iteration's own default
+    of 3 would miss a passing result at iteration 4+.
+    """
+    existing_iterations = [
+        int(stem)
+        for p in spec_dir.glob(f"{result_prefix}-*.json")
+        if (stem := p.stem.rsplit("-", 1)[-1]).isdigit()
+    ]
+    return max(existing_iterations, default=default)
+
+
 def read_result(spec_dir: Path, result_prefix: str, iteration: int) -> dict:
     path = spec_dir / f"{result_prefix}-{iteration}.json"
     return json.loads(path.read_text(encoding="utf-8"))

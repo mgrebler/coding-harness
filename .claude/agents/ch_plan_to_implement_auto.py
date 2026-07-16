@@ -46,7 +46,11 @@ from pathlib import Path
 
 from agent_common.console import USAGE_LIMIT_EXIT_CODE, make_logger, setup_log_file
 from agent_common.git import get_feature_from_branch
-from agent_common.resume_state import find_passing_iteration, stage_is_complete
+from agent_common.resume_state import (
+    find_passing_iteration,
+    max_existing_iteration,
+    stage_is_complete,
+)
 
 AGENT_NAME = "ch-plan-to-implement-auto"
 log = make_logger(AGENT_NAME)
@@ -131,7 +135,10 @@ def run(feature: str):
     # --- Stage 1: Plan ---
     if (
         stage_is_complete(spec_dir, "ch-1-plan")
-        or find_passing_iteration(spec_dir, PLAN_ARCH_PREFIX) is not None
+        or find_passing_iteration(
+            spec_dir, PLAN_ARCH_PREFIX, max_existing_iteration(spec_dir, PLAN_ARCH_PREFIX)
+        )
+        is not None
     ):
         log("Stage 1/4 (plan): already complete — skipping.")
     else:
@@ -142,7 +149,10 @@ def run(feature: str):
     # --- Stage 2: Tasks ---
     if (
         stage_is_complete(spec_dir, "ch-2-tasks")
-        or find_passing_iteration(spec_dir, TASKS_CRITIC_PREFIX) is not None
+        or find_passing_iteration(
+            spec_dir, TASKS_CRITIC_PREFIX, max_existing_iteration(spec_dir, TASKS_CRITIC_PREFIX)
+        )
+        is not None
     ):
         log("Stage 2/4 (tasks): already complete — skipping.")
     else:
@@ -155,7 +165,10 @@ def run(feature: str):
     # --- Stage 3: Test ---
     if (
         stage_is_complete(spec_dir, "ch-3-test")
-        or find_passing_iteration(spec_dir, TEST_QUALITY_PREFIX) is not None
+        or find_passing_iteration(
+            spec_dir, TEST_QUALITY_PREFIX, max_existing_iteration(spec_dir, TEST_QUALITY_PREFIX)
+        )
+        is not None
     ):
         log("Stage 3/4 (test): already complete — skipping.")
     else:
@@ -166,7 +179,10 @@ def run(feature: str):
     # --- Stage 4: Implement ---
     if (
         stage_is_complete(spec_dir, "ch-4-implement")
-        or find_passing_iteration(spec_dir, IMPL_QUALITY_PREFIX) is not None
+        or find_passing_iteration(
+            spec_dir, IMPL_QUALITY_PREFIX, max_existing_iteration(spec_dir, IMPL_QUALITY_PREFIX)
+        )
+        is not None
     ):
         log("Stage 4/4 (implement): already complete — skipping.")
     else:
