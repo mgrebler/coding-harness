@@ -20,7 +20,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.gitconfig:/home/node/.gitconfig:ro
       - ~/.ssh:/home/node/.ssh:ro
-      - ~/.config/gh:/home/node/.config/gh:ro
       - ~/.claude.json:/home/node/.claude.json
       - ~/.claude:/home/node/.claude
 
