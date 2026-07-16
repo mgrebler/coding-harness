@@ -72,7 +72,8 @@ def stream_subprocess(cmd: list[str]) -> int:
         stderr=subprocess.STDOUT,
         text=True,
     )
-    assert proc.stdout is not None
+    if proc.stdout is None:
+        raise RuntimeError("subprocess.Popen with stdout=PIPE did not provide a stdout stream")
     for line in proc.stdout:
         print(line, end="", flush=True)
     proc.wait()

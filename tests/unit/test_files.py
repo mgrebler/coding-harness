@@ -66,7 +66,7 @@ class TestRequireSpecFiles(unittest.TestCase):
 class TestReadChangedSourceFiles(unittest.TestCase):
     def test_reads_existing_changed_file(self):
         with tempfile.TemporaryDirectory() as d:
-            old_cwd = os.getcwd()
+            old_cwd = Path.cwd()
             os.chdir(d)
             try:
                 Path("backend").mkdir()

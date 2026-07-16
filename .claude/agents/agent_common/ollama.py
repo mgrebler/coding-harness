@@ -16,6 +16,7 @@ from pathlib import Path
 from agent_common import console, files, git, resume_state
 
 _FULL_GPU_OFFLOAD = 999  # sentinel > any real model's layer count; llama.cpp clamps to actual max
+_ALLOWED_URL_SCHEMES = ("http://", "https://")
 
 
 def load_local_llm_config(critic_type: str) -> dict | None:
@@ -40,8 +41,14 @@ def load_local_llm_config(critic_type: str) -> dict | None:
     if not resolved.get("enabled") or not resolved.get("model", "").strip():
         return None
 
+    ollama_url = raw.get("ollama_url", "http://host.docker.internal:11434").rstrip("/")
+    if not ollama_url.startswith(_ALLOWED_URL_SCHEMES):
+        raise ValueError(
+            f"local-llm.json: ollama_url must be http:// or https://, got: {ollama_url}"
+        )
+
     result: dict = {
-        "ollama_url": raw.get("ollama_url", "http://host.docker.internal:11434").rstrip("/"),
+        "ollama_url": ollama_url,
         "model": resolved["model"],
     }
     # Without num_ctx, Ollama defaults to the model's native window (often 32k-128k),
@@ -74,6 +81,18 @@ def load_local_llm_config(critic_type: str) -> dict | None:
     return result
 
 
+def _build_request(url: str, **kwargs) -> urllib.request.Request:
+    """Thin wrapper so the S310 (audit URL scheme) note lives in one place:
+    ollama_url's scheme is validated once, at config load time, in
+    load_local_llm_config()."""
+    return urllib.request.Request(url, **kwargs)  # noqa: S310
+
+
+def _urlopen(url_or_request: str | urllib.request.Request, timeout: float):
+    """See _build_request — same audit note."""
+    return urllib.request.urlopen(url_or_request, timeout=timeout)  # noqa: S310
+
+
 def _fmt_bytes(b: int) -> str:
     if b >= 1024**3:
         return f"{b / 1024**3:.1f} GB"
@@ -85,7 +104,7 @@ def _fmt_bytes(b: int) -> str:
 def _get_ps_entry(ollama_url: str, model: str) -> dict | None:
     """Return the /api/ps entry for model, or None if not loaded / unreachable."""
     try:
-        with urllib.request.urlopen(f"{ollama_url}/api/ps", timeout=3) as resp:
+        with _urlopen(f"{ollama_url}/api/ps", timeout=3) as resp:
             data = json.loads(resp.read())
     except Exception:
         return None
@@ -143,16 +162,16 @@ def _ensure_model_context(
         )
         try:
             unload_payload = json.dumps({"model": model, "keep_alive": 0}).encode("utf-8")
-            req = urllib.request.Request(
+            req = _build_request(
                 f"{ollama_url}/api/generate",
                 data=unload_payload,
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=30):
+            with _urlopen(req, timeout=30):
                 pass
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[ollama] unload request failed (best-effort): {e}", flush=True)
     else:
         print(
             f"[ollama] preloading {model}" + (f" at ctx={num_ctx}" if num_ctx is not None else ""),
@@ -167,13 +186,13 @@ def _ensure_model_context(
             "options": options,
             "keep_alive": keep_alive if keep_alive is not None else -1,
         }
-        req = urllib.request.Request(
+        req = _build_request(
             f"{ollama_url}/api/generate",
             data=json.dumps(preload_body).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=120):
+        with _urlopen(req, timeout=120):
             pass
 
     options: dict = {}
@@ -194,23 +213,11 @@ def _ensure_model_context(
         # else: best-effort; inference will still proceed
 
 
-def call_local_llm(
-    prompt: str, config: dict, progress_fn=None, progress_interval: int = 250
-) -> str:
-    """
-    Send prompt to Ollama via the native /api/chat endpoint (streaming, to keep the
-    socket alive during generation). Thinking mode disabled for lower latency;
-    format="json" grammar-constrains decoding to valid JSON. Uses the native endpoint
-    rather than /v1/chat/completions because the OpenAI-compatible one ignores
-    options.num_ctx at load time, defeating VRAM optimisation.
-
-    progress_fn: optional callable(token_count, elapsed_s) invoked every
-                 progress_interval content tokens, for logging heartbeats.
-    """
+def _build_chat_request(prompt: str, config: dict) -> urllib.request.Request:
+    """Build the /api/chat streaming request. Uses the native endpoint rather than
+    /v1/chat/completions because the OpenAI-compatible one ignores options.num_ctx
+    at load time, defeating VRAM optimisation."""
     url = f"{config['ollama_url']}/api/chat"
-    # num_gpu is a model-load-time decision already applied (with fallback) by
-    # _ensure_model_context(); repeating it here on every call would trigger an
-    # unguarded reload whenever the fallback took a different value.
     options: dict = {"temperature": config.get("temperature", 0.1)}
     if config.get("num_ctx"):
         options["num_ctx"] = config["num_ctx"]
@@ -228,28 +235,25 @@ def call_local_llm(
         body["keep_alive"] = config["keep_alive"]
     payload = json.dumps(body).encode("utf-8")
 
-    if config.get("num_ctx") or config.get("num_gpu") is not None:
-        _ensure_model_context(
-            config["ollama_url"],
-            config["model"],
-            config.get("num_ctx"),
-            config.get("keep_alive"),
-            config.get("num_gpu"),
-        )
-
-    req = urllib.request.Request(
+    return _build_request(
         url,
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
 
+
+def _stream_chat_response(
+    req: urllib.request.Request, progress_fn=None, progress_interval: int = 250
+) -> str:
+    """Consume a streaming /api/chat response, invoking progress_fn(token_count,
+    elapsed_s) every progress_interval content tokens for logging heartbeats."""
     content_parts = []
     token_count = 0
     thinking_count = 0
     start = time.monotonic()
 
-    with urllib.request.urlopen(req, timeout=300) as resp:
+    with _urlopen(req, timeout=300) as resp:
         for raw_line in resp:
             line = raw_line.decode("utf-8").strip()
             if not line:
@@ -276,12 +280,42 @@ def call_local_llm(
             except (KeyError, json.JSONDecodeError):
                 continue
 
-    _log_vram_state(config["ollama_url"], config["model"])
-
     if progress_fn and token_count > 0:
         progress_fn(token_count, time.monotonic() - start, done=True)
 
     return "".join(content_parts)
+
+
+def call_local_llm(
+    prompt: str, config: dict, progress_fn=None, progress_interval: int = 250
+) -> str:
+    """
+    Send prompt to Ollama via the native /api/chat endpoint (streaming, to keep the
+    socket alive during generation). Thinking mode disabled for lower latency;
+    format="json" grammar-constrains decoding to valid JSON.
+
+    progress_fn: optional callable(token_count, elapsed_s) invoked every
+                 progress_interval content tokens, for logging heartbeats.
+    """
+    req = _build_chat_request(prompt, config)
+
+    # num_gpu is a model-load-time decision already applied (with fallback) by
+    # _ensure_model_context(); repeating it here on every call would trigger an
+    # unguarded reload whenever the fallback took a different value.
+    if config.get("num_ctx") or config.get("num_gpu") is not None:
+        _ensure_model_context(
+            config["ollama_url"],
+            config["model"],
+            config.get("num_ctx"),
+            config.get("keep_alive"),
+            config.get("num_gpu"),
+        )
+
+    result = _stream_chat_response(req, progress_fn, progress_interval)
+
+    _log_vram_state(config["ollama_url"], config["model"])
+
+    return result
 
 
 def strip_fences(text: str) -> str:

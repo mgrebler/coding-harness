@@ -31,7 +31,7 @@ class TestStripFences(unittest.TestCase):
 
 class TestLoadLocalLlmConfig(unittest.TestCase):
     def setUp(self):
-        self._orig_cwd = os.getcwd()
+        self._orig_cwd = Path.cwd()
         self._tmpdir = tempfile.mkdtemp()
         os.chdir(self._tmpdir)
 

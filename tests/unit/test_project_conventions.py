@@ -13,7 +13,7 @@ from agent_common import project_conventions as pc
 
 class _InTempProject(unittest.TestCase):
     def setUp(self):
-        self._old_cwd = os.getcwd()
+        self._old_cwd = Path.cwd()
         self._tmpdir = tempfile.TemporaryDirectory()
         os.chdir(self._tmpdir.name)
 

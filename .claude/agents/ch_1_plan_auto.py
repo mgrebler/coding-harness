@@ -214,7 +214,7 @@ async def run(feature: str):
         else "(architecture-principles.md not found)"
     )
 
-    MAX_ITERATIONS, _skip_fix_agent = extend_iterations_if_reviewed(
+    max_iterations, _skip_fix_agent = extend_iterations_if_reviewed(
         spec_dir, "ch-1-plan-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
     )
 
@@ -244,7 +244,7 @@ async def run(feature: str):
         spec_dir,
         AGENT_NAME,
         ARCH_RESULT_PREFIX,
-        MAX_ITERATIONS,
+        max_iterations,
         "architecture review",
         "Plan is ready for human review. No further action taken.",
         "after_plan",
@@ -342,7 +342,7 @@ async def run(feature: str):
         log,
         spec_dir,
         feature,
-        MAX_ITERATIONS,
+        max_iterations,
         gate1=GateSpec(
             CRITIC_RESULT_PREFIX, "ch_1_plan_critic.py", "plan", "plan critic", build_critic_query
         ),

@@ -12,8 +12,10 @@ def require_ollama(ollama_url: str, model: str):
     or the requested model is not available locally.
     """
     tags_url = f"{ollama_url.rstrip('/')}/api/tags"
+    if not tags_url.startswith(("http://", "https://")):
+        raise unittest.SkipTest(f"ollama_url must be http:// or https://, got: {ollama_url}")
     try:
-        with urllib.request.urlopen(tags_url, timeout=5) as resp:
+        with urllib.request.urlopen(tags_url, timeout=5) as resp:  # noqa: S310 -- scheme checked above
             data = json.loads(resp.read())
     except Exception as e:
         raise unittest.SkipTest(f"Ollama not reachable at {ollama_url}: {e}") from e

@@ -329,7 +329,7 @@ def write_escalation(
     required_action: str,
     log_fn=None,
 ) -> None:
-    """Write an escalation document and exit non-zero. Called when the critic loop exhausts MAX_ITERATIONS."""
+    """Write an escalation document and exit non-zero. Called when the critic loop exhausts the iteration limit."""
     _log = log_fn or print
     _log(f"ESCALATION: {log_description} after {max_iterations} iterations.")
     escalation_path = spec_dir / escalation_filename

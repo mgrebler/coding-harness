@@ -23,42 +23,57 @@ from agent_common.ollama import run_local_critic_cli
 CRITIC_RESULT_PREFIX = "ch-2-tasks-critic-result"
 
 
-def _analyze_task_format(tasks: str) -> str:
-    lines = tasks.splitlines()
+def _classify_txxx_issues(stripped: str) -> list[str]:
+    """Check a line already known to contain a [Txxx] task ID for missing
+    required components."""
+    issues = []
+    if not re.search(r"\[TEST\]|\[IMPL\]", stripped):
+        issues.append("MISSING [TEST] or [IMPL]")
+    if not re.search(r"\[US\d+\]", stripped):
+        issues.append("MISSING [USX] story label")
+    return issues
+
+
+def _record_txxx_result(
+    stripped: str, i: int, complete_tasks: list[str], incomplete_tasks: list[str]
+) -> None:
+    """Classify a line already known to contain a [Txxx] task ID and append it to
+    the complete or incomplete bucket."""
+    entry = f"  Line {i}: {stripped[:100]}"
+    issues = _classify_txxx_issues(stripped)
+    if issues:
+        incomplete_tasks.append(f"{entry} ← {', '.join(issues)}")
+    else:
+        complete_tasks.append(entry)
+
+
+def _classify_lines(tasks: str) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Bucket each non-blank, non-comment line into complete_tasks, incomplete_tasks,
+    numbered, or bullets."""
     complete_tasks = []
     incomplete_tasks = []
     numbered = []
     bullets = []
 
-    for i, line in enumerate(lines, 1):
+    for i, line in enumerate(tasks.splitlines(), 1):
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
         if re.match(r"^\d+\.", stripped):
             numbered.append(f"  Line {i}: {stripped[:100]}")
-        elif stripped.startswith("- ") or stripped.startswith("* "):
+        elif stripped.startswith(("- ", "* ")):
             if re.search(r"\[T\d+\]", stripped):
-                issues = []
-                if not re.search(r"\[TEST\]|\[IMPL\]", stripped):
-                    issues.append("MISSING [TEST] or [IMPL]")
-                if not re.search(r"\[US\d+\]", stripped):
-                    issues.append("MISSING [USX] story label")
-                if issues:
-                    incomplete_tasks.append(f"  Line {i}: {stripped[:100]} ← {', '.join(issues)}")
-                else:
-                    complete_tasks.append(f"  Line {i}: {stripped[:100]}")
+                _record_txxx_result(stripped, i, complete_tasks, incomplete_tasks)
             else:
                 bullets.append(f"  Line {i}: {stripped[:100]}")
         elif re.match(r"\[T\d+\]", stripped):
-            issues = []
-            if not re.search(r"\[TEST\]|\[IMPL\]", stripped):
-                issues.append("MISSING [TEST] or [IMPL]")
-            if not re.search(r"\[US\d+\]", stripped):
-                issues.append("MISSING [USX] story label")
-            if issues:
-                incomplete_tasks.append(f"  Line {i}: {stripped[:100]} ← {', '.join(issues)}")
-            else:
-                complete_tasks.append(f"  Line {i}: {stripped[:100]}")
+            _record_txxx_result(stripped, i, complete_tasks, incomplete_tasks)
+
+    return complete_tasks, incomplete_tasks, numbered, bullets
+
+
+def _analyze_task_format(tasks: str) -> str:
+    complete_tasks, incomplete_tasks, numbered, bullets = _classify_lines(tasks)
 
     parts = []
     if complete_tasks:
