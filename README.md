@@ -107,6 +107,8 @@ You are the gatekeeper at each stage: review the artifact, then run the next com
 - Writes `specs/NNN-feature/spec.md` from your description
 - Runs a quality checklist; asks for clarification (max 3 questions) if needed
 
+Already tracked as a GitHub issue? Use `/ch-specify-from-issue <issue-number-or-url>` instead — it fetches the issue's title and body via the `gh` CLI and feeds them into the same flow, producing an identical `spec.md` with a source line back to the issue.
+
 **Review** `specs/NNN-feature/spec.md`. Edit it directly or give Claude feedback. Then:
 
 ```
@@ -149,6 +151,7 @@ After specifying the feature, run the entire plan → tasks → test → impleme
 
 ```
 /speckit-specify <feature description>
+# or: /ch-specify-from-issue <issue-number-or-url>
 ```
 
 Review and edit `specs/NNN-feature/spec.md` if needed, then:
@@ -163,7 +166,7 @@ This chains four stages — plan, tasks, test, implement — with built-in criti
 
 ## Quick Reference
 
-`/speckit-specify` starts every feature. After that, the `/ch-*` commands below are what you actually run — each wraps a SpecKit generation step in an iterative critic loop:
+`/speckit-specify` starts every feature (or `/ch-specify-from-issue <issue-number-or-url>` to source it from an existing GitHub issue instead of typing the description). After that, the `/ch-*` commands below are what you actually run — each wraps a SpecKit generation step in an iterative critic loop:
 
 | Command | Generation step | Critic gate(s) |
 |---------|-----------------|-----------------|
