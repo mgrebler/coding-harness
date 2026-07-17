@@ -49,6 +49,7 @@ from agent_common.resume_state import (
     find_passing_iteration,
     find_two_gate_resume_state,
     format_violations_block,
+    max_existing_iteration,
     next_iteration,
     stage_is_complete,
 )
@@ -69,7 +70,10 @@ def preflight(spec_dir: Path, feature: str):
     if not test_quality_results:
         log("ERROR: Test phase not complete. Run /ch-3-test-auto first.")
         sys.exit(1)
-    passing = find_passing_iteration(spec_dir, "ch-3-test-quality-review-result", 3)
+    max_quality_iteration = max_existing_iteration(spec_dir, "ch-3-test-quality-review-result")
+    passing = find_passing_iteration(
+        spec_dir, "ch-3-test-quality-review-result", max_quality_iteration
+    )
     if passing is None:
         log("ERROR: No passing test-quality-review result found. Run /ch-3-test-auto to resolve.")
         sys.exit(1)
