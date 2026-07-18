@@ -319,12 +319,25 @@ def _build_ci_commands(*, include_slow: bool) -> list[tuple[str, list[str]]]:
     return [(label, cmd) for label, cmd in checks if not is_slow_check(label)]
 
 
+_SHELL_METACHARACTERS = ("&&", "||", ";", "|", ">", "<")
+
+
 def _run_commands(commands: list[tuple[str, list[str]]]) -> tuple[bool, str]:
     all_passed = True
     failures: list[str] = []
     for label, cmd in commands:
         log(f"CI: running {label}...")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # A command parsed from a single constitution.md/README.md bullet (e.g.
+        # "pnpm test:backend && pnpm test:frontend") comes through shlex.split as
+        # a flat argv list where "&&" is just another token — subprocess.run(cmd)
+        # would pass it as a literal CLI argument rather than a shell operator.
+        # Re-join and run through the shell whenever a shell metacharacter is present.
+        needs_shell = any(tok in _SHELL_METACHARACTERS for tok in cmd)
+        # Plain space-join, not shlex.join: shlex.join would re-quote "&&" itself
+        # (e.g. into '&&'), which the shell then treats as a literal argument
+        # again instead of an operator — exactly the bug being fixed here.
+        run_target = " ".join(cmd) if needs_shell else cmd
+        result = subprocess.run(run_target, shell=needs_shell, capture_output=True, text=True)
         if result.returncode == 0:
             log(f"CI: {label} — PASSED")
         else:
