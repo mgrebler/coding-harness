@@ -494,7 +494,10 @@ async def _finalize_if_quality_already_passed(
 
     log(f"Already PASS from quality review iteration {passing}.")
     record_from_result_file(
-        spec_dir, feature, "Code Quality Review", spec_dir / f"{QUALITY_RESULT_PREFIX}-{passing}.json"
+        spec_dir,
+        feature,
+        "Code Quality Review",
+        spec_dir / f"{QUALITY_RESULT_PREFIX}-{passing}.json",
     )
     log("Running CI checks before finalising...")
     ci_passed, ci_failure_summary = run_full_ci_checks()

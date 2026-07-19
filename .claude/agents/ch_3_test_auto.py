@@ -346,6 +346,50 @@ async def _run_red_state_gate(
         )
 
 
+async def _run_test_agent_if_needed(
+    feature: str,
+    spec_dir: Path,
+    tasks: str,
+    constitution: str,
+    spec: str,
+    plan: str,
+    test_principles: str,
+) -> str:
+    """Run the test-writing agent if any [TEST] task is still unchecked, then
+    return the current tasks.md content (re-read if the agent ran)."""
+    has_unchecked_tests = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
+    if not has_unchecked_tests:
+        log("All [TEST] tasks already checked off — skipping test agent.")
+        return tasks
+
+    log("Running test agent...")
+    await stream_query(
+        query(
+            prompt=(
+                f"Write failing tests for all unchecked [TEST] tasks in specs/{feature}/tasks.md. "
+                f"No implementation code. Confirm each test fails for the expected reason. "
+                f"Save failing output to specs/{feature}/test-results/<TASKID>-red.txt. "
+                f"Mark each [TEST] task [x] in tasks.md after completing it."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "test-agent": test_agent_definition(
+                        constitution, spec, plan, tasks, test_principles, feature
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        )
+    )
+
+    tasks = read_file(spec_dir / "tasks.md")
+    still_unchecked = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
+    if still_unchecked:
+        log("WARNING: test agent did not complete all [TEST] tasks. Proceeding to critic anyway.")
+    return tasks
+
+
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -370,38 +414,9 @@ async def run(feature: str):
     )
 
     # --- Step 1: Run test agent if unchecked [TEST] tasks remain ---
-    has_unchecked_tests = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
-
-    if has_unchecked_tests:
-        log("Running test agent...")
-        await stream_query(
-            query(
-                prompt=(
-                    f"Write failing tests for all unchecked [TEST] tasks in specs/{feature}/tasks.md. "
-                    f"No implementation code. Confirm each test fails for the expected reason. "
-                    f"Save failing output to specs/{feature}/test-results/<TASKID>-red.txt. "
-                    f"Mark each [TEST] task [x] in tasks.md after completing it."
-                ),
-                options=ClaudeAgentOptions(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "test-agent": test_agent_definition(
-                            constitution, spec, plan, tasks, test_principles, feature
-                        )
-                    },
-                    setting_sources=["project"],
-                ),
-            )
-        )
-
-        tasks = read_file(spec_dir / "tasks.md")
-        still_unchecked = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
-        if still_unchecked:
-            log(
-                "WARNING: test agent did not complete all [TEST] tasks. Proceeding to critic anyway."
-            )
-    else:
-        log("All [TEST] tasks already checked off — skipping test agent.")
+    tasks = await _run_test_agent_if_needed(
+        feature, spec_dir, tasks, constitution, spec, plan, test_principles
+    )
 
     # --- Step 1b: Deterministic §TQ2 red-state validity gate before the critic loop ---
     await _run_red_state_gate(feature, spec_dir, constitution, spec, plan, tasks, test_principles)

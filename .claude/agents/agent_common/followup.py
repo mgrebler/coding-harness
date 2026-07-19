@@ -65,8 +65,7 @@ def record_non_blocking_concerns(
         )
 
     body = [heading, ""]
-    for concern in concerns:
-        body.append(_format_concern(concern))
+    body.extend(_format_concern(concern) for concern in concerns)
     entry = "\n".join(body) + "\n\n"
 
     followup_path.write_text(existing + entry, encoding="utf-8")

@@ -184,7 +184,8 @@ async def _run_format_gate(
                     f"Reformat specs/{feature}/tasks.md to comply with the machine-readable task "
                     f"format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (see .specify/templates/"
                     f"tasks-template.md). Fix ONLY the lines below — do not change task content, order, "
-                    f"or numbering beyond what's needed to fix the format:\n\n" + "\n".join(violations)
+                    f"or numbering beyond what's needed to fix the format:\n\n"
+                    + "\n".join(violations)
                 ),
                 options=ClaudeAgentOptions(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],

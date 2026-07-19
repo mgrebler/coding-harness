@@ -14,7 +14,6 @@ from typing import NamedTuple
 from agent_common import console, files, git, ollama
 from agent_common import resume_state as rstate
 
-
 # A critic loop that keeps re-running against the exact same BLOCKING findings
 # is not making progress — most often a human decision (a missing constitution
 # decision record, an unresolved amendment) is blocking it, not something the
@@ -46,7 +45,13 @@ def _blocking_signature_from_issues(blocking_issues: list) -> frozenset:
 
 
 def _escalate_no_progress(
-    log, spec_dir: Path, feature: str, iteration: int, gate_label: str, escalation_kwargs: dict
+    log,
+    spec_dir: Path,
+    feature: str,
+    iteration: int,
+    max_iterations: int,
+    gate_label: str,
+    escalation_kwargs: dict,
 ) -> None:
     log(
         f"ESCALATION: {gate_label} reported an unchanged set of BLOCKING finding(s) across "
@@ -66,7 +71,7 @@ def _escalate_no_progress(
     write_escalation(
         spec_dir=spec_dir,
         feature=feature,
-        max_iterations=iteration,
+        max_iterations=max_iterations,
         log_fn=log,
         summary=no_progress_summary,
         **kwargs,
@@ -161,6 +166,40 @@ async def _run_gate_for_iteration(
     return status, result
 
 
+def _log_two_gate_resume(
+    log,
+    spec_dir: Path,
+    gate1: GateSpec,
+    gate2: GateSpec,
+    iteration: int,
+    violations1: list | None,
+    violations2: list | None,
+    skip_fix_agent: bool,
+) -> tuple[list | None, list | None]:
+    """Log the resume situation for run_two_gate_loop and return the
+    (violations1, violations2) to actually start the loop with — cleared to
+    (None, None) when an escalation review means they were resolved
+    externally rather than by the revision agent."""
+    if skip_fix_agent and (violations1 or violations2):
+        log(
+            "Escalation review present — skipping revision agent; violations were resolved externally."
+        )
+        return None, None
+    if violations1:
+        log(
+            f"Resuming after {gate1.label} FAIL at iteration {iteration - 1} — revision will run before {gate1.label} {iteration}."
+        )
+    elif violations2:
+        log(
+            f"Resuming after {gate2.label} FAIL at iteration {iteration - 1} — revision will run before {gate1.label} {iteration}."
+        )
+    elif iteration < rstate.next_iteration(spec_dir, gate1.result_prefix):
+        log(
+            f"Resuming: {gate1.label} {iteration} already PASS — {gate2.label} will run for iteration {iteration}."
+        )
+    return violations1, violations2
+
+
 async def run_two_gate_loop(
     log,
     spec_dir: Path,
@@ -188,24 +227,9 @@ async def run_two_gate_loop(
     max_iterations, log_fn) if the loop exhausts max_iterations.
     """
     iteration, violations1, violations2 = resume_state
-    if skip_fix_agent and (violations1 or violations2):
-        log(
-            "Escalation review present — skipping revision agent; violations were resolved externally."
-        )
-        violations1 = None
-        violations2 = None
-    elif violations1:
-        log(
-            f"Resuming after {gate1.label} FAIL at iteration {iteration - 1} — revision will run before {gate1.label} {iteration}."
-        )
-    elif violations2:
-        log(
-            f"Resuming after {gate2.label} FAIL at iteration {iteration - 1} — revision will run before {gate1.label} {iteration}."
-        )
-    elif iteration < rstate.next_iteration(spec_dir, gate1.result_prefix):
-        log(
-            f"Resuming: {gate1.label} {iteration} already PASS — {gate2.label} will run for iteration {iteration}."
-        )
+    violations1, violations2 = _log_two_gate_resume(
+        log, spec_dir, gate1, gate2, iteration, violations1, violations2, skip_fix_agent
+    )
 
     stuck_sig1 = _blocking_signature_from_violations(violations1) if violations1 else None
     stuck_sig2 = _blocking_signature_from_issues(violations2) if violations2 else None
@@ -231,7 +255,15 @@ async def run_two_gate_loop(
             violations1 = result1.get("violations", [])
             sig1 = _blocking_signature_from_violations(violations1)
             if sig1 and sig1 == stuck_sig1 and iteration >= _NO_PROGRESS_THRESHOLD:
-                _escalate_no_progress(log, spec_dir, feature, iteration, gate1.label, escalation_kwargs)
+                _escalate_no_progress(
+                    log,
+                    spec_dir,
+                    feature,
+                    iteration,
+                    max_iterations,
+                    gate1.label,
+                    escalation_kwargs,
+                )
                 return
             stuck_sig1 = sig1
             iteration += 1
@@ -251,7 +283,9 @@ async def run_two_gate_loop(
         violations2 = result2.get("blocking_issues", [])
         sig2 = _blocking_signature_from_issues(violations2)
         if sig2 and sig2 == stuck_sig2 and iteration >= _NO_PROGRESS_THRESHOLD:
-            _escalate_no_progress(log, spec_dir, feature, iteration, gate2.label, escalation_kwargs)
+            _escalate_no_progress(
+                log, spec_dir, feature, iteration, max_iterations, gate2.label, escalation_kwargs
+            )
             return
         stuck_sig2 = sig2
         iteration += 1
@@ -319,7 +353,9 @@ async def run_single_gate_loop(
             violations = result.get("violations", [])
             sig = _blocking_signature_from_violations(violations)
             if sig and sig == stuck_sig and iteration >= _NO_PROGRESS_THRESHOLD:
-                _escalate_no_progress(log, spec_dir, feature, iteration, gate.label, escalation_kwargs)
+                _escalate_no_progress(
+                    log, spec_dir, feature, iteration, max_iterations, gate.label, escalation_kwargs
+                )
                 return
             stuck_sig = sig
             iteration += 1
