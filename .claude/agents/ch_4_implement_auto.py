@@ -43,6 +43,8 @@ from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
 from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
 from agent_common.files import read_file, require_spec_files
+from agent_common.followup import record_from_result_file, record_non_blocking_concerns
+from agent_common.preflight_checks import oversized_committed_files
 from agent_common.project_conventions import is_slow_check, resolve_ci_commands
 from agent_common.resume_state import (
     extend_iterations_if_reviewed,
@@ -366,6 +368,27 @@ def run_full_ci_checks() -> tuple[bool, str]:
     return _run_commands(_build_ci_commands(include_slow=True))
 
 
+# Commit hygiene
+
+
+def _check_commit_hygiene() -> None:
+    """Hard-fail if this branch has committed a file over the size
+    threshold — cheap to catch mechanically (specs/027 committed a 4.5GB
+    core dump that a critic only caught after the fact). Runs right before
+    a stage is marked complete, not as an LLM judgment call."""
+    oversized = oversized_committed_files()
+    if not oversized:
+        return
+    log("FAIL: oversized file(s) committed on this branch — human review required.")
+    for name, size in oversized:
+        log(f"  {name} ({size / (1024 * 1024):.1f} MB)")
+    log(
+        "Remove or replace these files (e.g. `git rm` + amend, or a follow-up commit) "
+        "before this stage can be marked complete."
+    )
+    sys.exit(1)
+
+
 # Main orchestration loop
 
 
@@ -470,6 +493,9 @@ async def _finalize_if_quality_already_passed(
         return False
 
     log(f"Already PASS from quality review iteration {passing}.")
+    record_from_result_file(
+        spec_dir, feature, "Code Quality Review", spec_dir / f"{QUALITY_RESULT_PREFIX}-{passing}.json"
+    )
     log("Running CI checks before finalising...")
     ci_passed, ci_failure_summary = run_full_ci_checks()
     if not ci_passed:
@@ -484,6 +510,7 @@ async def _finalize_if_quality_already_passed(
             log(f"Remaining failures:\n{ci_failure_summary}")
             sys.exit(1)
 
+    _check_commit_hygiene()
     finish_stage(
         log,
         spec_dir,
@@ -536,6 +563,13 @@ async def _on_both_pass(
     plan: str,
     quality_result: dict,
 ) -> None:
+    record_non_blocking_concerns(
+        spec_dir,
+        feature,
+        "Code Quality Review",
+        quality_result.get("iteration", 0),
+        quality_result.get("non_blocking_concerns", []),
+    )
     log("Running CI checks before finalising...")
     ci_passed, ci_failure_summary = run_full_ci_checks()
     if not ci_passed:
@@ -552,6 +586,7 @@ async def _on_both_pass(
             log(f"Remaining failures:\n{ci_failure_summary}")
             sys.exit(1)
 
+    _check_commit_hygiene()
     finish_stage(
         log,
         spec_dir,
