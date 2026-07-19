@@ -51,10 +51,14 @@ from agent_common.critic_loop import (
     run_two_gate_loop,
 )
 from agent_common.files import read_file, require_spec_files
+from agent_common.followup import record_from_result_file, record_non_blocking_concerns
+from agent_common.preflight_checks import oversized_committed_files, validate_red_state_artifacts
 from agent_common.resume_state import (
     extend_iterations_if_reviewed,
+    find_passing_iteration,
     find_two_gate_resume_state,
     format_violations_block,
+    max_existing_iteration,
     next_iteration,
 )
 
@@ -283,6 +287,109 @@ Key rules:
 # Main orchestration loop
 
 
+async def _run_red_state_gate(
+    feature: str,
+    spec_dir: Path,
+    constitution: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    test_principles: str,
+) -> None:
+    """Deterministic §TQ2 pre-check: a *-red.txt artifact showing only an
+    infrastructure failure (connection refused, unreachable service, no
+    tests found) doesn't prove the test would fail without the
+    implementation — it proves the test never ran. Kick back to the test
+    agent directly (up to 2 attempts) before the critic loop, so the fix is
+    framed as "your test environment isn't running" rather than requiring
+    an LLM to infer that from a critic pass."""
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        issues = validate_red_state_artifacts(spec_dir / "test-results")
+        if not issues:
+            return
+
+        issue_lines = "\n".join(f"- {name}: {reason}" for name, reason in issues.items())
+        log(
+            f"Deterministic §TQ2 red-state check found {len(issues)} invalid artifact(s) "
+            f"(attempt {attempt}/{max_attempts}) — kicking back to test agent before critic loop..."
+        )
+        await stream_query(
+            query(
+                prompt=(
+                    f"The following red-state artifacts for feature {feature} do not prove a "
+                    f"genuine test failure — most likely the test environment (database, dev "
+                    f"server, or similar dependency) was not running when the test was captured, "
+                    f"or the test actually passed:\n\n{issue_lines}\n\n"
+                    f"For each one: ensure the required test environment is running, re-run the "
+                    f"corresponding test, and re-save a genuine failing-assertion (or module-not-found) "
+                    f"capture to the same specs/{feature}/test-results/<TASKID>-red.txt path. Do not "
+                    f"write implementation code."
+                ),
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "test-agent": test_agent_definition(
+                            constitution, spec, plan, tasks, test_principles, feature
+                        )
+                    },
+                    setting_sources=["project"],
+                ),
+            )
+        )
+
+    remaining = validate_red_state_artifacts(spec_dir / "test-results")
+    if remaining:
+        log(
+            f"§TQ2 red-state check still finds {len(remaining)} invalid artifact(s) after "
+            f"{max_attempts} attempts — proceeding to critic loop, which will report them formally."
+        )
+
+
+async def _run_test_agent_if_needed(
+    feature: str,
+    spec_dir: Path,
+    tasks: str,
+    constitution: str,
+    spec: str,
+    plan: str,
+    test_principles: str,
+) -> str:
+    """Run the test-writing agent if any [TEST] task is still unchecked, then
+    return the current tasks.md content (re-read if the agent ran)."""
+    has_unchecked_tests = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
+    if not has_unchecked_tests:
+        log("All [TEST] tasks already checked off — skipping test agent.")
+        return tasks
+
+    log("Running test agent...")
+    await stream_query(
+        query(
+            prompt=(
+                f"Write failing tests for all unchecked [TEST] tasks in specs/{feature}/tasks.md. "
+                f"No implementation code. Confirm each test fails for the expected reason. "
+                f"Save failing output to specs/{feature}/test-results/<TASKID>-red.txt. "
+                f"Mark each [TEST] task [x] in tasks.md after completing it."
+            ),
+            options=ClaudeAgentOptions(
+                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "test-agent": test_agent_definition(
+                        constitution, spec, plan, tasks, test_principles, feature
+                    )
+                },
+                setting_sources=["project"],
+            ),
+        )
+    )
+
+    tasks = read_file(spec_dir / "tasks.md")
+    still_unchecked = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
+    if still_unchecked:
+        log("WARNING: test agent did not complete all [TEST] tasks. Proceeding to critic anyway.")
+    return tasks
+
+
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -307,40 +414,26 @@ async def run(feature: str):
     )
 
     # --- Step 1: Run test agent if unchecked [TEST] tasks remain ---
-    has_unchecked_tests = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
+    tasks = await _run_test_agent_if_needed(
+        feature, spec_dir, tasks, constitution, spec, plan, test_principles
+    )
 
-    if has_unchecked_tests:
-        log("Running test agent...")
-        await stream_query(
-            query(
-                prompt=(
-                    f"Write failing tests for all unchecked [TEST] tasks in specs/{feature}/tasks.md. "
-                    f"No implementation code. Confirm each test fails for the expected reason. "
-                    f"Save failing output to specs/{feature}/test-results/<TASKID>-red.txt. "
-                    f"Mark each [TEST] task [x] in tasks.md after completing it."
-                ),
-                options=ClaudeAgentOptions(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "test-agent": test_agent_definition(
-                            constitution, spec, plan, tasks, test_principles, feature
-                        )
-                    },
-                    setting_sources=["project"],
-                ),
-            )
-        )
-
-        tasks = read_file(spec_dir / "tasks.md")
-        still_unchecked = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
-        if still_unchecked:
-            log(
-                "WARNING: test agent did not complete all [TEST] tasks. Proceeding to critic anyway."
-            )
-    else:
-        log("All [TEST] tasks already checked off — skipping test agent.")
+    # --- Step 1b: Deterministic §TQ2 red-state validity gate before the critic loop ---
+    await _run_red_state_gate(feature, spec_dir, constitution, spec, plan, tasks, test_principles)
 
     # --- Resume guard: done if test quality review already passed ---
+    passing_quality_iter = find_passing_iteration(
+        spec_dir,
+        TEST_QUALITY_RESULT_PREFIX,
+        max_existing_iteration(spec_dir, TEST_QUALITY_RESULT_PREFIX, max_iterations),
+    )
+    if passing_quality_iter is not None:
+        record_from_result_file(
+            spec_dir,
+            feature,
+            "Test Quality Review",
+            spec_dir / f"{TEST_QUALITY_RESULT_PREFIX}-{passing_quality_iter}.json",
+        )
     if finish_if_already_passing(
         log,
         spec_dir,
@@ -391,6 +484,23 @@ async def run(feature: str):
         )
 
     async def on_both_pass(quality_result: dict) -> None:
+        record_non_blocking_concerns(
+            spec_dir,
+            feature,
+            "Test Quality Review",
+            quality_result.get("iteration", 0),
+            quality_result.get("non_blocking_concerns", []),
+        )
+        oversized = oversized_committed_files()
+        if oversized:
+            log("FAIL: oversized file(s) committed on this branch — human review required.")
+            for name, size in oversized:
+                log(f"  {name} ({size / (1024 * 1024):.1f} MB)")
+            log(
+                "Remove or replace these files (e.g. `git rm` + amend, or a follow-up commit) "
+                "before this stage can be marked complete."
+            )
+            sys.exit(1)
         finish_stage(
             log,
             spec_dir,

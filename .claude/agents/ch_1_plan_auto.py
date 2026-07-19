@@ -119,7 +119,12 @@ Key rules:
 - Use .specify/scripts/bash/setup-plan.sh --json to get FEATURE_SPEC, IMPL_PLAN, SPECS_DIR, BRANCH
 - Execute all planning phases: research.md, data-model.md, contracts/, quickstart.md
 - Write plan.md to the correct specs/$FEATURE/ path
-- Include a Constitution Check section covering every applicable section
+- Fill in the Constitution Check table completely: every constitution section gets an
+  explicit ✅/⚠️/N/A verdict and a one-line justification — no section may be left blank
+  or silently omitted. Fill in the Stack Constraint Check table: list every dependency,
+  framework, tool, or external service named anywhere in the plan and match each one
+  against the constitution §2 stack table by exact name; anything not already listed
+  there requires a proposed amendment in that section before the plan can pass.
 - The plan will be evaluated by an Architecture Review agent using the principles above — design accordingly
 - Do not stop until plan.md is written to disk
 """,

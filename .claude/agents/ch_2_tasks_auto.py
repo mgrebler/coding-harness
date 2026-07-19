@@ -38,6 +38,7 @@ from agent_common.critic_loop import (
     run_single_gate_loop,
 )
 from agent_common.files import read_file, require_spec_files
+from agent_common.preflight_checks import task_format_violations
 from agent_common.resume_state import (
     extend_iterations_if_reviewed,
     format_violations_block,
@@ -157,6 +158,53 @@ def critic_agent_definition(
     )
 
 
+async def _run_format_gate(
+    feature: str, spec_dir: Path, constitution: str, spec: str, plan: str, data_model: str
+) -> None:
+    """Deterministic §T5 pre-check: numbered lists and Txxx lines with a
+    missing/misplaced checkbox are unambiguous regex-level violations that
+    don't need an LLM critic round-trip to catch. Kick back to the tasks
+    agent directly (up to 2 attempts) before entering the critic loop —
+    this is a mechanical reformat, not a judgment call, so no violation
+    reasoning is needed beyond quoting the offending lines."""
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        tasks = read_file(spec_dir / "tasks.md")
+        violations = task_format_violations(tasks)
+        if not violations:
+            return
+
+        log(
+            f"Deterministic §T5 format check found {len(violations)} violation(s) "
+            f"(attempt {attempt}/{max_attempts}) — kicking back to tasks agent before critic loop..."
+        )
+        await stream_query(
+            query(
+                prompt=(
+                    f"Reformat specs/{feature}/tasks.md to comply with the machine-readable task "
+                    f"format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (see .specify/templates/"
+                    f"tasks-template.md). Fix ONLY the lines below — do not change task content, order, "
+                    f"or numbering beyond what's needed to fix the format:\n\n"
+                    + "\n".join(violations)
+                ),
+                options=ClaudeAgentOptions(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
+                    },
+                    setting_sources=["project"],
+                ),
+            )
+        )
+
+    remaining = task_format_violations(read_file(spec_dir / "tasks.md"))
+    if remaining:
+        log(
+            f"§T5 format check still finds {len(remaining)} violation(s) after "
+            f"{max_attempts} attempts — proceeding to critic loop, which will report them formally."
+        )
+
+
 # Main orchestration loop
 
 
@@ -197,6 +245,9 @@ async def run(feature: str):
         if not (spec_dir / "tasks.md").exists():
             log("ERROR: tasks agent did not produce tasks.md. Aborting.")
             sys.exit(1)
+
+    # --- Step 1b: Deterministic §T5 format gate before the critic loop ---
+    await _run_format_gate(feature, spec_dir, constitution, spec, plan, data_model)
 
     # --- Resume guard: exit if a previous run already achieved PASS ---
     if finish_if_already_passing(

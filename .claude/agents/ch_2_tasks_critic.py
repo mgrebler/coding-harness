@@ -14,111 +14,18 @@ Exit codes:
   2 - local LLM not configured (caller should fall back to Claude)
 """
 
-import re
 from pathlib import Path
 
 from agent_common.files import require_files
 from agent_common.ollama import run_local_critic_cli
+from agent_common.preflight_checks import analyze_task_format as _analyze_task_format
 
 CRITIC_RESULT_PREFIX = "ch-2-tasks-critic-result"
 
-
-# A compliant task line is a markdown checkbox (`- [ ]`, `- [x]`, or `- [X]`)
-# immediately followed by a bare, unbracketed task ID (`T001`, not `[T001]`).
-# This is not cosmetic: ch_3_test_auto.py and ch_4_implement_auto.py scan for
-# the literal substring "- [ ]" to detect which tasks still need work, so a
-# task line missing the checkbox is silently treated as already complete and
-# permanently skipped by those downstream orchestrators.
-_CHECKBOX_TXXX_RE = re.compile(r"^[-*]\s+\[[ xX]\]\s*T\d+\b")
-_BARE_TXXX_RE = re.compile(r"\bT\d+\b")
-
-
-def _classify_txxx_issues(stripped: str) -> list[str]:
-    """Check a line already confirmed to have a compliant checkbox+ID prefix for
-    other missing required components."""
-    issues = []
-    if not re.search(r"\[TEST\]|\[IMPL\]", stripped):
-        issues.append("MISSING [TEST] or [IMPL]")
-    if not re.search(r"\[US\d+\]", stripped):
-        issues.append("MISSING [USX] story label")
-    return issues
-
-
-def _record_txxx_result(
-    stripped: str, i: int, complete_tasks: list[str], incomplete_tasks: list[str]
-) -> None:
-    """Classify a line already confirmed to have a compliant checkbox+ID prefix
-    and append it to the complete or incomplete bucket."""
-    entry = f"  Line {i}: {stripped[:100]}"
-    issues = _classify_txxx_issues(stripped)
-    if issues:
-        incomplete_tasks.append(f"{entry} ← {', '.join(issues)}")
-    else:
-        complete_tasks.append(entry)
-
-
-def _classify_lines(tasks: str) -> tuple[list[str], list[str], list[str], list[str]]:
-    """Bucket each non-blank, non-comment line into complete_tasks, incomplete_tasks,
-    numbered, or bullets."""
-    complete_tasks = []
-    incomplete_tasks = []
-    numbered = []
-    bullets = []
-
-    for i, line in enumerate(tasks.splitlines(), 1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if re.match(r"^\d+\.", stripped):
-            numbered.append(f"  Line {i}: {stripped[:100]}")
-        elif stripped.startswith(("- ", "* ")):
-            if _CHECKBOX_TXXX_RE.match(stripped):
-                _record_txxx_result(stripped, i, complete_tasks, incomplete_tasks)
-            elif _BARE_TXXX_RE.search(stripped):
-                # Has a task ID (bracketed like "[T001]" or bare) but no checkbox
-                # immediately before it — this is the exact defect that causes
-                # downstream orchestrators to silently skip all work.
-                incomplete_tasks.append(
-                    f"  Line {i}: {stripped[:100]} ← MISSING checkbox "
-                    f"(`- [ ]`/`- [x]` must immediately precede the bare task ID, "
-                    f"e.g. `- [ ] T001 ...`, not `- [T001] ...`)"
-                )
-            else:
-                bullets.append(f"  Line {i}: {stripped[:100]}")
-        elif _CHECKBOX_TXXX_RE.match(stripped) or _BARE_TXXX_RE.match(stripped):
-            _record_txxx_result(stripped, i, complete_tasks, incomplete_tasks)
-
-    return complete_tasks, incomplete_tasks, numbered, bullets
-
-
-def _analyze_task_format(tasks: str) -> str:
-    complete_tasks, incomplete_tasks, numbered, bullets = _classify_lines(tasks)
-
-    parts = []
-    if complete_tasks:
-        parts.append(
-            "Complete machine-readable tasks (`- [ ]`/`- [x]` Txxx [TEST|IMPL] [PX] [USX] format):\n"
-            + "\n".join(complete_tasks)
-        )
-    if incomplete_tasks:
-        parts.append(
-            "Incomplete Txxx tasks — VIOLATE §T5 (missing checkbox and/or required components):\n"
-            + "\n".join(incomplete_tasks)
-        )
-    if numbered:
-        parts.append(
-            "Numbered list entries found — THESE VIOLATE §T5 (must use `- [ ] Txxx [TEST|IMPL]` format):\n"
-            + "\n".join(numbered)
-        )
-    # If Txxx tasks exist, bullets are sub-items under them, not standalone tasks.
-    if bullets and not complete_tasks and not incomplete_tasks:
-        parts.append(
-            "Plain bullet entries found (no Txxx ID, no machine-readable tasks in file) — may violate §T5:\n"
-            + "\n".join(bullets)
-        )
-    if not parts:
-        parts.append("No task entries detected.")
-    return "\n\n".join(parts)
+# Task-line classification (checkbox/ID/format regexes) lives in
+# agent_common/preflight_checks.py — it's the single source of truth shared
+# with the deterministic pre-critic gate in ch_2_tasks_auto.py, so the
+# critic's contextual analysis and the hard gate never drift out of sync.
 
 
 def build_tasks_critic_prompt(
@@ -174,6 +81,10 @@ Harness process checks (apply in addition to the above):
 
 §T1 Plan Traceability [BLOCKING]: every phase in tasks.md maps to a named section or deliverable in plan.md
 §T2 Spec Coverage [BLOCKING]: every user story in spec.md has a corresponding phase in tasks.md
+§T3 Test/Impl Pairing [BLOCKING]: apply Constitution §5 ("Non-deliverable tasks") and §6 ("Pairing scope") exactly as written — do not apply a stricter or looser pairing rule than what those sections state. In particular:
+  - A task with no testable deliverable (orientation, read-and-confirm) needs NO [TEST]/[IMPL] tag at all — do not flag it either for lacking a tag or, in a later iteration, for having no tag to remove. If a prior iteration's violation list (see violations_block above) already asked for a tag to be added or removed on a given task ID, do not flip that request in the other direction this iteration — re-read Constitution §5 first.
+  - A [TEST] task's description may explicitly name more than one [IMPL] task it covers (documented N:1 e2e/integration pairing per §6) — this is NOT an orphan [IMPL] task and must not be flagged, provided the linkage is stated in tasks.md.
+  - An [IMPL] task with genuinely no [TEST] task anywhere in tasks.md, and not covered by a documented N:1 [TEST] task, IS a violation — quote the missing linkage.
 §T5 Task Format [BLOCKING]: every task entry must use the machine-readable format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (or `- [x] TXXX ...` for a completed task) — a markdown checkbox (`- [ ]` / `- [x]` / `- [X]`) immediately followed by a bare, unbracketed task ID (`T001`, not `[T001]`), per `.specify/templates/tasks-template.md`. This checkbox is not cosmetic: `ch_3_test_auto.py` and `ch_4_implement_auto.py` scan for the literal substring `- [ ]` to detect which tasks still need work, so a task line missing the checkbox (e.g. `- [T001] [IMPL] ...` with the ID merely bracketed instead) is silently treated as already complete and skipped forever. Tasks written as numbered lists (1. 2. 3.), plain bullet points, bracketed-ID-without-checkbox (`- [T001] ...`), or free-form prose without `[TEST]`/`[IMPL]` labels ALL violate §T5.
 §T7 Dependency Validity [BLOCKING]: all dep references resolve to real task IDs within tasks.md; no cycles; [P] tasks have no unresolved deps
 §T10 Phase Checkpoints [WARNING — never BLOCKING]: a checkpoint line is missing or not runnable — severity MUST be WARNING; if a checkpoint is present in any form at or after the phase tasks do NOT include this rule in violations at all

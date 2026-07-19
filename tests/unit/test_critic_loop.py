@@ -215,13 +215,15 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
     async def test_escalates_on_exhaustion(self):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
-            viols = [{"rule": "§T1", "severity": "BLOCKING"}]
+            # Distinct locations per iteration so the loop runs to true iteration
+            # exhaustion rather than tripping the no-forward-progress early escalation
+            # (which requires the same BLOCKING signature across consecutive iterations).
             gate, fake_run_gate, _ = self._make_gate(
                 spec_dir,
                 {
-                    1: ("FAIL", viols),
-                    2: ("FAIL", viols),
-                    3: ("FAIL", viols),
+                    1: ("FAIL", [{"rule": "§T1", "severity": "BLOCKING", "location": "L1"}]),
+                    2: ("FAIL", [{"rule": "§T1", "severity": "BLOCKING", "location": "L2"}]),
+                    3: ("FAIL", [{"rule": "§T1", "severity": "BLOCKING", "location": "L3"}]),
                 },
             )
             run_fix = AsyncMock()
@@ -445,10 +447,16 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
     async def test_escalates_on_exhaustion(self):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
-            viols = [{"rule": "§2", "severity": "BLOCKING"}]
+            # Distinct locations per iteration so the loop runs to true iteration
+            # exhaustion rather than tripping the no-forward-progress early escalation
+            # (which requires the same BLOCKING signature across consecutive iterations).
             gate1, gate2, fake_run_gate = self._make_gates(
                 spec_dir,
-                {1: ("FAIL", viols), 2: ("FAIL", viols), 3: ("FAIL", viols)},
+                {
+                    1: ("FAIL", [{"rule": "§2", "severity": "BLOCKING", "location": "L1"}]),
+                    2: ("FAIL", [{"rule": "§2", "severity": "BLOCKING", "location": "L2"}]),
+                    3: ("FAIL", [{"rule": "§2", "severity": "BLOCKING", "location": "L3"}]),
+                },
                 {},
             )
             run_revision = AsyncMock()

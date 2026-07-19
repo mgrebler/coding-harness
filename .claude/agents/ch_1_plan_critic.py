@@ -70,6 +70,16 @@ Harness process checks (apply in addition to the above):
 Traceability [BLOCKING]: plan references spec.md; every acceptance criterion in spec.md is
 addressed; plan references data-model.md and contracts/ where applicable
 
+Constitution Check Completeness [BLOCKING]: the plan's "Constitution Check" table must have
+an explicit ✅/⚠️/N/A verdict AND a non-empty one-line justification for every constitution
+section listed in the template — a blank cell, an omitted row for a section that exists in
+the embedded CONSTITUTION above, or a verdict with no justification is a violation. The
+"Stack Constraint Check" table must list every dependency/framework/tool/external service
+named anywhere in the plan and mark whether it appears in constitution §2 — a dependency
+that is used in the plan (Technical Context, research.md references, contracts/) but absent
+from both the plan's own stack table AND constitution §2, with no proposed amendment, is a
+BLOCKING violation of Constitution §2 — Stack Constraints.
+
 TDD Policy scope note: a Constitution §4-style TDD Policy is satisfied at the PLAN stage if
 plan.md acknowledges that tests precede implementation (e.g. a Constitution Check statement,
 or an explicit note that [TEST] tasks will precede [IMPL] tasks) — do NOT flag a violation
