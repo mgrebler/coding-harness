@@ -48,7 +48,15 @@ _BULLET_RE = re.compile(r"(?m)^-\s+(.*)$")
 _LABEL_RE = re.compile(r"^([^`(:]+)")
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
 _HEADING_FENCE_RE = re.compile(
-    r"(?im)^#{1,6}\s*(.+?)\s*$\n+```(?:bash|sh|shell|zsh)?\n(.*?)\n```", re.MULTILINE | re.DOTALL
+    # Heading capture is deliberately restricted to a single line ([^\n]+?, no
+    # DOTALL): with DOTALL applied to `.+?` here, a heading not directly
+    # followed by a fence (e.g. one with a prose paragraph before its fenced
+    # block) would swallow that prose into the "heading" text on its way to
+    # the next fence anywhere in the doc — and a stray keyword substring in
+    # that prose (e.g. "...set it explicitly:" containing "ci") could then
+    # false-match a CI keyword and misfire on an unrelated code block.
+    r"(?im)^#{1,6}[ \t]*([^\n]+?)[ \t]*\n+```(?:bash|sh|shell|zsh)?\n(.*?)\n```",
+    re.MULTILINE | re.DOTALL,
 )
 
 
