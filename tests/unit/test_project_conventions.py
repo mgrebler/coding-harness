@@ -63,6 +63,21 @@ class TestResolveCiCommands(_InTempProject):
     def test_no_sources_returns_empty_list(self):
         self.assertEqual(pc.resolve_ci_commands(), [])
 
+    def test_readme_prose_between_heading_and_fence_does_not_leak_into_heading(self):
+        # Heading has no CI keyword and isn't directly followed by its fence -
+        # a prose paragraph sits in between. A heading-capture regex that lets
+        # DOTALL cross line boundaries would swallow that prose into the
+        # "heading" text, and a stray keyword substring in it (here "ci" in
+        # "explicitly") would falsely mark this block as CI-relevant.
+        self._write_constitution("## 12. CI Requirements\n\n- Lint\n\n---\n")
+        self._write_readme(
+            "## Setup\n\n"
+            "Some prose here about configuration. If you need to set it explicitly:\n\n"
+            "```bash\necho hello\n```\n"
+        )
+        checks = dict(pc.resolve_ci_commands())
+        self.assertEqual(checks, {})
+
     def test_no_ci_section_returns_empty_list(self):
         self._write_constitution("## 2. Stack Constraints\n\nsome text\n\n---\n")
         self.assertEqual(pc.resolve_ci_commands(), [])
