@@ -85,6 +85,7 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - The plan references the approved `spec.md`
 - Every acceptance criterion in `spec.md` is addressed somewhere in `plan.md`
 - No behaviour described in `plan.md` contradicts or extends `spec.md` without a noted out-of-scope flag
+- For every FR whose text contains a user-facing rationale clause (patterns like "so the user can", "so they can", "MUST display", "MUST show", "MUST present", "visible to", "identify", "navigate to"), the plan's deliverable list must include at least one UI-layer deliverable (a frontend page/component) that fulfills that clause — not only a data-model or backend deliverable. If the UI-facing half is deliberately deferred to a later feature, the plan must state this explicitly next to that FR's mapping, not leave it implicit.
 
 ### §9 — Architecture Alignment [BLOCKING / WARNING]
 - `plan.md` contains an explicit statement that the feature is consistent with `architecture.md`, OR discloses specific conflicts and defers them to the human for resolution before `plan.md` is finalised [BLOCKING if neither present]
