@@ -5,10 +5,12 @@ to Claude) for the *-auto.py orchestrators."""
 import argparse
 import contextlib
 import json
+import math
 import re
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -17,6 +19,8 @@ from agent_common import console, files, git, resume_state
 
 _FULL_GPU_OFFLOAD = 999  # sentinel > any real model's layer count; llama.cpp clamps to actual max
 _ALLOWED_URL_SCHEMES = ("http://", "https://")
+_DEFAULT_PREDICT_RESERVE = 1024  # ctx headroom for generated tokens when num_predict is unset
+_tokenize_unavailable: set[str] = set()  # ollama_urls where /api/tokenize 404'd this process
 
 
 def load_local_llm_config(critic_type: str) -> dict | None:
@@ -56,6 +60,12 @@ def load_local_llm_config(critic_type: str) -> dict | None:
     num_ctx = resolved["num_ctx"] if "num_ctx" in resolved else raw.get("num_ctx")
     if num_ctx is not None:
         result["num_ctx"] = int(num_ctx)
+    # VRAM ceiling for auto-sizing num_ctx from the actual prompt at call time (see
+    # estimate_num_ctx). Only consulted when num_ctx above is absent — an explicit
+    # num_ctx always wins.
+    max_ctx = resolved["max_ctx"] if "max_ctx" in resolved else raw.get("max_ctx")
+    if max_ctx is not None:
+        result["max_ctx"] = int(max_ctx)
     # -1 pins the model in VRAM indefinitely, avoiding cold-load latency between calls.
     keep_alive = resolved.get("keep_alive") if "keep_alive" in resolved else raw.get("keep_alive")
     if keep_alive is not None:
@@ -115,6 +125,88 @@ def _get_ps_entry(ollama_url: str, model: str) -> dict | None:
     return None
 
 
+def _estimate_prompt_tokens(ollama_url: str, model: str, prompt: str) -> int:
+    """
+    Return an estimated token count for prompt under model's tokenizer.
+
+    Tries Ollama's (experimental, not yet in the stable API as of writing) native
+    POST /api/tokenize endpoint for an exact, model-aligned count. Falls back to a
+    character-based heuristic — deliberately biased to overestimate, since
+    Ollama silently truncates a prompt that exceeds the loaded num_ctx (no error),
+    so undercounting is far more costly than a bit of wasted VRAM.
+
+    A 404 (route doesn't exist in this Ollama version) is cached per ollama_url for
+    the life of the process, so it isn't retried on every call. Any other failure
+    (timeout, malformed body) falls back for just that call, since it may be
+    transient on a reachable endpoint.
+    """
+    if ollama_url not in _tokenize_unavailable:
+        try:
+            payload = json.dumps({"model": model, "content": prompt}).encode("utf-8")
+            req = _build_request(
+                f"{ollama_url}/api/tokenize",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            tokens = data.get("tokens")
+            if isinstance(tokens, list):
+                return len(tokens)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                _tokenize_unavailable.add(ollama_url)
+        except Exception:  # noqa: S110 — best-effort probe, heuristic fallback below covers it
+            pass  # transient failure on a reachable endpoint — retry next call
+
+    return math.ceil(len(prompt) / 3.3)
+
+
+def estimate_num_ctx(
+    ollama_url: str,
+    model: str,
+    prompt: str,
+    num_predict: int | None = None,
+    max_ctx: int | None = None,
+    min_ctx: int = 2048,
+    round_to: int = 256,
+    margin: float = 1.15,
+) -> int:
+    """
+    Compute a right-sized num_ctx for prompt: estimated prompt tokens plus headroom
+    for generated tokens (num_predict, or a default reserve if unset — Ollama's own
+    default is "generate until natural stop," which can be large for reasoning
+    models), padded by margin, rounded up to the nearest round_to, floored at
+    min_ctx.
+
+    round_to is a small linear increment, not a power-of-two bucket: num_ctx has no
+    power-of-two requirement (KV-cache allocation is linear in it), so a large
+    bucket would waste VRAM for nothing. The only reason to round at all is to
+    avoid reloading the model (expensive) over trivial prompt-size drift between
+    calls — a small increment already achieves that.
+
+    If the computed size exceeds max_ctx, clamps to it and logs a warning
+    (best-effort, not a hard failure — the caller may see truncated results, same
+    as the existing VRAM-spillage warning in _log_vram_state is informational
+    rather than fatal).
+    """
+    tokens = _estimate_prompt_tokens(ollama_url, model, prompt)
+    reserve = num_predict if num_predict is not None else _DEFAULT_PREDICT_RESERVE
+    raw = math.ceil((tokens + reserve) * margin)
+    result = max(min_ctx, math.ceil(raw / round_to) * round_to)
+
+    if max_ctx is not None and result > max_ctx:
+        print(
+            f"[ollama] estimated ~{tokens} prompt tokens need ctx={result}, "
+            f"but max_ctx={max_ctx} — clamping (results may be truncated; consider raising max_ctx)",
+            flush=True,
+        )
+        result = max_ctx
+
+    return result
+
+
 def _log_vram_state(ollama_url: str, model: str) -> None:
     """
     Query Ollama's /api/ps and log how much of the model is in VRAM vs system RAM.
@@ -138,22 +230,29 @@ def _ensure_model_context(
     ollama_url: str, model: str, num_ctx: int | None = None, keep_alive=None, num_gpu=None
 ) -> None:
     """
-    Ensure the model is loaded with the requested num_ctx and num_gpu.
+    Ensure the model is loaded with at least the requested num_ctx, and the
+    requested num_gpu.
 
     Ollama won't shrink an already-loaded model's context on its own, and the
-    OpenAI-compatible endpoint ignores options.num_ctx at load time — so when num_ctx
-    is given, this unloads a wrongly-sized model and reloads it via the native
-    /api/generate endpoint (which does respect num_ctx at load time), pinned with
-    keep_alive=-1. When num_ctx is None, it only preloads if nothing is loaded yet
-    (to apply num_gpu); an already-loaded model is left alone.
+    OpenAI-compatible endpoint ignores options.num_ctx at load time — so when the
+    loaded context is smaller than requested, this unloads the model and reloads it
+    via the native /api/generate endpoint (which does respect num_ctx at load
+    time), pinned with keep_alive=-1. When num_ctx is None, it only preloads if
+    nothing is loaded yet (to apply num_gpu); an already-loaded model is left
+    alone. A loaded context that's already >= requested is also left alone — this
+    is a high-water mark, not an exact match, so num_ctx values that fluctuate
+    slightly across calls (e.g. auto-sized from varying prompt lengths) don't
+    trigger a reload on every call, only when growth genuinely requires it.
 
     If a forced num_gpu doesn't fit in VRAM, retries once without it so Ollama falls
     back to its own auto-split rather than leaving the model unloaded.
     """
     entry = _get_ps_entry(ollama_url, model)
     current_ctx = entry.get("context_length") if entry else None
-    if entry is not None and (num_ctx is None or current_ctx == num_ctx):
-        return  # already loaded, and either we don't care about its context or it matches
+    if entry is not None and (
+        num_ctx is None or (current_ctx is not None and current_ctx >= num_ctx)
+    ):
+        return  # already loaded, and either we don't care about its context or it's big enough
 
     if current_ctx is not None:
         print(
@@ -296,7 +395,23 @@ def call_local_llm(
 
     progress_fn: optional callable(token_count, elapsed_s) invoked every
                  progress_interval content tokens, for logging heartbeats.
+
+    If config has no explicit num_ctx but does have max_ctx, num_ctx is computed
+    per-call from prompt via estimate_num_ctx (see there for the sizing/clamping
+    rules), on a local copy of config — the caller's dict is never mutated.
     """
+    if config.get("num_ctx") is None and config.get("max_ctx") is not None:
+        config = {
+            **config,
+            "num_ctx": estimate_num_ctx(
+                config["ollama_url"],
+                config["model"],
+                prompt,
+                num_predict=config.get("num_predict"),
+                max_ctx=config["max_ctx"],
+            ),
+        }
+
     req = _build_chat_request(prompt, config)
 
     # num_gpu is a model-load-time decision already applied (with fallback) by

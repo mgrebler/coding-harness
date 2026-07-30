@@ -18,6 +18,8 @@ def make_llm_config(critic_name: str) -> dict:
     """Build a LOCAL_LLM_CONFIG with a single critic enabled."""
     return {
         "ollama_url": OLLAMA_URL,
+        # Fixed rather than max_ctx (auto-sized from the prompt) so eval runs are
+        # reproducible and don't depend on /api/tokenize availability in CI.
         "num_ctx": 16384,
         "keep_alive": -1,
         "temperature": 0.0,

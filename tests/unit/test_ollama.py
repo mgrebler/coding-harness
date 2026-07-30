@@ -1,6 +1,7 @@
 """Unit tests for agent_common/ollama.py pure functions and network-mocked calls."""
 
 import json
+import math
 import os
 import sys
 import tempfile
@@ -90,6 +91,39 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         result = ollama.load_local_llm_config("plan")
         self.assertNotIn("num_ctx", result)
 
+    def test_max_ctx_top_level_passed_through(self):
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "max_ctx": 24576,
+                "default": {"enabled": True, "model": "llama3.2"},
+            }
+        )
+        result = ollama.load_local_llm_config("plan")
+        self.assertEqual(result["max_ctx"], 24576)
+
+    def test_max_ctx_absent_when_not_set(self):
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"enabled": True, "model": "llama3.2"},
+            }
+        )
+        result = ollama.load_local_llm_config("plan")
+        self.assertNotIn("max_ctx", result)
+
+    def test_max_ctx_critic_override(self):
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "max_ctx": 16384,
+                "default": {"enabled": True, "model": "llama3.2"},
+                "critics": {"plan": {"enabled": True, "model": "llama3.2", "max_ctx": 32768}},
+            }
+        )
+        result = ollama.load_local_llm_config("plan")
+        self.assertEqual(result["max_ctx"], 32768)
+
     def test_num_gpu_defaults_to_full_offload_when_unset(self):
         self._write_config(
             {
@@ -138,6 +172,138 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{invalid json")
         self.assertIsNone(ollama.load_local_llm_config("plan"))
+
+
+class TestEstimatePromptTokens(unittest.TestCase):
+    def setUp(self):
+        ollama._tokenize_unavailable.clear()
+
+    def tearDown(self):
+        ollama._tokenize_unavailable.clear()
+
+    def test_tokenize_endpoint_success_returns_exact_count(self):
+        def fake_urlopen(req, timeout=None):
+            cm = MagicMock()
+            cm.__enter__.return_value.read.return_value = json.dumps(
+                {"tokens": list(range(37))}
+            ).encode("utf-8")
+            return cm
+
+        with patch.object(ollama.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = ollama._estimate_prompt_tokens(
+                "http://localhost:11434", "deepseek-r1:8b", "hi"
+            )
+
+        self.assertEqual(result, 37)
+
+    def test_tokenize_endpoint_404_falls_back_to_heuristic(self):
+        def fake_urlopen(req, timeout=None):
+            raise ollama.urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
+
+        prompt = "x" * 100
+        with patch.object(ollama.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = ollama._estimate_prompt_tokens(
+                "http://localhost:11434", "deepseek-r1:8b", prompt
+            )
+
+        self.assertEqual(result, math.ceil(len(prompt) / 3.3))
+
+    def test_tokenize_endpoint_404_cached_across_calls(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            raise ollama.urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
+
+        with patch.object(ollama.urllib.request, "urlopen", side_effect=fake_urlopen):
+            ollama._estimate_prompt_tokens("http://localhost:11434", "deepseek-r1:8b", "hi")
+            ollama._estimate_prompt_tokens("http://localhost:11434", "deepseek-r1:8b", "hi")
+
+        self.assertEqual(len(calls), 1)
+
+    def test_non_404_error_not_cached_and_retried(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            raise TimeoutError("simulated timeout")
+
+        with patch.object(ollama.urllib.request, "urlopen", side_effect=fake_urlopen):
+            ollama._estimate_prompt_tokens("http://localhost:11434", "deepseek-r1:8b", "hi")
+            ollama._estimate_prompt_tokens("http://localhost:11434", "deepseek-r1:8b", "hi")
+
+        self.assertEqual(len(calls), 2)
+
+    def test_malformed_response_falls_back_to_heuristic(self):
+        def fake_urlopen(req, timeout=None):
+            cm = MagicMock()
+            cm.__enter__.return_value.read.return_value = json.dumps({}).encode("utf-8")
+            return cm
+
+        prompt = "y" * 50
+        with patch.object(ollama.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = ollama._estimate_prompt_tokens(
+                "http://localhost:11434", "deepseek-r1:8b", prompt
+            )
+
+        self.assertEqual(result, math.ceil(len(prompt) / 3.3))
+
+
+class TestEstimateNumCtx(unittest.TestCase):
+    def test_margin_and_rounding_applied(self):
+        with patch.object(ollama, "_estimate_prompt_tokens", return_value=1000):
+            result = ollama.estimate_num_ctx(
+                "http://localhost:11434",
+                "deepseek-r1:8b",
+                "prompt",
+                num_predict=500,
+                round_to=256,
+                margin=1.15,
+                min_ctx=0,
+            )
+        # (1000 + 500) * 1.15 = 1725 -> rounds up to nearest 256 -> 1792
+        self.assertEqual(result, 1792)
+
+    def test_default_predict_reserve_used_when_num_predict_none(self):
+        with patch.object(ollama, "_estimate_prompt_tokens", return_value=0):
+            result = ollama.estimate_num_ctx(
+                "http://localhost:11434",
+                "deepseek-r1:8b",
+                "prompt",
+                num_predict=None,
+                round_to=256,
+                margin=1.0,
+                min_ctx=0,
+            )
+        self.assertEqual(result, ollama._DEFAULT_PREDICT_RESERVE)
+
+    def test_clamped_to_min_ctx(self):
+        with patch.object(ollama, "_estimate_prompt_tokens", return_value=1):
+            result = ollama.estimate_num_ctx(
+                "http://localhost:11434",
+                "deepseek-r1:8b",
+                "prompt",
+                num_predict=0,
+                min_ctx=2048,
+            )
+        self.assertEqual(result, 2048)
+
+    def test_clamped_to_max_ctx_with_warning(self):
+        with (
+            patch.object(ollama, "_estimate_prompt_tokens", return_value=100_000),
+            patch("builtins.print") as mock_print,
+        ):
+            result = ollama.estimate_num_ctx(
+                "http://localhost:11434",
+                "deepseek-r1:8b",
+                "prompt",
+                num_predict=0,
+                max_ctx=8192,
+            )
+        self.assertEqual(result, 8192)
+        self.assertTrue(mock_print.called)
+        warning = mock_print.call_args[0][0]
+        self.assertIn("max_ctx=8192", warning)
 
 
 class TestEnsureModelContextFallback(unittest.TestCase):
@@ -209,6 +375,46 @@ class TestEnsureModelContextFallback(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0].endswith("/api/ps"))
 
+    def test_reload_skipped_when_loaded_ctx_larger_than_requested(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            url = req if isinstance(req, str) else req.full_url
+            calls.append(url)
+            cm = MagicMock()
+            cm.__enter__.return_value.read.return_value = json.dumps(
+                {"models": [{"name": "deepseek-r1:8b", "context_length": 16384}]}
+            ).encode("utf-8")
+            return cm
+
+        with patch.object(ollama.urllib.request, "urlopen", side_effect=fake_urlopen):
+            ollama._ensure_model_context("http://localhost:11434", "deepseek-r1:8b", num_ctx=8000)
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].endswith("/api/ps"))
+
+    def test_reload_happens_when_loaded_ctx_smaller_than_requested(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            url = req if isinstance(req, str) else req.full_url
+            calls.append(url)
+            if url.endswith("/api/ps"):
+                cm = MagicMock()
+                cm.__enter__.return_value.read.return_value = json.dumps(
+                    {"models": [{"name": "deepseek-r1:8b", "context_length": 8000}]}
+                ).encode("utf-8")
+                return cm
+            return MagicMock()
+
+        with patch.object(ollama.urllib.request, "urlopen", side_effect=fake_urlopen):
+            ollama._ensure_model_context("http://localhost:11434", "deepseek-r1:8b", num_ctx=16384)
+
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(calls[0].endswith("/api/ps"))
+        self.assertTrue(calls[1].endswith("/api/generate"))  # unload
+        self.assertTrue(calls[2].endswith("/api/generate"))  # reload at correct size
+
 
 class TestCallLocalLlmEnsuresContext(unittest.TestCase):
     def test_ensure_model_context_called_without_num_ctx_config(self):
@@ -249,6 +455,61 @@ class TestCallLocalLlmEnsuresContext(unittest.TestCase):
             ollama.call_local_llm("hello", config)
 
         self.assertNotIn("num_gpu", bodies[0]["options"])
+
+    def test_computes_num_ctx_from_max_ctx_when_num_ctx_absent(self):
+        config = {
+            "ollama_url": "http://localhost:11434",
+            "model": "deepseek-r1:8b",
+            "max_ctx": 32768,
+        }
+        original_config = dict(config)
+
+        bodies = []
+
+        def fake_urlopen(req, timeout=None):
+            bodies.append(json.loads(req.data))
+            fake_resp = MagicMock()
+            fake_resp.__enter__.return_value = iter([json.dumps({"done": True}).encode("utf-8")])
+            return fake_resp
+
+        with (
+            patch.object(ollama, "estimate_num_ctx", return_value=12345) as mock_estimate,
+            patch.object(ollama, "_ensure_model_context") as mock_ensure,
+            patch.object(ollama.urllib.request, "urlopen", side_effect=fake_urlopen),
+        ):
+            ollama.call_local_llm("hello", config)
+
+        mock_estimate.assert_called_once_with(
+            "http://localhost:11434", "deepseek-r1:8b", "hello", num_predict=None, max_ctx=32768
+        )
+        self.assertEqual(bodies[0]["options"]["num_ctx"], 12345)
+        mock_ensure.assert_called_once_with(
+            "http://localhost:11434", "deepseek-r1:8b", 12345, None, None
+        )
+        self.assertEqual(config, original_config)  # caller's dict must not be mutated
+
+    def test_explicit_num_ctx_wins_over_max_ctx(self):
+        config = {
+            "ollama_url": "http://localhost:11434",
+            "model": "deepseek-r1:8b",
+            "num_ctx": 8192,
+            "max_ctx": 32768,
+        }
+
+        fake_resp = MagicMock()
+        fake_resp.__enter__.return_value = iter([json.dumps({"done": True}).encode("utf-8")])
+
+        with (
+            patch.object(ollama, "estimate_num_ctx") as mock_estimate,
+            patch.object(ollama, "_ensure_model_context") as mock_ensure,
+            patch.object(ollama.urllib.request, "urlopen", return_value=fake_resp),
+        ):
+            ollama.call_local_llm("hello", config)
+
+        mock_estimate.assert_not_called()
+        mock_ensure.assert_called_once_with(
+            "http://localhost:11434", "deepseek-r1:8b", 8192, None, None
+        )
 
 
 if __name__ == "__main__":
