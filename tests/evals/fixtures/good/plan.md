@@ -8,15 +8,28 @@ Add a GET /health route to the Hono application that satisfies FR-001, FR-002, a
 
 - Language: TypeScript (Node 22)
 - Framework: Hono (as mandated by constitution §2)
-- Testing: Vitest with @hono/testing for in-process HTTP requests
+- Testing: Vitest for in-process HTTP requests
 - No database interaction required (spec Assumptions)
 - Route lives at `/health` (spec Assumptions)
 
 ## Constitution Check
 
-- Stack: Hono is the mandated backend framework. No prohibited frameworks (Express, Fastify) introduced.
-- TDD: [TEST] tasks will write failing tests before [IMPL] tasks.
-- No migration or data model changes required.
+| §   | Section              | Verdict | Justification |
+| --- | --------------------- | ------- | -------------- |
+| 1   | Project Identity      | ✅      | Adds one JSON GET route to the existing single-tenant REST API; no multi-tenant or non-JSON surface introduced. |
+| 2   | Stack Constraints      | ✅      | Uses only TypeScript, Node 22, Hono, and Vitest — all mandated tools (see Stack Constraint Check below); no prohibited framework (Express, Fastify, Koa, Jest, Mocha, Jasmine) introduced. |
+| 3   | API Contract Rules     | ✅      | Route lives in the backend api directory; Hono's JSON response helper sets the application/json content type automatically; the success body matches the shape documented in spec.md. |
+| 4   | TDD Policy             | ✅      | The failing-test task precedes the implementation task, following red then green then refactor order; no implementation code is written before its paired test fails. |
+| 5   | Governance             | N/A     | No merge or PR-review process changes proposed by this plan. |
+
+### Stack Constraint Check
+
+| Dependency/tool named in this plan | In constitution §2? | Amendment needed? |
+| ------------------------------------ | -------------------- | ------------------- |
+| TypeScript                           | Yes                   | No                   |
+| Node 22                              | Yes                   | No                   |
+| Hono                                 | Yes                   | No                   |
+| Vitest                               | Yes                   | No                   |
 
 ## Phase 0 — Research
 
