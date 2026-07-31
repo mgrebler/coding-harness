@@ -192,7 +192,7 @@ Critic passes can optionally run against a local [Ollama](https://ollama.com) in
     "plan":                     { "enabled": true,  "model": "qwen3:30b-a3b" },
     "plan-architecture-review": { "enabled": true,  "model": "qwen3:30b-a3b" },
 
-    "tasks":                    { "enabled": false, "model": "" },
+    "tasks":                    { "enabled": false, "model": "", "max_ctx": 32768 },
 
     "test":                     { "enabled": false, "model": "" },
     "test-quality-review":      { "enabled": false, "model": "" },
@@ -207,6 +207,26 @@ Each phase's secondary review key is named after the primary key it follows, so 
 pairing is explicit from the name alone: `plan` → `plan-architecture-review`, `test` →
 `test-quality-review`, `implement` → `implement-quality-review`. `tasks` has no
 secondary gate.
+
+Two ways to control the Ollama context window (`num_ctx`), settable at the
+top level or per-critic like any other field above:
+
+- **`num_ctx`** — an exact, fixed size. Use this when you want reproducible,
+  deterministic behavior (e.g. the eval suite pins one so critic output is
+  comparable run-to-run).
+- **`max_ctx`** — a VRAM *ceiling* instead of a fixed size. When set (and `num_ctx`
+  is *not* set), the harness measures each prompt's actual size — exactly, via
+  Ollama's own tokenizer, when available; otherwise a conservative estimate — and
+  computes a right-sized `num_ctx` per call, clamped to `max_ctx`. This is the
+  better default for critics whose prompt size varies a lot over a feature's
+  lifetime (e.g. `tasks`, where `tasks.md` grows across iterations) — it removes
+  the need to manually notice a critic is running out of context and bump
+  `num_ctx` by hand.
+
+If both are set, `num_ctx` wins. If a prompt genuinely needs more context than
+`max_ctx` allows, the harness logs a warning and clamps to `max_ctx` rather than
+failing — watch for that warning, since it means results may be degraded
+(truncated) rather than wrong outright.
 
 ---
 
