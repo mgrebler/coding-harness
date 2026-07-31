@@ -7,7 +7,6 @@ import contextlib
 import json
 import math
 import re
-import subprocess
 import sys
 import time
 import urllib.error
@@ -547,16 +546,13 @@ def run_local_critic_cli(
 
 def _run_critic_subprocess(cmd: list) -> int:
     """
-    Run a critic subprocess and tee its stdout/stderr through sys.stdout/sys.stderr
-    so output reaches the log file (via the _Tee set up by setup_log_file).
-    Returns the process exit code.
+    Run a critic subprocess, streaming its output through sys.stdout in real time
+    (so the *-auto.log file, teed by setup_log_file, shows critic progress — e.g.
+    the "[ollama] thinking..." heartbeats — as it happens rather than only after
+    the subprocess exits, which could otherwise be tens of minutes for a slow
+    local model). Returns the process exit code.
     """
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.stdout:
-        print(result.stdout, end="", flush=True)
-    if result.stderr:
-        print(result.stderr, end="", file=sys.stderr, flush=True)
-    return result.returncode
+    return console.stream_subprocess(cmd)
 
 
 async def run_gate(

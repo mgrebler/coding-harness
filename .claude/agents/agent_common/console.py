@@ -1,5 +1,6 @@
 """Console/logging plumbing: stdout/stderr teeing and Claude Agent SDK message printing."""
 
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -71,6 +72,26 @@ def setup_log_file(path: Path):
     log_fh.flush()
     sys.stdout = _Tee(sys.__stdout__, log_fh)  # type: ignore[assignment]
     sys.stderr = _Tee(sys.__stderr__, log_fh)  # type: ignore[assignment]
+
+
+def stream_subprocess(cmd: list[str]) -> int:
+    """
+    Run *cmd* as a subprocess, streaming stdout+stderr line-by-line through
+    the current sys.stdout (which may be a _Tee writing to both terminal and
+    log file). Returns the process exit code.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if proc.stdout is None:
+        raise RuntimeError("subprocess.Popen with stdout=PIPE did not provide a stdout stream")
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+    proc.wait()
+    return proc.returncode
 
 
 def make_logger(agent_name: str):

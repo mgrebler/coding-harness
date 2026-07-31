@@ -512,5 +512,16 @@ class TestCallLocalLlmEnsuresContext(unittest.TestCase):
         )
 
 
+class TestRunCriticSubprocess(unittest.TestCase):
+    def test_delegates_to_console_stream_subprocess(self):
+        cmd = [sys.executable, "some_critic.py", "--feature", "001-x", "--iteration", "1"]
+
+        with patch.object(ollama.console, "stream_subprocess", return_value=7) as mock_stream:
+            result = ollama._run_critic_subprocess(cmd)
+
+        mock_stream.assert_called_once_with(cmd)
+        self.assertEqual(result, 7)
+
+
 if __name__ == "__main__":
     unittest.main()

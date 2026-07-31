@@ -44,7 +44,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_common.console import USAGE_LIMIT_EXIT_CODE, make_logger, setup_log_file
+from agent_common.console import (
+    USAGE_LIMIT_EXIT_CODE,
+    make_logger,
+    setup_log_file,
+    stream_subprocess,
+)
 from agent_common.git import get_feature_from_branch
 from agent_common.resume_state import (
     find_passing_iteration,
@@ -62,26 +67,6 @@ IMPL_QUALITY_PREFIX = "ch-4-implement-code-quality-review-result"
 
 
 # Helpers
-
-
-def stream_subprocess(cmd: list[str]) -> int:
-    """
-    Run *cmd* as a subprocess, streaming stdout+stderr line-by-line through
-    the current sys.stdout (which may be a _Tee writing to both terminal and
-    log file). Returns the process exit code.
-    """
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    if proc.stdout is None:
-        raise RuntimeError("subprocess.Popen with stdout=PIPE did not provide a stdout stream")
-    for line in proc.stdout:
-        print(line, end="", flush=True)
-    proc.wait()
-    return proc.returncode
 
 
 def get_current_branch() -> str:

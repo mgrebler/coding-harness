@@ -1,8 +1,10 @@
 """Unit tests for agent_common/console.py — primarily stream_query()'s translation of
 the claude_agent_sdk's generic session/usage-limit exception into SessionLimitError."""
 
+import io
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
@@ -70,6 +72,23 @@ class TestStreamQuery(unittest.IsolatedAsyncioTestCase):
             await console.stream_query(_fake_query(messages, exc=exc))
 
         self.assertIs(cm.exception, exc)
+
+
+class TestStreamSubprocess(unittest.TestCase):
+    def test_streams_combined_stdout_and_stderr_and_returns_exit_code(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = console.stream_subprocess(
+                [sys.executable, "-c", "import sys; print('a'); print('b', file=sys.stderr)"]
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("a", buf.getvalue())
+        self.assertIn("b", buf.getvalue())
+
+    def test_propagates_nonzero_exit_code(self):
+        rc = console.stream_subprocess([sys.executable, "-c", "import sys; sys.exit(3)"])
+        self.assertEqual(rc, 3)
 
 
 if __name__ == "__main__":
