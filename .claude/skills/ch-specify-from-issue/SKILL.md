@@ -87,7 +87,13 @@ You **MUST** consider the user input before proceeding (if not empty).
 
    Always re-read `.claude/skills/speckit-specify/SKILL.md` fresh rather than relying on a cached memory of its structure, so this delegation stays correct even if that file's steps are renumbered or changed later.
 
-7. **Report completion.** After the delegated flow reports completion (`SPECIFY_FEATURE_DIRECTORY`, `SPEC_FILE`, checklist summary, readiness for next phase), append one line:
+7. **Report completion.** After the delegated flow reports completion (`SPECIFY_FEATURE_DIRECTORY`, `SPEC_FILE`, checklist summary), replace its generic "readiness for next phase" line (which points at `/speckit-clarify` or `/speckit-plan`) with next steps for the `ch-` automated pipeline instead — this command is part of that family, not the manual one:
+   ```
+   Spec is ready for planning. Run /ch-1-plan-auto to generate and critic-review the plan
+   (recommended for review between each stage), or /ch-plan-to-implement-auto to run the
+   full plan → tasks → test → implement pipeline unattended.
+   ```
+   Then append one line:
    ```
    Sourced from: GitHub issue #<number> (<url>)
    ```
