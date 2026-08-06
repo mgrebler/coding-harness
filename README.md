@@ -182,10 +182,11 @@ The plain `/speckit-plan`, `/speckit-tasks`, `/speckit-implement`, and `/ch-3-te
 
 ## Local LLM Support (Optional)
 
-Critic passes can optionally run against a local [Ollama](https://ollama.com) instance instead of Claude. Edit `.specify/local-llm.json` in your project root:
+Critic passes can optionally run against a local [Ollama](https://ollama.com) instance, or a hosted OpenAI-compatible API (NVIDIA's hosted inference, OpenAI, Groq, Together.ai, etc), instead of Claude. Edit `.specify/local-llm.json` in your project root:
 
 ```json
 {
+  "provider": "ollama",
   "ollama_url": "http://host.docker.internal:11434",
   "default": { "enabled": false, "model": "" },
   "critics": {
@@ -227,6 +228,94 @@ If both are set, `num_ctx` wins. If a prompt genuinely needs more context than
 `max_ctx` allows, the harness logs a warning and clamps to `max_ctx` rather than
 failing — watch for that warning, since it means results may be degraded
 (truncated) rather than wrong outright.
+
+### Using a hosted OpenAI-compatible API instead of Ollama
+
+Set `"provider": "openai-compatible"` and supply `base_url` and `api_key_env`
+instead of `ollama_url`:
+
+```json
+{
+  "provider": "openai-compatible",
+  "base_url": "https://integrate.api.nvidia.com/v1",
+  "api_key_env": "NVIDIA_API_KEY",
+  "default": { "enabled": true, "model": "moonshotai/kimi-k2.6" },
+  "critics": {}
+}
+```
+
+`api_key_env` names an environment variable holding the API key — **the key
+itself must never be written into this file**, since `.specify/local-llm.json`
+is typically committed alongside the rest of the project's specs. Set the
+named variable in your shell/CI environment before running critics.
+
+`provider` (like every other field above) can be set per-critic instead of
+top-level, so a project can mix backends — e.g. Ollama for most critics, a
+hosted model for one. `num_ctx`/`max_ctx`/`keep_alive`/`num_gpu` are
+Ollama-specific and are ignored when `provider` is `openai-compatible`.
+
+For example, Ollama by default with the `test` critic overridden to run
+against NVIDIA instead:
+
+```json
+{
+  "provider": "ollama",
+  "ollama_url": "http://host.docker.internal:11434",
+  "default": { "enabled": false, "model": "" },
+  "critics": {
+    "plan": { "enabled": true, "model": "qwen3:30b-a3b" },
+
+    "test": {
+      "enabled": true,
+      "model": "meta/llama-3.3-70b-instruct",
+      "provider": "openai-compatible",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "api_key_env": "NVIDIA_API_KEY"
+    }
+  }
+}
+```
+
+`plan` falls through to the top-level `provider`/`ollama_url` since its block
+doesn't override them; `test`'s block overrides `provider` and supplies its
+own `base_url`/`api_key_env`, so it never touches `ollama_url` at all. Any
+critic can independently be Ollama, an OpenAI-compatible host, or disabled.
+
+#### Recommended models (NVIDIA hosted inference)
+
+Validated by running the harness's own eval suite (`tests/evals/`) against
+NVIDIA's hosted API (`https://integrate.api.nvidia.com/v1`) instead of the
+default Ollama backend:
+
+- **`nvidia/llama-3.3-nemotron-super-49b-v1.5`** (recommended) — 16/16 eval
+  tests passed across all seven critics (plan, plan-architecture-review,
+  tasks, test, test-quality-review, implement, implement-quality-review),
+  correctly distinguishing PASS/FAIL cases and citing the right violations.
+  NVIDIA's own agentic/instruction-tuned reasoning model; keeps its reasoning
+  trace out of the JSON `content` field (see caveat below), so it complies
+  cleanly with the harness's "raw JSON, no fences" contract. Latency is
+  uneven — most critic calls took 25-120s, but one reasoning-heavy case took
+  ~5 min, worth accounting for in iterative critic loops.
+- **`openai/gpt-oss-120b`** — same clean reasoning/content separation; passed
+  ad hoc JSON-mode smoke tests but hasn't been run through the full eval
+  suite yet. Worth trying if nemotron proves too slow or rate-limited.
+- Passed a basic JSON-mode connectivity check but not eval-tested:
+  `deepseek-ai/deepseek-v4-pro`, `mistralai/mistral-medium-3.5-128b`,
+  `minimaxai/minimax-m3`, `nvidia/nemotron-3-super-120b-a12b`.
+
+**Caveat — check for reasoning leakage.** Some reasoning models put their
+entire chain-of-thought directly in the `content` field instead of a
+separate `reasoning_content` field (observed with
+`nvidia/nemotron-3-ultra-550b-a55b`), which breaks the raw-JSON contract
+`run_local_critic_cli` depends on. Before trusting a new model in a critic
+loop, sanity-check it with a trivial prompt (e.g. `Reply with only this
+JSON: {"result": "ok"}`, `response_format: json_object`) and confirm
+`content` comes back as clean JSON.
+
+**Access varies per account/API key.** A model appearing in NVIDIA's
+`/v1/models` catalog listing does not guarantee your key can call it — some
+return `404: Function ... Not found for account` until access is granted.
+Confirm with a real chat-completions call, not just the models list.
 
 ---
 

@@ -99,6 +99,8 @@ Critic passes can run against a local [Ollama](https://ollama.com) instance inst
 
 `temperature` controls generation randomness (default `0.1`). Set to `0.0` for fully deterministic (greedy) decoding — recommended for eval runs and CI to eliminate non-deterministic hallucinations in reasoning models like deepseek-r1.
 
+`provider: "openai-compatible"` routes a critic through `agent_common/openai_compatible.py` instead of `agent_common/ollama.py`'s native `/api/chat` transport — the same stdlib-`urllib`-only, no-new-dependency constraint applies. It targets any `/v1/chat/completions`-compatible hosted endpoint (validated against NVIDIA's hosted inference API). `response_format: {"type": "json_object"}` is forced unconditionally, mirroring Ollama's forced `format: "json"`, so the "raw JSON out, no fences" contract `run_local_critic_cli` depends on holds for either provider. `load_local_llm_config`'s per-field default-then-critic-override merge (already used for `num_ctx` etc.) applies to `provider`/`base_url`/`api_key_env` too, so different critics can use different providers in the same file. `num_ctx`/`max_ctx`/`keep_alive`/`num_gpu` are Ollama/local-inference concepts with no equivalent for a hosted API and are simply unread by this provider.
+
 ### Critic Loop Pattern
 
 Each `ch-N-stage-auto.py` agent runs an iteration loop: generate → critic review → fix → repeat until the critic passes or a max iteration count is reached. Critic prompts are built by companion `ch_N_stage_critic.py` modules. The constitution and quality principles documents from `.specify/memory/` are injected into every critic prompt.
