@@ -8,15 +8,30 @@ Add a GET /health route to the Hono application that satisfies FR-001, FR-002, a
 
 - Language: TypeScript (Node 22)
 - Framework: Hono (as mandated by constitution §2)
-- Testing: Vitest with @hono/testing for in-process HTTP requests
+- Testing: Vitest with `@hono/testing` for in-process HTTP requests (both mandated by constitution §2)
 - No database interaction required (spec Assumptions)
 - Route lives at `/health` (spec Assumptions)
+- No service layer: the handler returns a fixed literal (`{ status: 'ok' }`) with no computation, branching, or storage access — there is no business logic to separate out, so Architecture §2 Backend Layer Separation is satisfied trivially rather than via delegation to a service.
 
 ## Constitution Check
 
-- Stack: Hono is the mandated backend framework. No prohibited frameworks (Express, Fastify) introduced.
-- TDD: [TEST] tasks will write failing tests before [IMPL] tasks.
-- No migration or data model changes required.
+| Section | Verdict | Justification |
+|---|---|---|
+| §1 Project Identity | ✅ | Single-tenant JSON REST API on TypeScript/Hono/Node — matches exactly, no deviation. |
+| §2 Stack Constraints | ✅ | Only mandated tools used (see Stack Constraint Check below); no prohibited frameworks introduced. |
+| §3 API Contract Rules | ✅ | Route lives in `backend/src/api/`, returns `application/json` via `c.json()`, success shape matches contracts/. |
+| §4 TDD Policy | ✅ | [TEST] tasks will write failing tests before any [IMPL] tasks begin (RED→GREEN); no implementation code during [TEST] tasks. |
+| §5 Governance | ✅ | No agent merges to main; this plan is submitted for human PR review per standard process. |
+
+### Stack Constraint Check
+
+| Dependency | In Constitution §2? | Notes |
+|---|---|---|
+| TypeScript | ✅ Yes | Mandated language. |
+| Node 22 | ✅ Yes | Mandated runtime. |
+| Hono | ✅ Yes | Mandated backend framework. |
+| Vitest | ✅ Yes | Mandated testing tool. |
+| @hono/testing | ✅ Yes | Mandated integration test HTTP client. |
 
 ## Phase 0 — Research
 

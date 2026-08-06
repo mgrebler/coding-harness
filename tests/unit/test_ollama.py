@@ -173,6 +173,101 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         path.write_text("{invalid json")
         self.assertIsNone(ollama.load_local_llm_config("plan"))
 
+    def test_provider_defaults_to_ollama_when_absent(self):
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"enabled": True, "model": "llama3.2"},
+            }
+        )
+        result = ollama.load_local_llm_config("plan")
+        self.assertEqual(result["provider"], "ollama")
+        self.assertIn("ollama_url", result)
+
+    def test_openai_compatible_provider_returns_base_url_and_api_key_env(self):
+        self._write_config(
+            {
+                "provider": "openai-compatible",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+                "api_key_env": "NVIDIA_API_KEY",
+                "default": {"enabled": True, "model": "moonshotai/kimi-k2.6"},
+            }
+        )
+        result = ollama.load_local_llm_config("plan")
+        self.assertEqual(result["provider"], "openai-compatible")
+        self.assertEqual(result["base_url"], "https://integrate.api.nvidia.com/v1")
+        self.assertEqual(result["api_key_env"], "NVIDIA_API_KEY")
+        self.assertNotIn("ollama_url", result)
+
+    def test_openai_compatible_missing_base_url_raises(self):
+        self._write_config(
+            {
+                "provider": "openai-compatible",
+                "api_key_env": "NVIDIA_API_KEY",
+                "default": {"enabled": True, "model": "moonshotai/kimi-k2.6"},
+            }
+        )
+        with self.assertRaises(ValueError):
+            ollama.load_local_llm_config("plan")
+
+    def test_openai_compatible_missing_api_key_env_raises(self):
+        self._write_config(
+            {
+                "provider": "openai-compatible",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+                "default": {"enabled": True, "model": "moonshotai/kimi-k2.6"},
+            }
+        )
+        with self.assertRaises(ValueError):
+            ollama.load_local_llm_config("plan")
+
+    def test_openai_compatible_invalid_base_url_scheme_raises(self):
+        self._write_config(
+            {
+                "provider": "openai-compatible",
+                "base_url": "ftp://integrate.api.nvidia.com/v1",
+                "api_key_env": "NVIDIA_API_KEY",
+                "default": {"enabled": True, "model": "moonshotai/kimi-k2.6"},
+            }
+        )
+        with self.assertRaises(ValueError):
+            ollama.load_local_llm_config("plan")
+
+    def test_unknown_provider_raises(self):
+        self._write_config(
+            {
+                "provider": "bogus-provider",
+                "default": {"enabled": True, "model": "llama3.2"},
+            }
+        )
+        with self.assertRaises(ValueError):
+            ollama.load_local_llm_config("plan")
+
+    def test_provider_critic_override(self):
+        self._write_config(
+            {
+                "provider": "ollama",
+                "ollama_url": "http://localhost:11434",
+                "default": {"enabled": True, "model": "llama3.2"},
+                "critics": {
+                    "plan": {
+                        "enabled": True,
+                        "model": "moonshotai/kimi-k2.6",
+                        "provider": "openai-compatible",
+                        "base_url": "https://integrate.api.nvidia.com/v1",
+                        "api_key_env": "NVIDIA_API_KEY",
+                    }
+                },
+            }
+        )
+        plan_result = ollama.load_local_llm_config("plan")
+        self.assertEqual(plan_result["provider"], "openai-compatible")
+        self.assertEqual(plan_result["base_url"], "https://integrate.api.nvidia.com/v1")
+
+        tasks_result = ollama.load_local_llm_config("tasks")
+        self.assertEqual(tasks_result["provider"], "ollama")
+        self.assertIn("ollama_url", tasks_result)
+
 
 class TestEstimatePromptTokens(unittest.TestCase):
     def setUp(self):
@@ -521,6 +616,67 @@ class TestRunCriticSubprocess(unittest.TestCase):
 
         mock_stream.assert_called_once_with(cmd)
         self.assertEqual(result, 7)
+
+
+class TestRunLocalCriticCliDispatch(unittest.TestCase):
+    """Confirms run_local_critic_cli routes the actual LLM call to the transport
+    matching config["provider"] — the one dispatch point added for the
+    openai-compatible provider."""
+
+    def setUp(self):
+        self._orig_cwd = Path.cwd()
+        self._tmpdir = tempfile.mkdtemp()
+        os.chdir(self._tmpdir)
+
+    def tearDown(self):
+        os.chdir(self._orig_cwd)
+
+    def _run(self, config):
+        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(config))
+
+        with (
+            patch.object(
+                sys, "argv", ["ch_1_plan_critic.py", "--feature", "001-x", "--iteration", "1"]
+            ),
+            patch.object(
+                ollama, "call_local_llm", return_value='{"status": "PASS"}'
+            ) as mock_ollama_call,
+            patch.object(
+                ollama.openai_compatible,
+                "call_openai_compatible_llm",
+                return_value='{"status": "PASS"}',
+            ) as mock_openai_call,
+            patch.object(ollama.files, "write_file"),
+        ):
+            ollama.run_local_critic_cli(
+                "plan", "plan-critic-result", lambda spec_dir, iteration: "prompt"
+            )
+
+        return mock_ollama_call, mock_openai_call
+
+    def test_dispatches_to_call_local_llm_for_ollama_provider(self):
+        mock_ollama_call, mock_openai_call = self._run(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"enabled": True, "model": "llama3.2"},
+            }
+        )
+        mock_ollama_call.assert_called_once()
+        mock_openai_call.assert_not_called()
+
+    def test_dispatches_to_openai_compatible_for_that_provider(self):
+        mock_ollama_call, mock_openai_call = self._run(
+            {
+                "provider": "openai-compatible",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+                "api_key_env": "NVIDIA_API_KEY",
+                "default": {"enabled": True, "model": "moonshotai/kimi-k2.6"},
+            }
+        )
+        mock_openai_call.assert_called_once()
+        mock_ollama_call.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
-from agent_common import console, files, git, resume_state
+from agent_common import console, files, git, openai_compatible, resume_state
 
 _FULL_GPU_OFFLOAD = 999  # sentinel > any real model's layer count; llama.cpp clamps to actual max
 _ALLOWED_URL_SCHEMES = ("http://", "https://")
@@ -22,12 +22,45 @@ _DEFAULT_PREDICT_RESERVE = 1024  # ctx headroom for generated tokens when num_pr
 _tokenize_unavailable: set[str] = set()  # ollama_urls where /api/tokenize 404'd this process
 
 
+def _resolve_provider_fields(provider: str, resolved: dict, raw: dict) -> dict:
+    """Resolve the transport-specific fields for one provider: 'ollama_url' for
+    provider "ollama" (the default), or 'base_url'/'api_key_env' for provider
+    "openai-compatible". Raises ValueError for a missing/invalid field or an
+    unrecognized provider."""
+    if provider == "ollama":
+        ollama_url = raw.get("ollama_url", "http://host.docker.internal:11434").rstrip("/")
+        if not ollama_url.startswith(_ALLOWED_URL_SCHEMES):
+            raise ValueError(
+                f"local-llm.json: ollama_url must be http:// or https://, got: {ollama_url}"
+            )
+        return {"ollama_url": ollama_url}
+
+    if provider == "openai-compatible":
+        base_url = resolved.get("base_url") if "base_url" in resolved else raw.get("base_url")
+        api_key_env = (
+            resolved.get("api_key_env") if "api_key_env" in resolved else raw.get("api_key_env")
+        )
+        if not base_url or not base_url.rstrip("/").startswith(_ALLOWED_URL_SCHEMES):
+            raise ValueError(
+                f"local-llm.json: base_url must be http:// or https://, got: {base_url!r}"
+            )
+        if not api_key_env:
+            raise ValueError(
+                "local-llm.json: api_key_env is required when provider is 'openai-compatible'"
+            )
+        return {"base_url": base_url.rstrip("/"), "api_key_env": api_key_env}
+
+    raise ValueError(f"local-llm.json: unknown provider {provider!r}")
+
+
 def load_local_llm_config(critic_type: str) -> dict | None:
     """
     Read .specify/local-llm.json and resolve config for the given critic_type.
     Merges the 'default' block with the per-critic override.
-    Returns a dict with 'ollama_url' and 'model' if the critic is active,
-    or None if disabled or not configured.
+    Returns a dict with 'provider', 'model', and either 'ollama_url' (provider
+    "ollama", the default) or 'base_url'/'api_key_env' (provider
+    "openai-compatible") if the critic is active, or None if disabled or not
+    configured.
     """
     config_path = Path(".specify/local-llm.json")
     if not config_path.exists():
@@ -44,16 +77,14 @@ def load_local_llm_config(critic_type: str) -> dict | None:
     if not resolved.get("enabled") or not resolved.get("model", "").strip():
         return None
 
-    ollama_url = raw.get("ollama_url", "http://host.docker.internal:11434").rstrip("/")
-    if not ollama_url.startswith(_ALLOWED_URL_SCHEMES):
-        raise ValueError(
-            f"local-llm.json: ollama_url must be http:// or https://, got: {ollama_url}"
-        )
+    provider = resolved.get("provider") if "provider" in resolved else raw.get("provider", "ollama")
 
     result: dict = {
-        "ollama_url": ollama_url,
+        "provider": provider,
         "model": resolved["model"],
     }
+    result.update(_resolve_provider_fields(provider, resolved, raw))
+
     # Without num_ctx, Ollama defaults to the model's native window (often 32k-128k),
     # which can overflow VRAM and spill to system RAM.
     num_ctx = resolved["num_ctx"] if "num_ctx" in resolved else raw.get("num_ctx")
@@ -432,6 +463,13 @@ def call_local_llm(
     return result
 
 
+def _call_configured_llm(prompt: str, config: dict, progress_fn=None) -> str:
+    """Dispatch to the transport matching config["provider"] (default "ollama")."""
+    if config.get("provider", "ollama") == "openai-compatible":
+        return openai_compatible.call_openai_compatible_llm(prompt, config, progress_fn=progress_fn)
+    return call_local_llm(prompt, config, progress_fn=progress_fn)
+
+
 def strip_fences(text: str) -> str:
     """Strip markdown code fences from an LLM response that was supposed to be raw JSON."""
     text = text.strip()
@@ -498,7 +536,7 @@ def run_local_critic_cli(
             )
 
     try:
-        raw = call_local_llm(prompt, config, progress_fn=_progress)
+        raw = _call_configured_llm(prompt, config, progress_fn=_progress)
     except Exception as e:
         print(f"[{critic_type}] ERROR: local LLM call failed: {e}", flush=True)
         sys.exit(1)

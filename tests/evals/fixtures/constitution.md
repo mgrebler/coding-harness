@@ -27,6 +27,7 @@ No agent may introduce a dependency outside this list without a constitution ame
 | Runtime | Node 22 |
 | Backend framework | Hono |
 | Testing | Vitest |
+| Integration test HTTP client | @hono/testing |
 | Package manager | pnpm |
 
 **Prohibited substitutions:** Express, Fastify, Koa, Jest, Mocha, Jasmine. Any framework not listed above is prohibited.
