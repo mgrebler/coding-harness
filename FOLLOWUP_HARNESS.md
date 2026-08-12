@@ -1,4 +1,11 @@
-# Harness Bug: Recursive self-invocation causes driving agents to hallucinate prompt injection
+# Harness bugs found while running `ch-plan-to-implement-auto` on `050-apply-detection`
+
+Two independent, unrelated harness bugs surfaced during this run. Documented
+separately below.
+
+---
+
+# Bug 1: Recursive self-invocation causes driving agents to hallucinate prompt injection
 
 **Discovered**: 2026-08-11, while running `ch-plan-to-implement-auto` on feature `050-apply-detection` in the `jobtracker` repo.
 **Affects**: `.claude/agents/ch_1_plan_auto.py`, `ch_2_tasks_auto.py`, `ch_3_test_auto.py`, `ch_4_implement_auto.py` (all four coding-harness stage orchestrators — same pattern in each).
@@ -204,3 +211,106 @@ No code change was made to the harness itself as part of this feature branch
 operational: renaming the polluted `ch-2-tasks-auto.log` out of the way
 before retrying `ch_2_tasks_auto.py` in isolation, which was sufficient to
 let the driving agent behave correctly and complete the stage.
+
+---
+
+# Bug 2: Local-LLM critics diff against local `main`, which silently goes stale — oversized prompt causes a hard-to-diagnose HTTP 400
+
+**Discovered**: 2026-08-11, same run, at Stage 3 (`ch_3_test_auto.py`)'s test-critic step.
+**Affects**: `.claude/agents/agent_common/git.py:get_changed_files()` and every caller of it — at minimum `ch_2_tasks_critic.py`, `ch_3_test_critic.py`, `ch_4_implement_critic.py` (any local-LLM critic that scopes its review to "files changed on this branch").
+**Severity**: Hard stage failure with a misleading error message (`local LLM call failed: HTTP Error 400: Bad Request` — no indication of root cause). Will recur on any repo where local `main` isn't kept in sync with `origin/main` between feature branches, which is normal git hygiene to not always be doing on every branch checkout.
+
+## Summary
+
+`get_changed_files()` is:
+
+```python
+def get_changed_files() -> list[str]:
+    """Return list of files changed on this branch relative to main."""
+    result = subprocess.run(
+        ["git", "diff", "main...HEAD", "--name-only"],
+        capture_output=True,
+        text=True,
+    )
+    return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+```
+
+This diffs against the **local** `main` ref, unconditionally, with no check
+that it's up to date with `origin/main`. In this repo, local `main` was last
+updated at the PR #90 (`048-tracked-indicator`) merge and was never
+fast-forwarded after PR #92 (`049-application-timeline`) merged remotely —
+21 commits behind `origin/main`. Nothing in the coding-harness pipeline
+fetches or fast-forwards local `main` at any point; it's simply left to
+whatever state the developer's clone happens to be in.
+
+Because feature branches in this repo are created sequentially (050 branched
+after 049's work was already in the branch's own ancestry, before 049's PR
+had actually reached local `main`), `git diff main...HEAD` doesn't cleanly
+isolate the current feature's changes — it also picks up the *entire*
+049-application-timeline changeset that local `main` doesn't yet know about.
+
+Concretely, for this run: `get_changed_files()` returned **124 files**
+instead of the ~7 actually belonging to `050-apply-detection`'s test stage.
+The resulting test-critic prompt (constitution + spec + plan + tasks +
+test-principles + all 124 "changed" files' content + red-state artifacts)
+came to **775,010 characters (~235,000 estimated tokens)** — reproduced and
+measured directly by calling `ch_3_test_critic.build_test_critic_prompt`
+with the real repo data. That vastly exceeds the configured model's
+(`nvidia/llama-3.3-nemotron-super-49b-v1.5`, via `integrate.api.nvidia.com`)
+context window, and the NVIDIA OpenAI-compatible endpoint rejects the
+request with HTTP 400.
+
+The error surfaced to the user is unhelpful:
+
+```
+[test] ERROR: local LLM call failed: HTTP Error 400: Bad Request
+[ch-3-test-auto] ERROR: local LLM test critic failed for iteration 1. Aborting.
+```
+
+`agent_common/openai_compatible.py::call_openai_compatible_llm` lets
+`urllib.error.HTTPError` propagate straight up to
+`ollama.py::run_local_critic_cli`'s generic `except Exception as e: print(...)`,
+which only prints `str(e)` — for an `HTTPError` that's just `"HTTP Error
+400: Bad Request"`, with the actual response body (which likely names the
+real cause, e.g. a token-limit message) never read or logged.
+
+## Reproduction
+
+```bash
+git rev-list --count origin/main..main   # 0 — local main has no unique commits, safe to fast-forward
+git rev-list --count main..origin/main   # 21 — local main is this far behind
+git diff main...HEAD --name-only | wc -l # 124, before fixing local main
+```
+
+After `git fetch origin main:main` (clean fast-forward, confirmed safe since
+local `main` had zero unique commits):
+
+```bash
+git diff main...HEAD --name-only | wc -l # 32 — correctly scoped to this feature
+```
+
+## Suggested fix
+
+1. **Primary**: `get_changed_files()` (or its callers) should diff against
+   `origin/main` — or explicitly fetch/verify `main` is up to date with
+   `origin/main` before diffing — rather than trusting whatever the local
+   `main` ref happens to point to. A stale local `main` should either be
+   fixed automatically (fast-forward it, since a non-fast-forward local
+   `main` would indicate something worth surfacing anyway) or the script
+   should fail fast with a clear error ("local main is N commits behind
+   origin/main — run `git fetch origin main:main`") instead of silently
+   producing a wildly oversized diff.
+2. **Defense in depth**: `_call_configured_llm`/`run_local_critic_cli` should
+   read and log the HTTP error response body on failure (`e.read()` for
+   `urllib.error.HTTPError`), not just `str(e)`. Also consider a pre-flight
+   prompt-size check (using the existing `estimate_num_ctx`/token-estimate
+   machinery already in `ollama.py`) that fails with a clear "prompt is
+   ~235k estimated tokens, exceeds this model's window" message before ever
+   making the network call, for both the Ollama and openai-compatible
+   transports.
+
+## Workaround used in this run
+
+Fast-forwarded local `main` to `origin/main` (`git fetch origin main:main`),
+confirmed safe first via `git rev-list --count origin/main..main` = 0 (no
+local-only commits to lose). No harness code was changed.

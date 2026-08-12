@@ -6,6 +6,7 @@ for drop-in dispatch from run_local_critic_cli based on config["provider"]."""
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 
 _SSE_DONE = "[DONE]"
@@ -58,27 +59,31 @@ def _stream_chat_response(
     token_count = 0
     start = time.monotonic()
 
-    with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310
-        for raw_line in resp:
-            line = raw_line.decode("utf-8").strip()
-            if not line or not line.startswith("data:"):
-                continue
-            data = line[len("data:") :].strip()
-            if data == _SSE_DONE:
-                break
-            try:
-                chunk = json.loads(data)
-                choices = chunk.get("choices")
-                if not choices:
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310
+            for raw_line in resp:
+                line = raw_line.decode("utf-8").strip()
+                if not line or not line.startswith("data:"):
                     continue
-                token = choices[0].get("delta", {}).get("content", "")
-                if token:
-                    content_parts.append(token)
-                    token_count += 1
-                    if progress_fn and token_count % progress_interval == 0:
-                        progress_fn(token_count, time.monotonic() - start)
-            except (KeyError, json.JSONDecodeError):
-                continue
+                data = line[len("data:") :].strip()
+                if data == _SSE_DONE:
+                    break
+                try:
+                    chunk = json.loads(data)
+                    choices = chunk.get("choices")
+                    if not choices:
+                        continue
+                    token = choices[0].get("delta", {}).get("content", "")
+                    if token:
+                        content_parts.append(token)
+                        token_count += 1
+                        if progress_fn and token_count % progress_interval == 0:
+                            progress_fn(token_count, time.monotonic() - start)
+                except (KeyError, json.JSONDecodeError):
+                    continue
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {e.code} {e.reason}: {body[:2000]}") from e
 
     if progress_fn and token_count > 0:
         progress_fn(token_count, time.monotonic() - start, done=True)

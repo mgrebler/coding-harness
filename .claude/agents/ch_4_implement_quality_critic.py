@@ -45,16 +45,16 @@ def build_quality_review_prompt(
     """
     if changed_files_section is None:
         review_process = (
-            "1. Run `git diff main...HEAD --name-only` and `git status --short` to identify all changed files\n"
+            "1. Run `git fetch origin main --quiet` (ignore failure — offline/no remote), then "
+            "`git diff origin/main...HEAD --name-only` if `origin/main` resolves, else "
+            "`git diff main...HEAD --name-only`, and `git status --short`, to identify all changed files\n"
             "2. Read each changed source file under backend/src/, frontend/src/, prisma/\n"
             "3. Read each changed test file under backend/tests/ and frontend/tests/\n"
             "4. Read adjacent existing files for consistency context\n"
             "5. Evaluate against all automatic fail conditions, severity rules, core principles, and heuristics in the CODE QUALITY PRINCIPLES section above"
         )
     else:
-        review_process = (
-            f"--- CHANGED SOURCE FILES (git diff main...HEAD) ---\n{changed_files_section}"
-        )
+        review_process = f"--- CHANGED SOURCE FILES (changed files relative to base branch) ---\n{changed_files_section}"
 
     tail = (
         "- status is FAIL if any Critical issue exists, more than 2 High issues exist, or confidence < 7\n"

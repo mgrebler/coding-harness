@@ -26,10 +26,34 @@ def run_auto_commit(event: str, agent_name: str):
         print(f"[{agent_name}] Warning: auto-commit.sh not found; skipping commit.", flush=True)
 
 
+def resolve_base_ref(base_branch: str = "main") -> str:
+    """Best-effort fetch origin/<base_branch> and return the freshest ref
+    to diff/merge-base against for "what changed on this branch" checks —
+    'origin/<base_branch>' when fetchable/resolvable, else local
+    <base_branch>. A stale local main (never fetched/fast-forwarded)
+    otherwise silently widens a diff against it with commits merged
+    upstream but not yet pulled locally. The fetch is best-effort — an
+    offline environment or a repo without an 'origin' remote falls through
+    to base_branch unchanged rather than raising."""
+    subprocess.run(["git", "fetch", "origin", base_branch], capture_output=True, text=True)
+    origin_ref = f"origin/{base_branch}"
+    return origin_ref if _ref_exists(origin_ref) else base_branch
+
+
+def _ref_exists(ref: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", ref], capture_output=True, text=True
+        ).returncode
+        == 0
+    )
+
+
 def get_changed_files() -> list[str]:
     """Return list of files changed on this branch relative to main."""
+    base_ref = resolve_base_ref()
     result = subprocess.run(
-        ["git", "diff", "main...HEAD", "--name-only"],
+        ["git", "diff", f"{base_ref}...HEAD", "--name-only"],
         capture_output=True,
         text=True,
     )

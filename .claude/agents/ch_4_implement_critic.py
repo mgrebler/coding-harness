@@ -132,12 +132,14 @@ def build_implement_critic_prompt(
     if changed_files_section is None:
         file_input = (
             "Validation process:\n"
-            "1. Run `git diff main...HEAD --name-only` and `git status --short` to identify all changed files\n"
+            "1. Run `git fetch origin main --quiet` (ignore failure — offline/no remote), then "
+            "`git diff origin/main...HEAD --name-only` if `origin/main` resolves, else "
+            "`git diff main...HEAD --name-only`, and `git status --short`, to identify all changed files\n"
             "2. Read each changed source and test file — see the 'Test file location' bullets under constitution §5 (Test-Driven Development) for where test files live in this project\n"
             "3. Validate against every rule below"
         )
     else:
-        file_input = f"--- CHANGED SOURCE FILES (git diff main...HEAD) ---\n{changed_files_section}"
+        file_input = f"--- CHANGED SOURCE FILES (changed files relative to base branch) ---\n{changed_files_section}"
 
     tail = (
         "- status is FAIL if any violation is BLOCKING\n"

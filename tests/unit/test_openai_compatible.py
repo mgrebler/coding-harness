@@ -1,8 +1,10 @@
 """Unit tests for agent_common/openai_compatible.py — network-mocked, no real calls."""
 
+import io
 import json
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -166,6 +168,30 @@ class TestStreamChatResponse(unittest.TestCase):
         done_calls = [c for c in calls if c[1]]
         self.assertEqual(heartbeat_calls, [(2, False), (4, False)])
         self.assertEqual(done_calls, [(5, True)])
+
+
+class TestStreamChatResponseHttpError(unittest.TestCase):
+    def test_http_error_reraised_with_status_and_body(self):
+        """See FOLLOWUP_HARNESS.md Bug 2: an uncaught HTTPError previously
+        propagated as a bare 'HTTP Error 400: Bad Request', with the
+        response body (usually naming the real cause, e.g. a token-limit
+        error) never read anywhere in the call chain."""
+        body = b'{"error": "context_length_exceeded: prompt too long"}'
+        http_error = urllib.error.HTTPError(
+            url="https://integrate.api.nvidia.com/v1/chat/completions",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(body),
+        )
+        with (
+            patch.object(openai_compatible.urllib.request, "urlopen", side_effect=http_error),
+            self.assertRaises(RuntimeError) as ctx,
+        ):
+            openai_compatible._stream_chat_response(MagicMock())
+
+        self.assertIn("400", str(ctx.exception))
+        self.assertIn("context_length_exceeded", str(ctx.exception))
 
 
 class TestCallOpenAICompatibleLlm(unittest.TestCase):
