@@ -42,7 +42,7 @@ Section numbers below (e.g. "constitution §2") refer to this project's own `con
 
 ### Step 2 — Identify changed files
 
-Run: `git diff main...HEAD --name-only`
+Run `git fetch origin main --quiet` (ignore failure — offline/no remote), then `git diff origin/main...HEAD --name-only` if `origin/main` resolves, else `git diff main...HEAD --name-only`.
 
 This gives the full list of source files changed on the feature branch. Read each changed file that is relevant to the checklist rules below — the source/test directories declared in `architecture.md` and constitution §5 (Test-Driven Development), plus any dependency manifest(s) for the project's package manager. Do not read files outside these paths unless a specific artifact references them.
 

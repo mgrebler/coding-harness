@@ -135,7 +135,9 @@ def build_test_critic_prompt(
     if changed_files_section is None:
         file_input = (
             "Validation process:\n"
-            f"1. Run `git diff main...HEAD --name-only` to identify all changed files\n"
+            "1. Run `git fetch origin main --quiet` (ignore failure — offline/no remote), then "
+            "`git diff origin/main...HEAD --name-only` if `origin/main` resolves, else "
+            "`git diff main...HEAD --name-only`, to identify all changed files\n"
             "2. Filter to test files only, per the 'Test file location' bullets under constitution §5 (Test-Driven Development)\n"
             "3. Read each changed test file in full\n"
             f"4. Read all files under specs/{feature}/test-results/ (red-output artifacts)\n"
@@ -148,7 +150,7 @@ def build_test_critic_prompt(
             if test_results is not None
             else ""
         )
-        file_input = f"--- CHANGED TEST FILES (git diff main...HEAD, test paths only) ---\n{changed_files_section}{test_results_block}"
+        file_input = f"--- CHANGED TEST FILES (changed files relative to base branch, test paths only) ---\n{changed_files_section}{test_results_block}"
 
     tail = (
         "- status is FAIL if any violation is BLOCKING\n"

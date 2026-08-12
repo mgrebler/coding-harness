@@ -50,7 +50,7 @@ Read the following files. Do not traverse the repo beyond these paths unless a s
 | Plan | `$SPEC_DIR/plan.md` |
 | Tasks | `$SPEC_DIR/tasks.md` |
 
-Run `git diff main...HEAD --name-only` to identify changed files. Filter to test files only
+Run `git fetch origin main --quiet` (ignore failure — offline/no remote), then `git diff origin/main...HEAD --name-only` if `origin/main` resolves, else `git diff main...HEAD --name-only`, to identify changed files. Filter to test files only
 (`backend/tests/`, `frontend/tests/`) and read each in full. Do NOT read implementation files
 — none should exist at this stage.
 
