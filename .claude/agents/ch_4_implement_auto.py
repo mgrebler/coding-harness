@@ -38,10 +38,11 @@ from pathlib import Path
 
 from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
-from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
+from claude_agent_sdk import AgentDefinition, query
 
 from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
+from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
 from agent_common.files import read_file, require_spec_files
 from agent_common.followup import record_from_result_file, record_non_blocking_concerns
 from agent_common.preflight_checks import oversized_committed_files
@@ -414,15 +415,15 @@ async def _run_implementation_agent(
                 f"Implement all unchecked tasks in specs/{feature}/tasks.md. "
                 f"Follow TDD order: write failing tests first, commit, then implement, commit. "
                 f"Mark each task - [x] in tasks.md after completing it."
-            ),
-            options=ClaudeAgentOptions(
+            )
+            + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "impl-agent": impl_agent_definition(
                         constitution, spec, plan, tasks, quality_principles
                     )
                 },
-                setting_sources=["project"],
             ),
         )
     )
@@ -441,15 +442,15 @@ async def _run_ci_fix_agent(
     """Run the CI fix agent once for the given failure summary."""
     await stream_query(
         query(
-            prompt=f"Fix CI failures for feature {feature}. Failures:\n{failure_summary}",
-            options=ClaudeAgentOptions(
+            prompt=f"Fix CI failures for feature {feature}. Failures:\n{failure_summary}"
+            + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "ci-fix-agent": ci_fix_agent_definition(
                         constitution, spec, plan, tasks, failure_summary
                     )
                 },
-                setting_sources=["project"],
             ),
         )
     )
@@ -544,15 +545,15 @@ async def _run_revision(
             prompt=(
                 f"Fix violations for feature {feature}. "
                 f"Violations: {json.dumps(pending_violations)}"
-            ),
-            options=ClaudeAgentOptions(
+            )
+            + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "fix-agent": fix_agent_definition(
                         constitution, spec, plan, tasks_content, pending_violations
                     )
                 },
-                setting_sources=["project"],
             ),
         )
     )
@@ -614,15 +615,15 @@ def _build_critic_query(
         prompt=(
             f"Validate the implementation for feature {feature}. "
             f"Write result to specs/{feature}/ch-4-implement-critic-result-{iteration}.json."
-        ),
-        options=ClaudeAgentOptions(
+        )
+        + NO_RECURSION_NOTICE,
+        options=driving_agent_options(
             allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
             agents={
                 "implement-critic": critic_agent_definition(
                     constitution, spec, plan, tasks_content, iteration, prev_violations
                 )
             },
-            setting_sources=["project"],
         ),
     )
 
@@ -642,8 +643,9 @@ def _build_quality_query(
         prompt=(
             f"Review the implementation for feature {feature} for code quality. "
             f"Write result to specs/{feature}/ch-4-implement-code-quality-review-result-{iteration}.json."
-        ),
-        options=ClaudeAgentOptions(
+        )
+        + NO_RECURSION_NOTICE,
+        options=driving_agent_options(
             allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
             agents={
                 "quality-review": quality_review_agent_definition(
@@ -656,7 +658,6 @@ def _build_quality_query(
                     quality_violations,
                 )
             },
-            setting_sources=["project"],
         ),
     )
 

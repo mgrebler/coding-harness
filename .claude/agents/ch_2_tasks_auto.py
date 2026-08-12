@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 from ch_2_tasks_critic import build_tasks_critic_prompt
-from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
+from claude_agent_sdk import AgentDefinition, query
 
 from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import (
@@ -37,6 +37,7 @@ from agent_common.critic_loop import (
     run_cli,
     run_single_gate_loop,
 )
+from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
 from agent_common.files import read_file, require_spec_files
 from agent_common.preflight_checks import task_format_violations
 from agent_common.resume_state import (
@@ -186,13 +187,13 @@ async def _run_format_gate(
                     f"tasks-template.md). Fix ONLY the lines below — do not change task content, order, "
                     f"or numbering beyond what's needed to fix the format:\n\n"
                     + "\n".join(violations)
+                    + NO_RECURSION_NOTICE
                 ),
-                options=ClaudeAgentOptions(
+                options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                     agents={
                         "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
                     },
-                    setting_sources=["project"],
                 ),
             )
         )
@@ -231,13 +232,13 @@ async def run(feature: str):
         log("Running tasks agent...")
         await stream_query(
             query(
-                prompt=f"Generate tasks.md for feature {feature}. Write it to specs/{feature}/tasks.md.",
-                options=ClaudeAgentOptions(
+                prompt=f"Generate tasks.md for feature {feature}. Write it to specs/{feature}/tasks.md."
+                + NO_RECURSION_NOTICE,
+                options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                     agents={
                         "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
                     },
-                    setting_sources=["project"],
                 ),
             )
         )
@@ -277,13 +278,13 @@ async def run(feature: str):
                     f"Revise tasks.md for feature {feature} to fix critic violations. "
                     f"Read specs/{feature}/ch-2-tasks-critic-result-{pending_iter}.json for the violation list. "
                     f"Write updated tasks.md to specs/{feature}/tasks.md."
-                ),
-                options=ClaudeAgentOptions(
+                )
+                + NO_RECURSION_NOTICE,
+                options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                     agents={
                         "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
                     },
-                    setting_sources=["project"],
                 ),
             )
         )
@@ -304,15 +305,15 @@ async def run(feature: str):
             prompt=(
                 f"Validate tasks.md for feature {feature}. "
                 f"Write result to specs/{feature}/ch-2-tasks-critic-result-{iteration}.json."
-            ),
-            options=ClaudeAgentOptions(
+            )
+            + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "tasks-critic": critic_agent_definition(
                         constitution, spec, plan, tasks, iteration, prev_violations
                     )
                 },
-                setting_sources=["project"],
             ),
         )
 

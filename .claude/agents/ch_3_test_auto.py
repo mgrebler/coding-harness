@@ -40,7 +40,7 @@ from pathlib import Path
 
 from ch_3_test_critic import build_test_critic_prompt
 from ch_3_test_quality_critic import build_test_quality_review_prompt
-from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
+from claude_agent_sdk import AgentDefinition, query
 
 from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import (
@@ -50,6 +50,7 @@ from agent_common.critic_loop import (
     run_cli,
     run_two_gate_loop,
 )
+from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
 from agent_common.files import read_file, require_spec_files
 from agent_common.followup import record_from_result_file, record_non_blocking_concerns
 from agent_common.preflight_checks import oversized_committed_files, validate_red_state_artifacts
@@ -325,15 +326,15 @@ async def _run_red_state_gate(
                     f"corresponding test, and re-save a genuine failing-assertion (or module-not-found) "
                     f"capture to the same specs/{feature}/test-results/<TASKID>-red.txt path. Do not "
                     f"write implementation code."
-                ),
-                options=ClaudeAgentOptions(
+                )
+                + NO_RECURSION_NOTICE,
+                options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                     agents={
                         "test-agent": test_agent_definition(
                             constitution, spec, plan, tasks, test_principles, feature
                         )
                     },
-                    setting_sources=["project"],
                 ),
             )
         )
@@ -370,15 +371,15 @@ async def _run_test_agent_if_needed(
                 f"No implementation code. Confirm each test fails for the expected reason. "
                 f"Save failing output to specs/{feature}/test-results/<TASKID>-red.txt. "
                 f"Mark each [TEST] task [x] in tasks.md after completing it."
-            ),
-            options=ClaudeAgentOptions(
+            )
+            + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "test-agent": test_agent_definition(
                         constitution, spec, plan, tasks, test_principles, feature
                     )
                 },
-                setting_sources=["project"],
             ),
         )
     )
@@ -465,8 +466,9 @@ async def run(feature: str):
                 prompt=(
                     f"Fix {pending_label} violations for feature {feature}. "
                     f"Violations: {json.dumps(pending_violations)}"
-                ),
-                options=ClaudeAgentOptions(
+                )
+                + NO_RECURSION_NOTICE,
+                options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                     agents={
                         "test-fix-agent": test_fix_agent_definition(
@@ -478,7 +480,6 @@ async def run(feature: str):
                             pending_violations,
                         )
                     },
-                    setting_sources=["project"],
                 ),
             )
         )
@@ -516,8 +517,9 @@ async def run(feature: str):
             prompt=(
                 f"Validate the test files for feature {feature}. "
                 f"Write result to specs/{feature}/ch-3-test-critic-result-{iteration}.json."
-            ),
-            options=ClaudeAgentOptions(
+            )
+            + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "test-critic": test_critic_agent_definition(
@@ -531,7 +533,6 @@ async def run(feature: str):
                         prev_violations,
                     )
                 },
-                setting_sources=["project"],
             ),
         )
 
@@ -542,8 +543,9 @@ async def run(feature: str):
                 f"Review the test files for feature {feature} for test quality "
                 f"(assertion quality, naming, CI readiness). "
                 f"Write result to specs/{feature}/ch-3-test-quality-review-result-{iteration}.json."
-            ),
-            options=ClaudeAgentOptions(
+            )
+            + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "test-quality-review": test_quality_review_agent_definition(
@@ -557,7 +559,6 @@ async def run(feature: str):
                         quality_violations,
                     )
                 },
-                setting_sources=["project"],
             ),
         )
 
