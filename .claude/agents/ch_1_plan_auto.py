@@ -34,7 +34,7 @@ from pathlib import Path
 
 from ch_1_plan_architecture_critic import build_architecture_review_prompt
 from ch_1_plan_critic import build_plan_critic_prompt
-from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, query
+from claude_agent_sdk import AgentDefinition, query
 
 from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import (
@@ -44,6 +44,7 @@ from agent_common.critic_loop import (
     run_cli,
     run_two_gate_loop,
 )
+from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
 from agent_common.files import read_file, require_spec_files
 from agent_common.resume_state import (
     extend_iterations_if_reviewed,
@@ -228,13 +229,13 @@ async def run(feature: str):
         log("Running plan agent...")
         await stream_query(
             query(
-                prompt=f"Generate plan.md for feature {feature}. Write it to specs/{feature}/plan.md.",
-                options=ClaudeAgentOptions(
+                prompt=f"Generate plan.md for feature {feature}. Write it to specs/{feature}/plan.md."
+                + NO_RECURSION_NOTICE,
+                options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                     agents={
                         "plan-agent": plan_agent_definition(constitution, spec, arch_principles)
                     },
-                    setting_sources=["project"],
                 ),
             )
         )
@@ -279,13 +280,13 @@ async def run(feature: str):
                     f"Revise plan.md for feature {feature}. "
                     f"Read {pending_file} for the full violation list. "
                     f"Write updated plan.md to specs/{feature}/plan.md."
-                ),
-                options=ClaudeAgentOptions(
+                )
+                + NO_RECURSION_NOTICE,
+                options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                     agents={
                         "plan-agent": plan_agent_definition(constitution, spec, arch_principles)
                     },
-                    setting_sources=["project"],
                 ),
             )
         )
@@ -306,15 +307,15 @@ async def run(feature: str):
             prompt=(
                 f"Validate plan.md for feature {feature}. "
                 f"Write result to specs/{feature}/ch-1-plan-critic-result-{iteration}.json."
-            ),
-            options=ClaudeAgentOptions(
+            )
+            + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "plan-critic": critic_agent_definition(
                         constitution, architecture, spec, plan, iteration, prev_violations
                     )
                 },
-                setting_sources=["project"],
             ),
         )
 
@@ -324,8 +325,9 @@ async def run(feature: str):
             prompt=(
                 f"Review plan.md for feature {feature} for architectural quality. "
                 f"Write result to specs/{feature}/ch-1-plan-architecture-review-result-{iteration}.json."
-            ),
-            options=ClaudeAgentOptions(
+            )
+            + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "architecture-review": arch_review_agent_definition(
@@ -338,7 +340,6 @@ async def run(feature: str):
                         arch_violations,
                     )
                 },
-                setting_sources=["project"],
             ),
         )
 
