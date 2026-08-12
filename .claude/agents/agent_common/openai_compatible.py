@@ -7,14 +7,36 @@ import json
 import os
 import time
 import urllib.request
+from pathlib import Path
 
 _SSE_DONE = "[DONE]"
+
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Populate os.environ from a KEY=VALUE .env file in the current working
+    directory, without overriding variables already set in the environment.
+    No-op if the file doesn't exist — .env is an optional convenience, not a
+    required config source (the shell/CI environment is the source of truth)."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
 
 
 def _build_request(prompt: str, config: dict) -> urllib.request.Request:
     """Build the /chat/completions streaming request. response_format is forced
     to json_object (rather than Ollama's format="json") since that's the field
     this wire protocol uses for the same "raw JSON out" guarantee."""
+    _load_dotenv()
     api_key_env = config["api_key_env"]
     api_key = os.environ.get(api_key_env)
     if not api_key:

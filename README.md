@@ -247,7 +247,12 @@ instead of `ollama_url`:
 `api_key_env` names an environment variable holding the API key — **the key
 itself must never be written into this file**, since `.specify/local-llm.json`
 is typically committed alongside the rest of the project's specs. Set the
-named variable in your shell/CI environment before running critics.
+named variable in your shell/CI environment before running critics, or drop
+it in a `.env` file (`KEY=value` per line) in your project root — it's loaded
+automatically before each request and never overrides a variable already set
+in the environment. `.env` is optional: if it doesn't exist, this is a no-op
+and the shell/CI environment is used as-is. `.env` should never be committed
+(it's gitignored by default) — only `.env.sample` with placeholder values.
 
 `provider` (like every other field above) can be set per-critic instead of
 top-level, so a project can mix backends — e.g. Ollama for most critics, a

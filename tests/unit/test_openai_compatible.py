@@ -1,7 +1,9 @@
 """Unit tests for agent_common/openai_compatible.py — network-mocked, no real calls."""
 
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,6 +13,13 @@ from agent_common import openai_compatible
 
 
 class TestBuildRequest(unittest.TestCase):
+    def setUp(self):
+        # Isolate from whatever .env file (if any) happens to sit in the cwd
+        # this test run — os.environ is the only source of truth here.
+        patcher = patch.object(openai_compatible, "_load_dotenv")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_missing_api_key_env_raises(self):
         config = {
             "model": "moonshotai/kimi-k2.6",
@@ -168,7 +177,51 @@ class TestStreamChatResponse(unittest.TestCase):
         self.assertEqual(done_calls, [(5, True)])
 
 
+class TestLoadDotenv(unittest.TestCase):
+    def test_missing_file_is_noop(self):
+        with patch.dict("os.environ", {}, clear=True):
+            openai_compatible._load_dotenv("/nonexistent/path/.env")
+            self.assertEqual(dict(os.environ), {})
+
+    def test_loads_values_into_environ(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("NVIDIA_API_KEY=nvapi-from-file\n")
+            with patch.dict("os.environ", {}, clear=True):
+                openai_compatible._load_dotenv(str(env_path))
+                self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-from-file")
+
+    def test_does_not_override_existing_env_var(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("NVIDIA_API_KEY=nvapi-from-file\n")
+            with patch.dict("os.environ", {"NVIDIA_API_KEY": "nvapi-from-shell"}, clear=True):
+                openai_compatible._load_dotenv(str(env_path))
+                self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-from-shell")
+
+    def test_skips_comments_and_blank_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("# comment\n\nNVIDIA_API_KEY=nvapi-secret\n")
+            with patch.dict("os.environ", {}, clear=True):
+                openai_compatible._load_dotenv(str(env_path))
+                self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-secret")
+
+    def test_strips_surrounding_quotes_from_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text('NVIDIA_API_KEY="nvapi-secret"\n')
+            with patch.dict("os.environ", {}, clear=True):
+                openai_compatible._load_dotenv(str(env_path))
+                self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-secret")
+
+
 class TestCallOpenAICompatibleLlm(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(openai_compatible, "_load_dotenv")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_builds_request_and_streams_response(self):
         config = {
             "model": "moonshotai/kimi-k2.6",
