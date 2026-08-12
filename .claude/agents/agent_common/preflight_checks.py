@@ -26,6 +26,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from agent_common.git import resolve_base_ref
+
 # --- Task format (§T5) -------------------------------------------------
 
 # A compliant task line is a markdown checkbox (`- [ ]`, `- [x]`, or `- [X]`)
@@ -284,8 +286,9 @@ def oversized_committed_files(
     before the pipeline stage is marked complete. Returns [] (not an error)
     if base_ref doesn't exist or this isn't a git repo — callers should
     treat an empty result as "nothing to flag", not "definitely clean"."""
+    resolved_ref = resolve_base_ref(base_ref)
     merge_base = subprocess.run(
-        ["git", "merge-base", base_ref, "HEAD"],
+        ["git", "merge-base", resolved_ref, "HEAD"],
         capture_output=True,
         text=True,
     )

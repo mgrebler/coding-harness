@@ -39,7 +39,7 @@ Set `SPEC_DIR` to `specs/$FEATURE/`.
 
 ### Step 2 — Identify changed test files
 
-Run: `git diff main...HEAD --name-only`
+Run `git fetch origin main --quiet` (ignore failure — offline/no remote), then `git diff origin/main...HEAD --name-only` if `origin/main` resolves, else `git diff main...HEAD --name-only`.
 
 Filter results to test files only, using the "Test file location" bullets under constitution §5 (Test-Driven Development) — locate by heading text if the number has drifted in this project's constitution.
 

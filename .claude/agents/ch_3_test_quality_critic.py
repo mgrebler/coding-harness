@@ -47,14 +47,16 @@ def build_test_quality_review_prompt(
     """
     if changed_files_section is None:
         review_process = (
-            "1. Run `git diff main...HEAD --name-only` to identify all changed files\n"
+            "1. Run `git fetch origin main --quiet` (ignore failure — offline/no remote), then "
+            "`git diff origin/main...HEAD --name-only` if `origin/main` resolves, else "
+            "`git diff main...HEAD --name-only`, to identify all changed files\n"
             "2. Filter to test files only: backend/tests/ and frontend/tests/\n"
             "3. Read each changed test file in full\n"
             "4. Do NOT read implementation files — none should exist yet\n"
             "5. Evaluate against every rule below"
         )
     else:
-        review_process = f"--- CHANGED TEST FILES (git diff main...HEAD, test paths only) ---\n{changed_files_section}"
+        review_process = f"--- CHANGED TEST FILES (changed files relative to base branch, test paths only) ---\n{changed_files_section}"
 
     tail = (
         "- status is FAIL if any blocking_issue exists with severity Critical or High (more than 2 High = FAIL)\n"
