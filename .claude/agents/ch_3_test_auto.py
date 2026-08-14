@@ -356,39 +356,52 @@ async def _run_test_agent_if_needed(
     plan: str,
     test_principles: str,
 ) -> str:
-    """Run the test-writing agent if any [TEST] task is still unchecked, then
-    return the current tasks.md content (re-read if the agent ran)."""
+    """Run the test-writing agent if any [TEST] task is still unchecked, retrying once
+    more if [TEST] tasks are still unchecked afterward. Returns the current tasks.md
+    content (re-read if the agent ran). Exits the process if [TEST] tasks remain
+    unchecked after both attempts, rather than proceeding into a critic loop that's
+    guaranteed to fail on missing work."""
     has_unchecked_tests = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
     if not has_unchecked_tests:
         log("All [TEST] tasks already checked off — skipping test agent.")
         return tasks
 
-    log("Running test agent...")
-    await stream_query(
-        query(
-            prompt=(
-                f"Write failing tests for all unchecked [TEST] tasks in specs/{feature}/tasks.md. "
-                f"No implementation code. Confirm each test fails for the expected reason. "
-                f"Save failing output to specs/{feature}/test-results/<TASKID>-red.txt. "
-                f"Mark each [TEST] task [x] in tasks.md after completing it."
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        log(f"Running test agent (attempt {attempt}/{max_attempts})...")
+        await stream_query(
+            query(
+                prompt=(
+                    f"Write failing tests for all unchecked [TEST] tasks in specs/{feature}/tasks.md. "
+                    f"No implementation code. Confirm each test fails for the expected reason. "
+                    f"Save failing output to specs/{feature}/test-results/<TASKID>-red.txt. "
+                    f"Mark each [TEST] task [x] in tasks.md after completing it."
+                )
+                + NO_RECURSION_NOTICE,
+                options=driving_agent_options(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "test-agent": test_agent_definition(
+                            constitution, spec, plan, tasks, test_principles, feature
+                        )
+                    },
+                ),
             )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "test-agent": test_agent_definition(
-                        constitution, spec, plan, tasks, test_principles, feature
-                    )
-                },
-            ),
         )
-    )
 
-    tasks = read_file(spec_dir / "tasks.md")
-    still_unchecked = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
-    if still_unchecked:
-        log("WARNING: test agent did not complete all [TEST] tasks. Proceeding to critic anyway.")
-    return tasks
+        tasks = read_file(spec_dir / "tasks.md")
+        still_unchecked = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
+        if not still_unchecked:
+            return tasks
+        log(f"WARNING: test agent left unchecked [TEST] tasks after attempt {attempt}/{max_attempts}.")
+
+    log(
+        "FAIL: test agent did not complete all [TEST] tasks after "
+        f"{max_attempts} attempts. Proceeding to the critic loop would only fail on "
+        "the missing work — aborting instead. Re-run this script to resume from the "
+        "remaining unchecked [TEST] tasks."
+    )
+    sys.exit(1)
 
 
 async def run(feature: str):

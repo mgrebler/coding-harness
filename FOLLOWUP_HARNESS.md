@@ -1,4 +1,14 @@
-# Harness Bug: Recursive self-invocation causes driving agents to hallucinate prompt injection
+# Harness bugs found while running `ch-plan-to-implement-auto` on `050-apply-detection`
+
+Several independent, unrelated harness bugs surfaced during this run. Documented
+separately below. Bug 2's writeup and fix live on a separate branch
+(`fix/critic-stale-main-base-ref`, PR #26) not yet merged to `main` as of this
+writing, so it isn't reproduced in this copy of the doc — see that branch
+directly if you need it in the meantime.
+
+---
+
+# Bug 1: Recursive self-invocation causes driving agents to hallucinate prompt injection
 
 **Discovered**: 2026-08-11, while running `ch-plan-to-implement-auto` on feature `050-apply-detection` in the `jobtracker` repo.
 **Affects**: `.claude/agents/ch_1_plan_auto.py`, `ch_2_tasks_auto.py`, `ch_3_test_auto.py`, `ch_4_implement_auto.py` (all four coding-harness stage orchestrators — same pattern in each).
@@ -204,3 +214,95 @@ No code change was made to the harness itself as part of this feature branch
 operational: renaming the polluted `ch-2-tasks-auto.log` out of the way
 before retrying `ch_2_tasks_auto.py` in isolation, which was sufficient to
 let the driving agent behave correctly and complete the stage.
+
+---
+
+# Bug 3: Implement-stage driving agent backgrounds its sole subagent and never awaits it — silently truncated implementation reaches CI
+
+**Discovered**: 2026-08-12, same run, at Stage 4 (`ch_4_implement_auto.py`).
+**Affects**: `.claude/agents/ch_4_implement_auto.py`'s driving-agent invocation (the `query()` call whose prompt delegates to the `impl-agent` subagent). Likely a risk anywhere a driving agent is allowed to call `Agent(..., run_in_background=True)` for what's meant to be its one, complete unit of delegated work.
+**Severity**: High — produces a half-implemented feature that then fails every downstream CI check (typecheck, lint, format, tests) with error messages that look like real implementation bugs, when the actual cause is that the implementer never got to run.
+
+## Summary
+
+`tasks.md` for this feature has 5 remaining `[IMPL]`/orientation/polish tasks
+after the test phase (T001, T003, T005, T007, T009, T010, T011). The Stage 4
+driving agent read `tasks.md`, plan.md, spec.md, constitution, and
+code-quality-principles.md, then delegated the actual implementation via:
+
+```
+→ Agent(description='Implement remaining apply-detection tasks',
+        subagent_type='impl-agent', run_in_background='True', prompt='...')
+```
+
+Using `run_in_background=True` on the *only* delegated unit of work is itself
+questionable — there was nothing else for the driving agent to usefully do
+in parallel. What it actually did with that freed-up turn was **duplicate
+part of the subagent's own investigation** (re-reading `content/index.ts`,
+`background/index.ts`, `Popup.tsx`, all four new test files, `manifest.json`,
+`jobReference.ts`) and then itself directly wrote a first pass of
+`extension/src/lib/applyDetection.ts` (T003 only, SEEK detection — no
+LinkedIn/T005 additions) — racing the very subagent it had just backgrounded,
+covering only a fraction of the delegated scope.
+
+The driving agent's turn then ended having produced only:
+
+```
+Background tasks still running after 600s; terminating.
+[done] I've kicked off the implementation work in the background...
+```
+
+i.e. the SDK/harness's background-task wait ceiling (documented as
+overridable via `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`) killed the still-running
+backgrounded `impl-agent` subagent after 600s because the driving agent's own
+turn concluded without ever joining/awaiting it. `ch_4_implement_auto.py`'s
+`stream_query()` call then simply returns once the top-level turn ends —
+it has no way to know a child background task was still mid-flight — and the
+script logs:
+
+```
+[ch-4-implement-auto] WARNING: implementation agent did not complete all tasks. Proceeding to critic anyway.
+[ch-4-implement-auto] Running quick CI checks (typecheck + unit tests) before critic loop...
+```
+
+and runs the full CI suite regardless. Only T003 was even partially done
+(SEEK-only, missing the T005 LinkedIn additions to the same file); T005, T007
+(background orchestration), T009 (`applyPromptCopy.ts` + `Popup.tsx`), T010,
+T011 were never attempted. CI then failed with a real, but misleading,
+`TS2307: Cannot find module '../../src/lib/applyPromptCopy'` — misleading in
+that it reads like an implementation bug, when the actual cause is "the
+implementer was killed before it got there."
+
+(This run also surfaced an unrelated, pre-existing local-environment issue in
+the same CI output — a stale generated Prisma client, out of sync with
+`prisma/schema.prisma`'s `StatusTransition`/`interactions` additions from
+`049-application-timeline` — fixed separately with `pnpm db:generate`. That
+one is not a harness bug, just noted here so it isn't confused with this
+one when reading the raw CI log.)
+
+## Suggested fix
+
+1. **Primary**: the Stage 4 driving-agent prompt should not use
+   `run_in_background=True` for its sole delegated `impl-agent` call, or if
+   it does, it must be explicitly instructed to poll/await it to actual
+   completion before ending its own turn — never to narrate "kicked off in
+   the background, I'll let you know" and stop. A backgrounded task the
+   parent never joins is equivalent to firing it and abandoning it once the
+   wait ceiling hits.
+2. **Defense in depth**: `ch_4_implement_auto.py` (and the equivalent point
+   in the other three stage scripts) should treat "implementation agent did
+   not complete all tasks" as a harder stop than a `WARNING` — e.g. skip
+   straight to a targeted re-run of the implement agent for just the
+   remaining unchecked tasks, rather than proceeding into a CI run that's
+   guaranteed to fail on missing files. The current behavior wastes a full
+   CI cycle's worth of (misleading) output on every truncation.
+3. Consider whether the driving agent needs `run_in_background` as an
+   available option on the `Agent` tool at all for these single-subagent
+   delegation points — it has no legitimate use here since there's no
+   second task to run concurrently with it.
+
+## Workaround used in this run
+
+None yet applied to the harness. Recovery plan: re-run `ch_4_implement_auto.py`
+directly (tasks.md's unchecked `[IMPL]` tasks drive its resume logic), and
+watch specifically for whether the same background/no-await pattern recurs.

@@ -402,38 +402,48 @@ async def _run_implementation_agent(
     tasks: str,
     quality_principles: str,
 ) -> str:
-    """Run the implementation agent if unchecked tasks remain. Returns the latest
-    tasks.md content."""
+    """Run the implementation agent if unchecked tasks remain, retrying once more if
+    tasks are still unchecked afterward. Returns the latest tasks.md content. Exits
+    the process if tasks remain unchecked after both attempts, rather than proceeding
+    into a CI run that's guaranteed to fail on missing work."""
     if "- [ ]" not in tasks:
         log("All tasks already checked off — skipping implementation agent.")
         return tasks
 
-    log("Running implementation agent...")
-    await stream_query(
-        query(
-            prompt=(
-                f"Implement all unchecked tasks in specs/{feature}/tasks.md. "
-                f"Follow TDD order: write failing tests first, commit, then implement, commit. "
-                f"Mark each task - [x] in tasks.md after completing it."
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        log(f"Running implementation agent (attempt {attempt}/{max_attempts})...")
+        await stream_query(
+            query(
+                prompt=(
+                    f"Implement all unchecked tasks in specs/{feature}/tasks.md. "
+                    f"Follow TDD order: write failing tests first, commit, then implement, commit. "
+                    f"Mark each task - [x] in tasks.md after completing it."
+                )
+                + NO_RECURSION_NOTICE,
+                options=driving_agent_options(
+                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
+                    agents={
+                        "impl-agent": impl_agent_definition(
+                            constitution, spec, plan, tasks, quality_principles
+                        )
+                    },
+                ),
             )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "impl-agent": impl_agent_definition(
-                        constitution, spec, plan, tasks, quality_principles
-                    )
-                },
-            ),
         )
-    )
 
-    tasks = read_file(spec_dir / "tasks.md")
-    if "- [ ]" in tasks:
-        log(
-            "WARNING: implementation agent did not complete all tasks. Proceeding to critic anyway."
-        )
-    return tasks
+        tasks = read_file(spec_dir / "tasks.md")
+        if "- [ ]" not in tasks:
+            return tasks
+        log(f"WARNING: implementation agent left unchecked tasks after attempt {attempt}/{max_attempts}.")
+
+    log(
+        "FAIL: implementation agent did not complete all tasks after "
+        f"{max_attempts} attempts. Proceeding to CI would only fail on the missing "
+        "work with misleading errors — aborting instead. Re-run this script to "
+        "resume from the remaining unchecked tasks."
+    )
+    sys.exit(1)
 
 
 async def _run_ci_fix_agent(
