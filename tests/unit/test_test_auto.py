@@ -80,17 +80,19 @@ class TestRunTestAgentIfNeeded(unittest.IsolatedAsyncioTestCase):
             spec_dir = Path(d)
             _write_tasks(spec_dir, "- [ ] T001 [TEST] todo\n")
 
-            with patch.object(test_auto, "stream_query", new=AsyncMock()):
-                with self.assertRaises(SystemExit) as cm:
-                    await test_auto._run_test_agent_if_needed(
-                        "some-feature",
-                        spec_dir,
-                        "- [ ] T001 [TEST] todo\n",
-                        "constitution",
-                        "spec",
-                        "plan",
-                        "principles",
-                    )
+            with (
+                patch.object(test_auto, "stream_query", new=AsyncMock()),
+                self.assertRaises(SystemExit) as cm,
+            ):
+                await test_auto._run_test_agent_if_needed(
+                    "some-feature",
+                    spec_dir,
+                    "- [ ] T001 [TEST] todo\n",
+                    "constitution",
+                    "spec",
+                    "plan",
+                    "principles",
+                )
 
             self.assertEqual(cm.exception.code, 1)
 

@@ -81,17 +81,19 @@ class TestRunImplementationAgent(unittest.IsolatedAsyncioTestCase):
             spec_dir = Path(d)
             _write_tasks(spec_dir, "- [ ] T001 [IMPL] todo\n")
 
-            with patch.object(impl_auto, "stream_query", new=AsyncMock()):
-                with self.assertRaises(SystemExit) as cm:
-                    await impl_auto._run_implementation_agent(
-                        "some-feature",
-                        spec_dir,
-                        "constitution",
-                        "spec",
-                        "plan",
-                        "- [ ] T001 [IMPL] todo\n",
-                        "quality",
-                    )
+            with (
+                patch.object(impl_auto, "stream_query", new=AsyncMock()),
+                self.assertRaises(SystemExit) as cm,
+            ):
+                await impl_auto._run_implementation_agent(
+                    "some-feature",
+                    spec_dir,
+                    "constitution",
+                    "spec",
+                    "plan",
+                    "- [ ] T001 [IMPL] todo\n",
+                    "quality",
+                )
 
             self.assertEqual(cm.exception.code, 1)
 

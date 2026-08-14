@@ -435,7 +435,9 @@ async def _run_implementation_agent(
         tasks = read_file(spec_dir / "tasks.md")
         if "- [ ]" not in tasks:
             return tasks
-        log(f"WARNING: implementation agent left unchecked tasks after attempt {attempt}/{max_attempts}.")
+        log(
+            f"WARNING: implementation agent left unchecked tasks after attempt {attempt}/{max_attempts}."
+        )
 
     log(
         "FAIL: implementation agent did not complete all tasks after "

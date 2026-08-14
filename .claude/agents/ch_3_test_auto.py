@@ -393,7 +393,9 @@ async def _run_test_agent_if_needed(
         still_unchecked = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
         if not still_unchecked:
             return tasks
-        log(f"WARNING: test agent left unchecked [TEST] tasks after attempt {attempt}/{max_attempts}.")
+        log(
+            f"WARNING: test agent left unchecked [TEST] tasks after attempt {attempt}/{max_attempts}."
+        )
 
     log(
         "FAIL: test agent did not complete all [TEST] tasks after "
