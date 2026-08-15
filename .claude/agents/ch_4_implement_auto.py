@@ -150,6 +150,11 @@ Key rules:
 - Respect task order; honour [P] markers (parallel tasks may be done in any order relative to each other)
 - Use only the approved stack and respect the layer-separation boundaries defined in the CONSTITUTION above — do not introduce a dependency, framework, or architectural pattern it doesn't cover
 - No new dependencies beyond what the constitution's approved stack allows
+- Any call whose result does not gate the primary operation's success/failure — a
+  best-effort side effect like a badge refresh, telemetry ping, or cache warm — must be
+  wrapped in its own try/catch that cannot propagate into or mask the primary operation's
+  result. A failure in a best-effort side effect must never be reported to the user as a
+  failure of the primary operation it accompanied.
 - After each task, run this project's typecheck command as declared in constitution §12 (CI Requirements)
 - The code will be evaluated by a Code Quality Review agent using the principles above — implement accordingly
 - Do not stop until all - [ ] tasks are marked - [x] in tasks.md
@@ -266,8 +271,18 @@ number referenced above/below may not match — locate the section by heading te
 Key rules:
 - Read the file at each violation's location before modifying it
 - Apply the minimum change that addresses the violation
+- If a violation genuinely requires a new or modified test to pin down a regression, you MAY
+  add one — this is a sanctioned exception (see constitution §18, "Regression tests during a
+  fix cycle") — but you MUST follow red-green discipline: write the test first, run it and
+  confirm it FAILS for the expected reason, save the failing output to
+  specs/*/test-results/<id>-red.txt (same convention as the test phase), THEN apply the code
+  fix and confirm the test goes green. State in the commit message that this is a sanctioned
+  regression-test-during-fix. Do not add a test without first recording its red state.
 - After all fixes, run this project's typecheck command as declared in constitution §12 (CI Requirements)
 - Run the relevant test suite to confirm nothing is broken
+- Before committing, re-check your diff against every item in the violations list above and
+  account for each one explicitly — do not stop after addressing only the newest or most
+  prominent finding
 - Commit fixed files: git add <files> && git commit -m "fix: address violations"
 - Do not stop until every violation in the list is addressed and committed
 """,

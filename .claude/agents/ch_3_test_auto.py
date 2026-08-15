@@ -125,6 +125,10 @@ Your sole function is to write failing tests for all unchecked [TEST] tasks in t
 
 For each [TEST] task (lines containing "[TEST]" and marked "- [ ]"):
 1. Read test-principles.md carefully — every test must conform to these principles
+1a. Enumerate every bullet under spec.md's Edge Cases section and every spec.md Acceptance
+    Scenario relevant to this task's behaviour. Note in the task's write-up (commit message
+    or a comment near the test) which of those this task's tests close — this gives the
+    critic a structural list to check coverage against instead of inferring gaps.
 2. Write the failing test file(s) for this behaviour only — NO implementation code
 3. Run the test suite targeting the new file to confirm it FAILS for the expected reason:
    - Acceptable failures: assertion failure, "not found" / "not implemented" error
@@ -160,6 +164,8 @@ section number referenced above/below may not match — locate the section by he
 
 Key rules:
 - Read test-principles.md fully before writing any test
+- Cover every spec.md Edge Case bullet and Acceptance Scenario relevant to the task at
+  hand, not just the happy path plus one error case
 - Run tests using the commands declared in the constitution's CI Requirements section (§12), targeting the new file
 - Use only the test libraries in the constitution's Stack Constraints section (§2) — no other test libraries
 - Test names must describe behaviour, not implementation details
