@@ -113,6 +113,15 @@ A task is not closed until all required tests exist, were written before the imp
 - [PROJECT: e.g. Frontend tests]: `[PROJECT: e.g. frontend/tests/]` mirroring the `src/` structure.
 - Test files are committed on the same branch as the feature code.
 
+### Non-deliverable tasks
+
+A task with no testable deliverable of its own — orientation, read-and-confirm,
+manual-verification, or a checkpoint that only asks a human to validate work already
+covered by other tasks — needs **no** `[TEST]`/`[IMPL]` tag at all. It is neither a
+violation for lacking one nor a violation for having one added later. Example: "T029
+Run quickstart.md validation" is non-deliverable; "T012 Implement POST /jobs endpoint"
+is not.
+
 ---
 
 ## 6. Task Atomicity
@@ -122,22 +131,38 @@ A task is not closed until all required tests exist, were written before the imp
 - Tasks that violate atomicity are rejected before implementation begins.
 - Parallel tasks are marked `[P]` in `tasks.md` and may be implemented concurrently only when they have no shared schema or contract dependency.
 
+### Pairing scope
+
+The default pairing is 1:1 — one `[TEST]` task paired with one `[IMPL]` task. A `[TEST]`
+task MAY instead name more than one `[IMPL]` task it covers, when a single e2e or
+integration test genuinely exercises multiple implementation units (documented N:1
+pairing). This must be stated explicitly in the `[TEST]` task's description (e.g. "covers
+T014, T015"); an `[IMPL]` task is only exempt from needing its own paired `[TEST]` task
+when such a linkage names it. An `[IMPL]` task with no `[TEST]` task anywhere in
+`tasks.md`, and not named by a documented N:1 pairing, is a violation.
+
 ---
 
 ## 7. Spec Gate
 
-No stage proceeds without the prior artifact passing human review.
+No stage proceeds without the prior artifact passing human review. A human explicitly
+invoking the next stage's command (e.g. `/speckit-plan`, `ch-1-plan-auto`,
+`ch-plan-to-implement-auto`) IS that review/approval for the prior artifact — it is not a
+separately-edited `Status:` field. The `Status:` field on spec.md/plan.md/tasks.md is
+informational (useful for a human skimming the file), not a gate a critic should enforce:
+do not flag a stage as blocked solely because a prior artifact's `Status:` field still
+reads `Draft`.
 
 ```
-spec.md       → human review → approved
-plan.md       → human review → approved
-tasks.md      → human review → approved
+spec.md       → human starts next stage → treated as reviewed
+plan.md       → human starts next stage → treated as reviewed
+tasks.md      → human starts next stage → treated as reviewed
 implementation → CI pass + human review → merged
 ```
 
-- `plan.md` is not started until `spec.md` is approved.
-- `tasks.md` is not started until `plan.md` is approved.
-- Code is not written until a specific task in an approved `tasks.md` is assigned to the implementation agent.
+- `plan.md` is not started until a human has initiated plan generation for a `spec.md` that exists.
+- `tasks.md` is not started until a human has initiated task generation for a `plan.md` that exists.
+- Code is not written until a specific task in `tasks.md` is assigned to the implementation agent.
 - The implementation agent acts on a task entry plus its referenced spec artifacts only. It does not traverse the full repo to infer intent.
 
 ---
@@ -302,6 +327,19 @@ When an agent encounters a bug — whether reported by the human, observed at ru
 **An agent that proposes or applies a fix before stating and confirming a diagnosis has violated this constitution.**
 
 This rule applies to all agents and all bug types: runtime defects, test failures, CI failures, and regressions. It does not apply to trivially obvious typos or compile errors where cause and fix are identical.
+
+### Regression tests during a fix cycle
+
+§5's "no new test files" rule applies to the implementation agent during the implement
+phase. It does not forbid a fix agent, acting on a critic or code-quality-review finding
+after implementation, from adding a regression test to pin down the bug being fixed — this
+is a sanctioned exception, not a violation, provided the fix agent follows the same
+red-green discipline as the test phase: write the test, run it and confirm it fails for the
+expected reason, save the failing output the same way the test phase does
+(`test-results/<id>-red.txt`), then apply the code fix and confirm the test goes green.
+State in the commit message that this is a sanctioned regression-test-during-fix. A fix
+agent that adds a test without first confirming and recording its red state has still
+violated this constitution.
 
 ---
 

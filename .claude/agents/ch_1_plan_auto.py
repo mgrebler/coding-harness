@@ -102,7 +102,7 @@ def plan_agent_definition(constitution: str, spec: str, arch_principles: str) ->
 
 Your sole function is to produce a complete and valid plan.md for the current feature.
 
-You must follow the structure defined in the plan template at .specify/templates/plan.md.
+You must follow the structure defined in the plan template at .specify/templates/plan-template.md.
 Read that template first, then produce plan.md.
 
 Inputs already loaded for you:
@@ -126,6 +126,11 @@ Key rules:
   framework, tool, or external service named anywhere in the plan and match each one
   against the constitution §2 stack table by exact name; anything not already listed
   there requires a proposed amendment in that section before the plan can pass.
+- Whenever you introduce or change an additive field, endpoint, or message handler —
+  whether this is the initial draft or a revision responding to critic violations —
+  re-scan contracts/ and update it to reflect that change. This applies on every pass, not
+  just the first draft: a revision that adds a field without updating contracts/ is
+  incomplete.
 - The plan will be evaluated by an Architecture Review agent using the principles above — design accordingly
 - Do not stop until plan.md is written to disk
 """,

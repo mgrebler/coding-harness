@@ -329,6 +329,8 @@ Do not:
 - infer correctness from coverage
 - approve based on quantity of tests
 - reward excessive mocking
+- accept a test whose assertions do not actually check the property named in its own title
+  (e.g. a test named for asserting a deletion that only checks an unrelated call happened)
 
 Missing business-rule coverage is itself a finding.
 

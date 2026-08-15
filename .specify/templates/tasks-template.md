@@ -20,6 +20,10 @@ description: "Task list template for feature implementation"
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
 - Include exact file paths in descriptions
 - [IMPL] tasks must reference their paired [TEST] task ID in the description
+- A task whose implementation touches a uniqueness, count, or last-item invariant (e.g.
+  "reject if a record with this key already exists", "block deleting the last X") must
+  state in its description that the guard check and the mutation run inside the same
+  transaction — check-then-act split across two round-trips is a race condition
 
 ## Path Conventions
 
