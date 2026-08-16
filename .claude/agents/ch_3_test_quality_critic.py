@@ -21,10 +21,9 @@ from pathlib import Path
 from agent_common.files import read_changed_files, read_optional, require_files
 from agent_common.git import get_changed_files
 from agent_common.ollama import run_local_critic_cli
+from agent_common.project_conventions import resolve_test_dirs
 
 RESULT_PREFIX = "ch-3-test-quality-review-result"
-
-TEST_DIRS = ("backend/tests/", "frontend/tests/")
 
 
 def build_test_quality_review_prompt(
@@ -50,7 +49,7 @@ def build_test_quality_review_prompt(
             "1. Run `git fetch origin main --quiet` (ignore failure — offline/no remote), then "
             "`git diff origin/main...HEAD --name-only` if `origin/main` resolves, else "
             "`git diff main...HEAD --name-only`, to identify all changed files\n"
-            "2. Filter to test files only: backend/tests/ and frontend/tests/\n"
+            "2. Filter to test files only, per the 'Test file location' bullets under constitution §5 (Test-Driven Development)\n"
             "3. Read each changed test file in full\n"
             "4. Do NOT read implementation files — none should exist yet\n"
             "5. Evaluate against every rule below"
@@ -160,7 +159,7 @@ def main():
         tasks = tasks_path.read_text(encoding="utf-8")
 
         changed_files = get_changed_files()
-        changed_test_files = read_changed_files(changed_files, TEST_DIRS)
+        changed_test_files = read_changed_files(changed_files, resolve_test_dirs())
 
         return build_test_quality_review_prompt(
             constitution,
