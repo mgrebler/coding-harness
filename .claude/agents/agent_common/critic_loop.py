@@ -88,6 +88,10 @@ class GateSpec(NamedTuple):
     critic_type: local-LLM critic_type key in .specify/local-llm.json, e.g. "plan"
     label: display label used in log lines and passed to run_gate, e.g. "plan critic"
     build_query: (iteration, prior_violations) -> the query(...) call to run via run_gate
+    build_reconcile_query: (iteration, raw_results) -> the query(...) call that
+        reconciles >1 critics' raw findings into the canonical result, when
+        critic_type resolves to more than one configured critic. None (the
+        default) for gates that will only ever have 0-or-1 critics configured.
     """
 
     result_prefix: str
@@ -95,6 +99,7 @@ class GateSpec(NamedTuple):
     critic_type: str
     label: str
     build_query: Callable[[int, list | None], object]
+    build_reconcile_query: Callable[[int, list[dict]], object] | None = None
 
 
 async def _run_gate_for_iteration(
@@ -132,6 +137,9 @@ async def _run_gate_for_iteration(
             iteration,
             gate.label,
             lambda: gate.build_query(iteration, prev_violations),
+            result_prefix=gate.result_prefix,
+            summary_style=summary_style,
+            build_reconcile_query=gate.build_reconcile_query,
         )
         if not path.exists():
             log(

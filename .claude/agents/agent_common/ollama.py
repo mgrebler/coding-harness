@@ -3,6 +3,7 @@ standalone critic-script CLI driver, and per-gate dispatch (local LLM, falling b
 to Claude) for the *-auto.py orchestrators."""
 
 import argparse
+import asyncio
 import contextlib
 import json
 import math
@@ -14,7 +15,7 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
-from agent_common import console, files, git, openai_compatible, resume_state
+from agent_common import console, critic_reconcile, files, git, openai_compatible, resume_state
 
 _FULL_GPU_OFFLOAD = 999  # sentinel > any real model's layer count; llama.cpp clamps to actual max
 _ALLOWED_URL_SCHEMES = ("http://", "https://")
@@ -53,25 +54,18 @@ def _resolve_provider_fields(provider: str, resolved: dict, raw: dict) -> dict:
     raise ValueError(f"local-llm.json: unknown provider {provider!r}")
 
 
-def load_local_llm_config(critic_type: str) -> dict | None:
+def _resolve_entry(raw: dict, critic_override: dict) -> dict | None:
     """
-    Read .specify/local-llm.json and resolve config for the given critic_type.
-    Merges the 'default' block with the per-critic override.
-    Returns a dict with 'provider', 'model', and either 'ollama_url' (provider
-    "ollama", the default) or 'base_url'/'api_key_env' (provider
-    "openai-compatible") if the critic is active, or None if disabled or not
-    configured.
-    """
-    config_path = Path(".specify/local-llm.json")
-    if not config_path.exists():
-        return None
-    try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+    Merge critic_override with raw['default'] and resolve the full per-critic
+    config surface (provider/model/transport fields/num_ctx/max_ctx/keep_alive/
+    num_gpu/num_predict/temperature). Returns None if disabled or model unset.
 
+    Shared by load_local_llm_config (critic_override = the single dict at
+    critics[critic_type]) and load_local_llm_configs (critic_override = one
+    element of a list at critics[critic_type]) — the merge/validation logic
+    is identical either way; only where the override dict comes from differs.
+    """
     default = raw.get("default", {})
-    critic_override = raw.get("critics", {}).get(critic_type, {})
     resolved = {**default, **critic_override}
 
     if not resolved.get("enabled") or not resolved.get("model", "").strip():
@@ -119,6 +113,102 @@ def load_local_llm_config(critic_type: str) -> dict | None:
     if temperature is not None:
         result["temperature"] = float(temperature)
     return result
+
+
+def load_local_llm_config(critic_type: str) -> dict | None:
+    """
+    Read .specify/local-llm.json and resolve config for the given critic_type.
+    Merges the 'default' block with the per-critic override.
+    Returns a dict with 'provider', 'model', and either 'ollama_url' (provider
+    "ollama", the default) or 'base_url'/'api_key_env' (provider
+    "openai-compatible") if the critic is active, or None if disabled, not
+    configured, or critics[critic_type] is list-shaped (multi-critic — use
+    load_local_llm_configs for that case).
+    """
+    config_path = Path(".specify/local-llm.json")
+    if not config_path.exists():
+        return None
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    critic_override = raw.get("critics", {}).get(critic_type, {})
+    if isinstance(critic_override, list):
+        return None
+    return _resolve_entry(raw, critic_override)
+
+
+def load_local_llm_configs(critic_type: str) -> list[dict]:
+    """
+    Resolve ALL critic configs configured for critic_type — the plural
+    counterpart to load_local_llm_config, powering multi-critic fan-out.
+
+    critics[critic_type] absent or a dict (today's single-critic shape):
+    delegates to load_local_llm_config for byte-identical resolution, so
+    every config shape that exists in production today produces exactly the
+    same output as before, just wrapped in a list. Returns [] if
+    disabled/unconfigured, else [{**single, "id": "default"}].
+
+    critics[critic_type] a list (multi-critic shape): resolves each element
+    through the same default/top-level merge _resolve_entry applies to the
+    dict case, keeping only entries that resolve (enabled + model set). Each
+    element requires a unique non-empty string "id" — raises ValueError
+    (checked before enabled-filtering, so a typo is caught immediately, not
+    mid-fanout) on a missing or duplicate id.
+    """
+    config_path = Path(".specify/local-llm.json")
+    if not config_path.exists():
+        return []
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    critic_entry = raw.get("critics", {}).get(critic_type, {})
+    if not isinstance(critic_entry, list):
+        single = load_local_llm_config(critic_type)
+        return [{**single, "id": "default"}] if single else []
+
+    resolved: list[dict] = []
+    seen_ids: set[str] = set()
+    for i, entry in enumerate(critic_entry):
+        critic_id = entry.get("id")
+        if not critic_id or not isinstance(critic_id, str):
+            raise ValueError(
+                f"local-llm.json: critics.{critic_type}[{i}] is missing a required 'id' string"
+            )
+        if critic_id in seen_ids:
+            raise ValueError(
+                f"local-llm.json: critics.{critic_type} has duplicate id {critic_id!r}"
+            )
+        seen_ids.add(critic_id)
+        one = _resolve_entry(raw, entry)
+        if one is not None:
+            resolved.append({**one, "id": critic_id})
+    return resolved
+
+
+def load_critic_execution_mode(critic_type: str) -> str:
+    """
+    Read the execution mode ("sequential" or "parallel") for a multi-critic
+    fan-out from top-level critic_execution[critic_type] in
+    .specify/local-llm.json. Defaults to "sequential" when absent, the
+    config file is missing, or unparseable — critics commonly share one
+    local Ollama GPU host, where different models mid-fanout would thrash
+    VRAM/keep_alive pinning, so sequential is the safe default. "parallel"
+    is opt-in per phase for critics that target independent endpoints (e.g.
+    one local Ollama + one openai-compatible API).
+    """
+    config_path = Path(".specify/local-llm.json")
+    if not config_path.exists():
+        return "sequential"
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return "sequential"
+    mode = raw.get("critic_execution", {}).get(critic_type, "sequential")
+    return mode if mode in ("sequential", "parallel") else "sequential"
 
 
 def _build_request(url: str, **kwargs) -> urllib.request.Request:
@@ -478,6 +568,46 @@ def strip_fences(text: str) -> str:
     return text.strip()
 
 
+def _resolve_cli_config(critic_type: str, critic_id: str | None) -> dict | None:
+    """Resolve the config a standalone critic-script CLI invocation should use:
+    a specific list entry when critic_id is given (multi-critic fan-out), else
+    the single-critic config — unchanged lookup from before multi-critic
+    support existed."""
+    if critic_id:
+        return next((c for c in load_local_llm_configs(critic_type) if c["id"] == critic_id), None)
+    return load_local_llm_config(critic_type)
+
+
+def _log_cli_result(
+    label: str, iteration: int, result: dict, result_path: Path, summary_style: str
+) -> None:
+    status = result.get("status", "FAIL")
+    if summary_style == "confidence":
+        confidence = result.get("confidence", 0)
+        blocking = len(result.get("blocking_issues", []))
+        if status == "PASS":
+            print(
+                f"[{label}] iteration {iteration} → PASS (confidence {confidence}/10) → {result_path}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[{label}] iteration {iteration} → FAIL ({blocking} blocking issue(s), confidence {confidence}/10) → {result_path}",
+                flush=True,
+            )
+    else:
+        violations = result.get("violations", [])
+        blocking = sum(1 for v in violations if v.get("severity") == "BLOCKING")
+        warnings = sum(1 for v in violations if v.get("severity") == "WARNING")
+        if status == "PASS":
+            print(f"[{label}] iteration {iteration} → PASS → {result_path}", flush=True)
+        else:
+            print(
+                f"[{label}] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}",
+                flush=True,
+            )
+
+
 def run_local_critic_cli(
     critic_type: str,
     result_prefix: str,
@@ -499,6 +629,14 @@ def run_local_critic_cli(
     result["confidence"] and len(result["blocking_issues"]) (architecture/quality
     reviews).
 
+    --critic-id (multi-critic fan-out only): when passed, resolves config via
+    load_local_llm_configs(critic_type) filtered to that id instead of
+    load_local_llm_config, and writes to {result_prefix}-raw/{critic_id}-
+    {iteration}.json instead of the canonical {result_prefix}-{iteration}.json.
+    Absent, this function behaves exactly as it did before multi-critic support
+    existed — orchestrator.run_gate only passes --critic-id when >1 critic is
+    configured for critic_type.
+
     Exit codes: 0 success, 1 runtime error, 2 local LLM not configured.
     """
     parser = argparse.ArgumentParser(description=f"{critic_type} using local LLM")
@@ -506,11 +644,18 @@ def run_local_critic_cli(
         "--feature", help="Feature folder name (derived from git branch if omitted)"
     )
     parser.add_argument("--iteration", type=int, help="Iteration number (auto-detected if omitted)")
+    parser.add_argument(
+        "--critic-id",
+        help="Run only the critic config with this id from a list-shaped "
+        "critics[critic_type] entry (multi-critic fan-out).",
+    )
     args = parser.parse_args()
 
-    config = load_local_llm_config(critic_type)
+    config = _resolve_cli_config(critic_type, args.critic_id)
     if config is None:
         sys.exit(2)
+
+    label = f"{critic_type}:{args.critic_id}" if args.critic_id else critic_type
 
     feature = args.feature or git.get_feature_from_branch(critic_type)
     spec_dir = Path(f"specs/{feature}")
@@ -523,22 +668,19 @@ def run_local_critic_cli(
     prompt = build_prompt(spec_dir, iteration)
 
     print(
-        f"[{critic_type}] Running iteration {iteration} via local LLM ({config['model']})...",
-        flush=True,
+        f"[{label}] Running iteration {iteration} via local LLM ({config['model']})...", flush=True
     )
 
     def _progress(token_count: int, elapsed_s: float, done: bool = False) -> None:
         if done:
-            print(f"[{critic_type}]   done — {token_count} tokens in {elapsed_s:.0f}s", flush=True)
+            print(f"[{label}]   done — {token_count} tokens in {elapsed_s:.0f}s", flush=True)
         else:
-            print(
-                f"[{critic_type}]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True
-            )
+            print(f"[{label}]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True)
 
     try:
         raw = _call_configured_llm(prompt, config, progress_fn=_progress)
     except Exception as e:
-        print(f"[{critic_type}] ERROR: local LLM call failed: {e}", flush=True)
+        print(f"[{label}] ERROR: local LLM call failed: {e}", flush=True)
         sys.exit(1)
 
     cleaned = strip_fences(raw)
@@ -546,51 +688,178 @@ def run_local_critic_cli(
     try:
         result = json.loads(cleaned)
     except json.JSONDecodeError as e:
-        print(f"[{critic_type}] ERROR: could not parse LLM response as JSON: {e}", flush=True)
-        print(f"[{critic_type}] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
+        print(f"[{label}] ERROR: could not parse LLM response as JSON: {e}", flush=True)
+        print(f"[{label}] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
         sys.exit(1)
 
     result["iteration"] = iteration
 
-    result_path = spec_dir / f"{result_prefix}-{iteration}.json"
+    result_path = (
+        spec_dir / f"{result_prefix}-raw" / f"{args.critic_id}-{iteration}.json"
+        if args.critic_id
+        else spec_dir / f"{result_prefix}-{iteration}.json"
+    )
     files.write_file(result_path, json.dumps(result, indent=2))
 
-    status = result.get("status", "FAIL")
-    if summary_style == "confidence":
-        confidence = result.get("confidence", 0)
-        blocking = len(result.get("blocking_issues", []))
-        if status == "PASS":
-            print(
-                f"[{critic_type}] iteration {iteration} → PASS (confidence {confidence}/10) → {result_path}",
-                flush=True,
-            )
-        else:
-            print(
-                f"[{critic_type}] iteration {iteration} → FAIL ({blocking} blocking issue(s), confidence {confidence}/10) → {result_path}",
-                flush=True,
-            )
-    else:
-        violations = result.get("violations", [])
-        blocking = sum(1 for v in violations if v.get("severity") == "BLOCKING")
-        warnings = sum(1 for v in violations if v.get("severity") == "WARNING")
-        if status == "PASS":
-            print(f"[{critic_type}] iteration {iteration} → PASS → {result_path}", flush=True)
-        else:
-            print(
-                f"[{critic_type}] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}",
-                flush=True,
-            )
+    _log_cli_result(label, iteration, result, result_path, summary_style)
 
 
-def _run_critic_subprocess(cmd: list) -> int:
+def _run_critic_subprocess(cmd: list, prefix: str = "") -> int:
     """
     Run a critic subprocess, streaming its output through sys.stdout in real time
     (so the *-auto.log file, teed by setup_log_file, shows critic progress — e.g.
     the "[ollama] thinking..." heartbeats — as it happens rather than only after
     the subprocess exits, which could otherwise be tens of minutes for a slow
     local model). Returns the process exit code.
+
+    prefix: see console.stream_subprocess — used only for parallel multi-critic
+    fan-out, where several subprocesses' output would otherwise interleave
+    unattributed.
     """
-    return console.stream_subprocess(cmd)
+    return console.stream_subprocess(cmd, prefix=prefix)
+
+
+def _run_one_critic(
+    log,
+    label: str,
+    script: Path,
+    feature: str,
+    iteration: int,
+    raw_dir: Path,
+    config: dict,
+    prefix: str = "",
+) -> dict:
+    """
+    Run a single critic (from a multi-critic fan-out) as a subprocess with
+    --critic-id, reusing its raw result file if one already exists for this
+    (critic_id, iteration) — the resume-idempotency check for the fan-out,
+    kept local to run_gate's multi-critic branch so resume_state.py needs no
+    changes. Returns {"id", "model", "result"} for build_reconcile_prompt.
+    """
+    raw_path = raw_dir / f"{config['id']}-{iteration}.json"
+    if raw_path.exists():
+        log(
+            f"  {label} critic '{config['id']}' result for iteration {iteration} "
+            f"already exists — reusing."
+        )
+    else:
+        log(f"  running {label} critic '{config['id']}' ({config['model']})...")
+        cmd = [
+            sys.executable,
+            str(script),
+            "--feature",
+            feature,
+            "--iteration",
+            str(iteration),
+            "--critic-id",
+            config["id"],
+        ]
+        returncode = _run_critic_subprocess(cmd, prefix=prefix)
+        if returncode != 0:
+            log(
+                f"ERROR: critic '{config['id']}' failed for {label} iteration {iteration}. Aborting."
+            )
+            sys.exit(1)
+        if not raw_path.exists():
+            log(f"ERROR: critic '{config['id']}' did not write {raw_path}. Aborting.")
+            sys.exit(1)
+    return {
+        "id": config["id"],
+        "model": config["model"],
+        "result": json.loads(raw_path.read_text(encoding="utf-8")),
+    }
+
+
+async def _gather_raw_critic_results(
+    log,
+    label: str,
+    script: Path,
+    feature: str,
+    iteration: int,
+    raw_dir: Path,
+    configs: list[dict],
+    mode: str,
+) -> list[dict]:
+    """Run every critic in configs (sequentially, or concurrently via
+    asyncio.to_thread when mode == 'parallel') and return their raw results."""
+    if mode == "parallel":
+        return await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    _run_one_critic,
+                    log,
+                    label,
+                    script,
+                    feature,
+                    iteration,
+                    raw_dir,
+                    config,
+                    f"[{config['id']}] ",
+                )
+                for config in configs
+            )
+        )
+    return [
+        _run_one_critic(log, label, script, feature, iteration, raw_dir, config)
+        for config in configs
+    ]
+
+
+async def _run_multi_critic_gate(
+    log,
+    critic_type: str,
+    script: Path,
+    feature: str,
+    iteration: int,
+    label: str,
+    configs: list[dict],
+    result_prefix: str | None,
+    summary_style: str,
+    build_reconcile_query: Callable[[int, list[dict]], object] | None,
+) -> None:
+    """The >1-configured-critics branch of run_gate: fan out to every critic,
+    then either synthesize a trivial PASS (all critics clean) or hand the
+    combined raw findings to build_reconcile_query for the main harness (a
+    Claude subagent, never a local LLM) to adjudicate into the canonical
+    result. Split out of run_gate to keep its cyclomatic complexity in check."""
+    if result_prefix is None:
+        log(
+            f"ERROR: {label} has {len(configs)} critics configured but run_gate was not "
+            f"given a result_prefix for multi-critic fan-out. Aborting."
+        )
+        sys.exit(1)
+
+    spec_dir = Path(f"specs/{feature}")
+    raw_dir = spec_dir / f"{result_prefix}-raw"
+    mode = load_critic_execution_mode(critic_type)
+    ids = ", ".join(f"{c['id']} ({c['model']})" for c in configs)
+    log(f"Using {len(configs)} local LLM critics for {label} ({mode}): {ids}...")
+
+    raw_results = await _gather_raw_critic_results(
+        log, label, script, feature, iteration, raw_dir, configs, mode
+    )
+
+    canonical_path = spec_dir / f"{result_prefix}-{iteration}.json"
+    if critic_reconcile.all_clean_pass(raw_results):
+        canonical = critic_reconcile.synthesize_trivial_pass(raw_results, iteration, summary_style)
+        files.write_file(canonical_path, json.dumps(canonical, indent=2))
+        log(
+            f"All {len(configs)} critics returned a clean PASS for {label} — skipping reconciliation."
+        )
+        return
+
+    if build_reconcile_query is None:
+        log(
+            f"ERROR: {label} has {len(configs)} critics configured but no reconciliation "
+            f"query builder wired up. Aborting."
+        )
+        sys.exit(1)
+
+    log(f"Critics reported findings for {label} — running reconciliation...")
+    await console.stream_query(build_reconcile_query(iteration, raw_results))
+    if not canonical_path.exists():
+        log(f"ERROR: reconciliation did not write {canonical_path}. Aborting.")
+        sys.exit(1)
 
 
 async def run_gate(
@@ -601,29 +870,60 @@ async def run_gate(
     iteration: int,
     label: str,
     claude_fallback: Callable,
+    result_prefix: str | None = None,
+    summary_style: str = "violations",
+    build_reconcile_query: Callable[[int, list[dict]], object] | None = None,
 ) -> None:
     """
-    Run one review gate for the *-auto.py orchestrators: try the local-LLM subprocess
-    first (if critic_type is configured), falling back to Claude when it isn't
-    configured (exit code 2) or absent. Aborts (sys.exit(1)) on any other subprocess
-    failure. The run_local_critic_cli counterpart for orchestrator gates, which — unlike
-    standalone critic scripts — have a Claude fallback.
+    Run one review gate for the *-auto.py orchestrators.
 
-    claude_fallback: zero-arg callable returning the async iterator of SDK messages,
-    e.g. `lambda: query(prompt=..., options=...)`. Only invoked on fallback.
+    - 0 configured critics: fall back to Claude (claude_fallback) — unchanged
+      from before multi-critic support existed.
+    - 1 configured critic: try its local-LLM subprocess, falling back to Claude
+      if it isn't configured (exit code 2). Aborts (sys.exit(1)) on any other
+      subprocess failure. Bit-for-bit the same code path as before multi-critic
+      support existed — this is what keeps single-critic behaviour unchanged.
+    - >1 configured critics: see _run_multi_critic_gate.
+
+    claude_fallback: zero-arg callable returning the async iterator of SDK
+    messages, e.g. `lambda: query(prompt=..., options=...)`. Only invoked when
+    zero critics resolve.
+
+    result_prefix/build_reconcile_query are only required when >1 critic can
+    resolve for critic_type — gates that will only ever have 0-or-1 critics can
+    omit them.
     """
-    llm_config = load_local_llm_config(critic_type)
-    if llm_config:
-        log(f"Using local LLM ({llm_config['model']}) for {label}...")
-        script = Path(__file__).parent.parent / script_name
+    configs = load_local_llm_configs(critic_type)
+    script = Path(__file__).parent.parent / script_name
+
+    if len(configs) == 1:
+        config = configs[0]
+        log(f"Using local LLM ({config['model']}) for {label}...")
         returncode = _run_critic_subprocess(
             [sys.executable, str(script), "--feature", feature, "--iteration", str(iteration)],
         )
         if returncode == 2:
-            llm_config = None  # not configured; fall through to Claude
+            configs = []  # not configured; fall through to Claude below
         elif returncode != 0:
             log(f"ERROR: local LLM {label} failed for iteration {iteration}. Aborting.")
             sys.exit(1)
+        else:
+            return
 
-    if not llm_config:
+    elif len(configs) > 1:
+        await _run_multi_critic_gate(
+            log,
+            critic_type,
+            script,
+            feature,
+            iteration,
+            label,
+            configs,
+            result_prefix,
+            summary_style,
+            build_reconcile_query,
+        )
+        return
+
+    if not configs:
         await console.stream_query(claude_fallback())

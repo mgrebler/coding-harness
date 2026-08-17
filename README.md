@@ -229,6 +229,76 @@ If both are set, `num_ctx` wins. If a prompt genuinely needs more context than
 failing — watch for that warning, since it means results may be degraded
 (truncated) rather than wrong outright.
 
+### Multiple critics per phase (multi-LLM review)
+
+Any `critics[phase]` entry can be a **list** of critic configs instead of a
+single object, so a phase can be reviewed by several independent models at
+once:
+
+```json
+{
+  "provider": "ollama",
+  "ollama_url": "http://host.docker.internal:11434",
+  "default": { "enabled": false, "model": "" },
+  "critics": {
+    "plan": [
+      { "id": "qwen",     "enabled": true, "model": "qwen3:30b-a3b" },
+      {
+        "id": "nvidia-llama",
+        "enabled": true,
+        "model": "meta/llama-3.1-70b-instruct",
+        "provider": "openai-compatible",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "api_key_env": "NVIDIA_API_KEY"
+      }
+    ],
+    "plan-architecture-review": { "enabled": true, "model": "qwen3:30b-a3b" }
+  },
+  "critic_execution": { "plan": "parallel" }
+}
+```
+
+Each list entry supports every field a single-critic config does (`enabled`,
+`model`, `provider`, `base_url`/`api_key_env`, `num_ctx`, `max_ctx`,
+`keep_alive`, `num_gpu`, `num_predict`, `temperature`), resolved through the
+same `default` → top-level fallback chain, and requires a unique `id` string
+(a missing or duplicate `id` fails fast at config-load time rather than
+mid-run). A list with only one entry enabled behaves identically to the
+single-object form — nothing special to configure.
+
+When more than one critic resolves for a phase, each independently reviews
+the same artifact against the same objective (an identical prompt — only the
+model differs), writing its raw, unverified findings to
+`specs/$FEATURE/{result-file-prefix}-raw/{id}-{iteration}.json`. Two outcomes:
+
+- **Every critic reports a clean PASS** — the harness synthesizes the
+  canonical PASS result directly. Nothing to adjudicate, no extra LLM call.
+- **Any critic reports something** — the harness runs a **reconciliation
+  pass**: a Claude subagent (never a local LLM — the harness's own judgment
+  is always final) reads every critic's raw findings alongside the artifact
+  and independently re-verifies each one. It rejects anything it can't
+  personally confirm, merges duplicates, and resolves disagreements itself —
+  a finding is never trusted just because one critic reported it, and never
+  discarded just because critics disagree about it. The reconciled result is
+  written to the normal canonical result file
+  (`specs/$FEATURE/{result-file-prefix}-{iteration}.json`), so everything
+  downstream (the fix/revision loop, resume behavior, escalation docs) works
+  exactly as it does for a single critic.
+
+`critic_execution` (top-level, keyed by phase name) controls whether a
+phase's critics run one after another (`"sequential"`, the default when the
+key is omitted) or concurrently (`"parallel"`). Sequential is the safer
+default when critics share one local Ollama GPU host — different models
+mid-fanout can thrash VRAM and `keep_alive` pinning against each other.
+`"parallel"` is worth setting for a phase whose critics target independent
+endpoints, e.g. one local Ollama model plus one hosted `openai-compatible`
+API, where there's no shared GPU to contend over.
+
+Multi-critic support applies to the automated `ch-N-*-auto` pipeline, where
+`.specify/local-llm.json` is consulted. The human-triggered `/ch-N-*-review`
+skills are a separate, single-shot Claude-only review path unrelated to this
+config and are unaffected either way.
+
 ### Using a hosted OpenAI-compatible API instead of Ollama
 
 Set `"provider": "openai-compatible"` and supply `base_url` and `api_key_env`
@@ -410,6 +480,7 @@ speckit/
 │   │   ├── test_resume_state.py
 │   │   ├── test_ollama.py
 │   │   ├── test_critic_loop.py
+│   │   ├── test_critic_reconcile.py
 │   │   └── test_prompt_builders.py
 │   └── evals/                  # Critic evals against fixture artifacts (requires Ollama)
 │       ├── fixtures/                       # Good and bad artifacts for the health-endpoint feature
