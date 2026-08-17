@@ -74,11 +74,16 @@ def setup_log_file(path: Path):
     sys.stderr = _Tee(sys.__stderr__, log_fh)  # type: ignore[assignment]
 
 
-def stream_subprocess(cmd: list[str]) -> int:
+def stream_subprocess(cmd: list[str], prefix: str = "") -> int:
     """
     Run *cmd* as a subprocess, streaming stdout+stderr line-by-line through
     the current sys.stdout (which may be a _Tee writing to both terminal and
     log file). Returns the process exit code.
+
+    prefix is prepended to each streamed line — used when multiple critic
+    subprocesses run concurrently (parallel multi-critic fan-out) so their
+    interleaved output stays attributable to a critic id, e.g. "[qwen] ".
+    Empty by default, which reproduces the original unprefixed output.
     """
     proc = subprocess.Popen(
         cmd,
@@ -89,7 +94,7 @@ def stream_subprocess(cmd: list[str]) -> int:
     if proc.stdout is None:
         raise RuntimeError("subprocess.Popen with stdout=PIPE did not provide a stdout stream")
     for line in proc.stdout:
-        print(line, end="", flush=True)
+        print(f"{prefix}{line}", end="", flush=True)
     proc.wait()
     return proc.returncode
 

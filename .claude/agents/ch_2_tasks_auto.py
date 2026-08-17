@@ -29,6 +29,7 @@ from pathlib import Path
 from ch_2_tasks_critic import build_tasks_critic_prompt
 from claude_agent_sdk import AgentDefinition, query
 
+from agent_common import critic_reconcile
 from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import (
     GateSpec,
@@ -154,6 +155,33 @@ def critic_agent_definition(
             iteration,
             violations_block=violations_block,
             output_instructions=output_instructions,
+        ),
+        tools=["Read", "Write", "Bash", "Glob", "Grep"],
+    )
+
+
+def tasks_reconcile_agent_definition(
+    constitution: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    iteration: int,
+    raw_results: list[dict],
+) -> AgentDefinition:
+    context_block = (
+        f"--- CONSTITUTION ---\n{constitution}\n\n"
+        f"--- SPEC ---\n{spec}\n\n"
+        f"--- PLAN ---\n{plan}\n\n"
+        f"--- TASKS (current) ---\n{tasks}"
+    )
+    output_instructions = (
+        f"- After producing JSON, write it to specs/$FEATURE/ch-2-tasks-critic-result-{iteration}.json using Bash\n"
+        f"- Print one line: [ch-2-tasks-critic-reconcile] iteration {iteration} → PASS or FAIL → path"
+    )
+    return AgentDefinition(
+        description="Reconciles findings from multiple independent tasks critics into one verified result.",
+        prompt=critic_reconcile.build_reconcile_prompt(
+            context_block, raw_results, iteration, "violations", output_instructions
         ),
         tools=["Read", "Write", "Bash", "Glob", "Grep"],
     )
@@ -317,6 +345,24 @@ async def run(feature: str):
             ),
         )
 
+    def build_reconcile_query(iteration: int, raw_results: list[dict]):
+        tasks = read_file(spec_dir / "tasks.md")
+        return query(
+            prompt=(
+                f"Reconcile the raw tasks-critic findings for feature {feature} into one "
+                f"verified result. Write result to specs/{feature}/ch-2-tasks-critic-result-{iteration}.json."
+            )
+            + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
+                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+                agents={
+                    "tasks-critic-reconcile": tasks_reconcile_agent_definition(
+                        constitution, spec, plan, tasks, iteration, raw_results
+                    )
+                },
+            ),
+        )
+
     # --- Step 2: Critic loop ---
     await run_single_gate_loop(
         log,
@@ -324,7 +370,12 @@ async def run(feature: str):
         feature,
         max_iterations,
         gate=GateSpec(
-            RESULT_PREFIX, "ch_2_tasks_critic.py", "tasks", "tasks critic", build_critic_query
+            RESULT_PREFIX,
+            "ch_2_tasks_critic.py",
+            "tasks",
+            "tasks critic",
+            build_critic_query,
+            build_reconcile_query,
         ),
         resume_state=(iteration, violations),
         skip_fix_agent=_skip_fix_agent,

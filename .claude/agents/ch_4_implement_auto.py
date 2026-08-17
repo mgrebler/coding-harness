@@ -40,6 +40,7 @@ from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
 from claude_agent_sdk import AgentDefinition, query
 
+from agent_common import critic_reconcile
 from agent_common.console import make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
 from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
@@ -318,6 +319,62 @@ def quality_review_agent_definition(
             iteration,
             violations_block=violations_block,
             output_instructions=output_instructions,
+        ),
+        tools=["Read", "Write", "Bash", "Glob", "Grep"],
+    )
+
+
+def critic_reconcile_agent_definition(
+    constitution: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    iteration: int,
+    raw_results: list[dict],
+) -> AgentDefinition:
+    context_block = (
+        f"--- CONSTITUTION ---\n{constitution}\n\n"
+        f"--- SPEC ---\n{spec}\n\n"
+        f"--- PLAN ---\n{plan}\n\n"
+        f"--- TASKS ---\n{tasks}"
+    )
+    output_instructions = (
+        f"- After producing JSON, write it to specs/$FEATURE/ch-4-implement-critic-result-{iteration}.json using Bash\n"
+        f"- Print one line: [ch-4-implement-critic-reconcile] iteration {iteration} → PASS or FAIL → path"
+    )
+    return AgentDefinition(
+        description="Reconciles findings from multiple independent implement critics into one verified result.",
+        prompt=critic_reconcile.build_reconcile_prompt(
+            context_block, raw_results, iteration, "violations", output_instructions
+        ),
+        tools=["Read", "Write", "Bash", "Glob", "Grep"],
+    )
+
+
+def quality_review_reconcile_agent_definition(
+    constitution: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    quality_principles: str,
+    iteration: int,
+    raw_results: list[dict],
+) -> AgentDefinition:
+    context_block = (
+        f"--- CONSTITUTION ---\n{constitution}\n\n"
+        f"--- SPEC ---\n{spec}\n\n"
+        f"--- PLAN ---\n{plan}\n\n"
+        f"--- TASKS ---\n{tasks}\n\n"
+        f"--- CODE QUALITY PRINCIPLES ---\n{quality_principles}"
+    )
+    output_instructions = (
+        f"- After producing JSON, write it to specs/$FEATURE/ch-4-implement-code-quality-review-result-{iteration}.json using Bash\n"
+        f"- Print one line: [ch-4-implement-code-quality-review-reconcile] iteration {iteration} → PASS or FAIL → path"
+    )
+    return AgentDefinition(
+        description="Reconciles findings from multiple independent code-quality-review critics into one verified result.",
+        prompt=critic_reconcile.build_reconcile_prompt(
+            context_block, raw_results, iteration, "confidence", output_instructions
         ),
         tools=["Read", "Write", "Bash", "Glob", "Grep"],
     )
@@ -689,6 +746,67 @@ def _build_quality_query(
     )
 
 
+def _build_reconcile_critic_query(
+    feature: str,
+    spec_dir: Path,
+    constitution: str,
+    spec: str,
+    plan: str,
+    iteration: int,
+    raw_results: list[dict],
+):
+    tasks_content = read_file(spec_dir / "tasks.md")
+    return query(
+        prompt=(
+            f"Reconcile the raw implement-critic findings for feature {feature} into one "
+            f"verified result. Write result to specs/{feature}/ch-4-implement-critic-result-{iteration}.json."
+        )
+        + NO_RECURSION_NOTICE,
+        options=driving_agent_options(
+            allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+            agents={
+                "implement-critic-reconcile": critic_reconcile_agent_definition(
+                    constitution, spec, plan, tasks_content, iteration, raw_results
+                )
+            },
+        ),
+    )
+
+
+def _build_reconcile_quality_query(
+    feature: str,
+    spec_dir: Path,
+    constitution: str,
+    spec: str,
+    plan: str,
+    quality_principles: str,
+    iteration: int,
+    raw_results: list[dict],
+):
+    tasks_content = read_file(spec_dir / "tasks.md")
+    return query(
+        prompt=(
+            f"Reconcile the raw code-quality-review findings for feature {feature} into one "
+            f"verified result. Write result to specs/{feature}/ch-4-implement-code-quality-review-result-{iteration}.json."
+        )
+        + NO_RECURSION_NOTICE,
+        options=driving_agent_options(
+            allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
+            agents={
+                "quality-review-reconcile": quality_review_reconcile_agent_definition(
+                    constitution,
+                    spec,
+                    plan,
+                    tasks_content,
+                    quality_principles,
+                    iteration,
+                    raw_results,
+                )
+            },
+        ),
+    )
+
+
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -749,6 +867,9 @@ async def run(feature: str):
             "implement",
             "implement critic",
             functools.partial(_build_critic_query, feature, spec_dir, constitution, spec, plan),
+            functools.partial(
+                _build_reconcile_critic_query, feature, spec_dir, constitution, spec, plan
+            ),
         ),
         gate2=GateSpec(
             QUALITY_RESULT_PREFIX,
@@ -757,6 +878,15 @@ async def run(feature: str):
             "code quality review",
             functools.partial(
                 _build_quality_query,
+                feature,
+                spec_dir,
+                constitution,
+                spec,
+                plan,
+                quality_principles,
+            ),
+            functools.partial(
+                _build_reconcile_quality_query,
                 feature,
                 spec_dir,
                 constitution,

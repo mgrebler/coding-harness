@@ -137,7 +137,7 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             return "query-object"
 
         async def fake_run_gate(
-            log, critic_type, script_name, feature, iteration, label, claude_fallback
+            log, critic_type, script_name, feature, iteration, label, claude_fallback, **kwargs
         ):
             status, violations = results[iteration]
             _write_result(
@@ -306,7 +306,7 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
             return "gate2-query"
 
         async def fake_run_gate(
-            log, critic_type, script_name, feature, iteration, label, claude_fallback
+            log, critic_type, script_name, feature, iteration, label, claude_fallback, **kwargs
         ):
             if critic_type == "plan":
                 status, violations = gate1_results[iteration]
