@@ -169,6 +169,18 @@ def task_format_violations(tasks: str) -> list[str]:
     return violations
 
 
+# --- Task completion -----------------------------------------------------
+
+
+def unchecked_task_lines(tasks: str, tag: str | None = None) -> list[str]:
+    """Return every unchecked task line (`- [ ]`) in tasks.md, optionally
+    filtered to lines also containing `tag` (e.g. "[TEST]"). Centralizes the
+    "- [ ]" substring scan that ch_3_test_auto.py and ch_4_implement_auto.py
+    each used independently to detect outstanding work, so preflight checks
+    and post-agent verification can't drift out of sync with each other."""
+    return [line for line in tasks.splitlines() if "- [ ]" in line and (tag is None or tag in line)]
+
+
 # --- Red-state artifact validity (§TQ2) ---------------------------------
 
 # Signatures that mean the test run never reached a real assertion — the

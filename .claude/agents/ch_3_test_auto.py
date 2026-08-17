@@ -55,7 +55,11 @@ from agent_common.critic_loop import (
 from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
 from agent_common.files import read_file, require_spec_files
 from agent_common.followup import record_from_result_file, record_non_blocking_concerns
-from agent_common.preflight_checks import oversized_committed_files, validate_red_state_artifacts
+from agent_common.preflight_checks import (
+    oversized_committed_files,
+    unchecked_task_lines,
+    validate_red_state_artifacts,
+)
 from agent_common.resume_state import (
     extend_iterations_if_reviewed,
     find_passing_iteration,
@@ -78,11 +82,7 @@ def preflight(spec_dir: Path, feature: str):
     require_spec_files(log, spec_dir, "spec.md", "plan.md", "tasks.md")
 
     tasks_content = (spec_dir / "tasks.md").read_text(encoding="utf-8")
-    test_tasks_done = all(
-        "[x]" in line or "[X]" in line
-        for line in tasks_content.splitlines()
-        if "[TEST]" in line and ("- [ ]" in line or "- [x]" in line or "- [X]" in line)
-    )
+    test_tasks_done = not unchecked_task_lines(tasks_content, tag="[TEST]")
     has_test_tasks = any("[TEST]" in line for line in tasks_content.splitlines())
 
     if not has_test_tasks:
@@ -499,7 +499,7 @@ async def _run_test_agent_if_needed(
     content (re-read if the agent ran). Exits the process if [TEST] tasks remain
     unchecked after both attempts, rather than proceeding into a critic loop that's
     guaranteed to fail on missing work."""
-    has_unchecked_tests = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
+    has_unchecked_tests = bool(unchecked_task_lines(tasks, tag="[TEST]"))
     if not has_unchecked_tests:
         log("All [TEST] tasks already checked off — skipping test agent.")
         return tasks
@@ -528,7 +528,7 @@ async def _run_test_agent_if_needed(
         )
 
         tasks = read_file(spec_dir / "tasks.md")
-        still_unchecked = any("- [ ]" in line and "[TEST]" in line for line in tasks.splitlines())
+        still_unchecked = bool(unchecked_task_lines(tasks, tag="[TEST]"))
         if not still_unchecked:
             return tasks
         log(

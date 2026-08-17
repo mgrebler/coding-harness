@@ -46,7 +46,7 @@ from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_ga
 from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
 from agent_common.files import read_file, require_spec_files
 from agent_common.followup import record_from_result_file, record_non_blocking_concerns
-from agent_common.preflight_checks import oversized_committed_files
+from agent_common.preflight_checks import oversized_committed_files, unchecked_task_lines
 from agent_common.project_conventions import is_slow_check, resolve_ci_commands
 from agent_common.resume_state import (
     extend_iterations_if_reviewed,
@@ -83,7 +83,7 @@ def preflight(spec_dir: Path, feature: str):
         sys.exit(1)
 
     tasks_content = (spec_dir / "tasks.md").read_text(encoding="utf-8")
-    all_done = "- [ ]" not in tasks_content
+    all_done = not unchecked_task_lines(tasks_content)
     existing_results = list(spec_dir.glob(f"{CRITIC_RESULT_PREFIX}-*.json"))
 
     if all_done and not existing_results:
@@ -478,7 +478,7 @@ async def _run_implementation_agent(
     tasks are still unchecked afterward. Returns the latest tasks.md content. Exits
     the process if tasks remain unchecked after both attempts, rather than proceeding
     into a CI run that's guaranteed to fail on missing work."""
-    if "- [ ]" not in tasks:
+    if not unchecked_task_lines(tasks):
         log("All tasks already checked off — skipping implementation agent.")
         return tasks
 
@@ -505,7 +505,7 @@ async def _run_implementation_agent(
         )
 
         tasks = read_file(spec_dir / "tasks.md")
-        if "- [ ]" not in tasks:
+        if not unchecked_task_lines(tasks):
             return tasks
         log(
             f"WARNING: implementation agent left unchecked tasks after attempt {attempt}/{max_attempts}."
