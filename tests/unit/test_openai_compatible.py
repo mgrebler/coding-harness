@@ -267,5 +267,176 @@ class TestCallOpenAICompatibleLlm(unittest.TestCase):
         self.assertEqual(result, "Hi")
 
 
+class TestToOpenaiWireMessages(unittest.TestCase):
+    def test_system_and_user_pass_through(self):
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+        wire = openai_compatible._to_openai_wire_messages(messages)
+        self.assertEqual(
+            wire, [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+        )
+
+    def test_assistant_tool_calls_include_id_and_json_string_arguments(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "name": "Read", "arguments": {"file_path": "a.md"}}
+                ],
+            }
+        ]
+        wire = openai_compatible._to_openai_wire_messages(messages)
+        self.assertEqual(
+            wire,
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "Read",
+                                "arguments": '{"file_path": "a.md"}',
+                            },
+                        }
+                    ],
+                }
+            ],
+        )
+
+    def test_tool_result_carries_tool_call_id(self):
+        messages = [{"role": "tool", "tool_call_id": "call_1", "name": "Read", "content": "result"}]
+        wire = openai_compatible._to_openai_wire_messages(messages)
+        self.assertEqual(wire, [{"role": "tool", "tool_call_id": "call_1", "content": "result"}])
+
+
+class TestParseOpenaiChatMessage(unittest.TestCase):
+    def test_content_only_no_tool_calls(self):
+        result = openai_compatible._parse_openai_chat_message({"content": "done"})
+        self.assertEqual(result, {"content": "done", "tool_calls": []})
+
+    def test_valid_tool_call_parsed(self):
+        message = {
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {"name": "Write", "arguments": '{"file_path": "a.md"}'},
+                }
+            ],
+        }
+        result = openai_compatible._parse_openai_chat_message(message)
+        self.assertEqual(
+            result["tool_calls"],
+            [{"id": "call_1", "name": "Write", "arguments": {"file_path": "a.md"}}],
+        )
+
+    def test_malformed_json_arguments_resolves_to_empty_dict_not_raise(self):
+        message = {
+            "content": None,
+            "tool_calls": [
+                {"id": "call_1", "function": {"name": "Write", "arguments": "{not json"}}
+            ],
+        }
+        result = openai_compatible._parse_openai_chat_message(message)
+        self.assertEqual(result["tool_calls"], [{"id": "call_1", "name": "Write", "arguments": {}}])
+
+    def test_non_object_json_arguments_resolves_to_empty_dict(self):
+        message = {
+            "content": None,
+            "tool_calls": [{"id": "call_1", "function": {"name": "Write", "arguments": "[1, 2]"}}],
+        }
+        result = openai_compatible._parse_openai_chat_message(message)
+        self.assertEqual(result["tool_calls"], [{"id": "call_1", "name": "Write", "arguments": {}}])
+
+
+class TestBuildTurnRequest(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(openai_compatible, "_load_dotenv")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_never_forces_response_format(self):
+        config = {
+            "model": "moonshotai/kimi-k2.6",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key_env": "NVIDIA_API_KEY",
+        }
+        with patch.dict("os.environ", {"NVIDIA_API_KEY": "nvapi-secret"}, clear=True):
+            req = openai_compatible._build_turn_request(
+                [{"role": "user", "content": "hi"}], config, []
+            )
+
+        body = json.loads(req.data)
+        self.assertNotIn("response_format", body)
+        self.assertFalse(body["stream"])
+
+    def test_tools_included_in_body(self):
+        config = {
+            "model": "moonshotai/kimi-k2.6",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key_env": "NVIDIA_API_KEY",
+        }
+        tools = [{"type": "function", "function": {"name": "Read"}}]
+        with patch.dict("os.environ", {"NVIDIA_API_KEY": "nvapi-secret"}, clear=True):
+            req = openai_compatible._build_turn_request(
+                [{"role": "user", "content": "hi"}], config, tools
+            )
+
+        body = json.loads(req.data)
+        self.assertEqual(body["tools"], tools)
+
+
+class TestCallOpenaiCompatibleTurn(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(openai_compatible, "_load_dotenv")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_returns_canonical_turn_shape(self):
+        config = {
+            "model": "moonshotai/kimi-k2.6",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key_env": "NVIDIA_API_KEY",
+        }
+        response_body = {"choices": [{"message": {"content": "hello", "tool_calls": []}}]}
+        fake_resp = MagicMock()
+        fake_resp.__enter__.return_value.read.return_value = json.dumps(response_body).encode(
+            "utf-8"
+        )
+
+        with (
+            patch.dict("os.environ", {"NVIDIA_API_KEY": "nvapi-secret"}, clear=True),
+            patch.object(openai_compatible.urllib.request, "urlopen", return_value=fake_resp),
+        ):
+            result = openai_compatible.call_openai_compatible_turn(
+                [{"role": "user", "content": "hi"}], config, []
+            )
+
+        self.assertEqual(result["content"], "hello")
+        self.assertEqual(result["tool_calls"], [])
+
+    def test_http_error_raises_runtime_error(self):
+        config = {
+            "model": "moonshotai/kimi-k2.6",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key_env": "NVIDIA_API_KEY",
+        }
+        error = urllib.error.HTTPError("url", 500, "Internal Server Error", {}, io.BytesIO(b"boom"))
+
+        with (
+            patch.dict("os.environ", {"NVIDIA_API_KEY": "nvapi-secret"}, clear=True),
+            patch.object(openai_compatible.urllib.request, "urlopen", side_effect=error),
+            self.assertRaises(RuntimeError) as ctx,
+        ):
+            openai_compatible.call_openai_compatible_turn(
+                [{"role": "user", "content": "hi"}], config, []
+            )
+
+        self.assertIn("500", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

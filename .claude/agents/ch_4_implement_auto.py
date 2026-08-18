@@ -40,8 +40,8 @@ from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
 from claude_agent_sdk import AgentDefinition, query
 
-from agent_common import critic_reconcile
-from agent_common.console import make_logger, setup_log_file, stream_query
+from agent_common import critic_reconcile, local_agent_loop
+from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
 from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
 from agent_common.files import read_file, require_spec_files
@@ -485,23 +485,24 @@ async def _run_implementation_agent(
     max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         log(f"Running implementation agent (attempt {attempt}/{max_attempts})...")
-        await stream_query(
-            query(
-                prompt=(
-                    f"Implement all unchecked tasks in specs/{feature}/tasks.md. "
-                    f"Follow TDD order: write failing tests first, commit, then implement, commit. "
-                    f"Mark each task - [x] in tasks.md after completing it."
-                )
-                + NO_RECURSION_NOTICE,
+        impl_agent = impl_agent_definition(constitution, spec, plan, tasks, quality_principles)
+        user_prompt = (
+            f"Implement all unchecked tasks in specs/{feature}/tasks.md. "
+            f"Follow TDD order: write failing tests first, commit, then implement, commit. "
+            f"Mark each task - [x] in tasks.md after completing it."
+        )
+        await local_agent_loop.run_generation(
+            log,
+            "implement",
+            claude_fallback=lambda user_prompt=user_prompt, impl_agent=impl_agent: query(
+                prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "impl-agent": impl_agent_definition(
-                            constitution, spec, plan, tasks, quality_principles
-                        )
-                    },
+                    agents={"impl-agent": impl_agent},
                 ),
-            )
+            ),
+            system_prompt=impl_agent.prompt,
+            user_prompt=user_prompt,
         )
 
         tasks = read_file(spec_dir / "tasks.md")
@@ -524,19 +525,20 @@ async def _run_ci_fix_agent(
     feature: str, constitution: str, spec: str, plan: str, tasks: str, failure_summary: str
 ) -> None:
     """Run the CI fix agent once for the given failure summary."""
-    await stream_query(
-        query(
-            prompt=f"Fix CI failures for feature {feature}. Failures:\n{failure_summary}"
-            + NO_RECURSION_NOTICE,
+    ci_fix_agent = ci_fix_agent_definition(constitution, spec, plan, tasks, failure_summary)
+    user_prompt = f"Fix CI failures for feature {feature}. Failures:\n{failure_summary}"
+    await local_agent_loop.run_generation(
+        log,
+        "implement",
+        claude_fallback=lambda: query(
+            prompt=user_prompt + NO_RECURSION_NOTICE,
             options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "ci-fix-agent": ci_fix_agent_definition(
-                        constitution, spec, plan, tasks, failure_summary
-                    )
-                },
+                agents={"ci-fix-agent": ci_fix_agent},
             ),
-        )
+        ),
+        system_prompt=ci_fix_agent.prompt,
+        user_prompt=user_prompt,
     )
 
 
@@ -624,22 +626,22 @@ async def _run_revision(
     log(
         f"Running fix agent for {pending_label} violations from iteration {pending_iter} ({len(pending_violations)} issue(s))..."
     )
-    await stream_query(
-        query(
-            prompt=(
-                f"Fix violations for feature {feature}. "
-                f"Violations: {json.dumps(pending_violations)}"
-            )
-            + NO_RECURSION_NOTICE,
+    fix_agent = fix_agent_definition(constitution, spec, plan, tasks_content, pending_violations)
+    user_prompt = (
+        f"Fix violations for feature {feature}. Violations: {json.dumps(pending_violations)}"
+    )
+    await local_agent_loop.run_generation(
+        log,
+        "implement",
+        claude_fallback=lambda: query(
+            prompt=user_prompt + NO_RECURSION_NOTICE,
             options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "fix-agent": fix_agent_definition(
-                        constitution, spec, plan, tasks_content, pending_violations
-                    )
-                },
+                agents={"fix-agent": fix_agent},
             ),
-        )
+        ),
+        system_prompt=fix_agent.prompt,
+        user_prompt=user_prompt,
     )
 
 

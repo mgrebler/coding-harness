@@ -87,7 +87,7 @@ Tasks are split into `[TEST]` and `[IMPL]` pairs. The test phase writes only fai
 
 ### Local LLM Support
 
-Critic passes can run against a local [Ollama](https://ollama.com) instance instead of Claude, configured via `.specify/local-llm.json` in the target project root. See README.md § Local LLM Support for the full config schema and critic key naming. Tuning notes for the Ollama-specific fields (not covered in README):
+Critic passes, and independently the plan/tasks/test/implement generation stages themselves, can run against a local [Ollama](https://ollama.com) instance instead of Claude, configured via `.specify/local-llm.json` in the target project root. Critics are pure prompt-in/JSON-out (`agent_common/ollama.py`/`agent_common/openai_compatible.py`); generation needs real Read/Write/Edit/Bash/Glob/Grep tool access to author files and run commands, so it's driven by a separate from-scratch tool-calling loop (`agent_common/local_agent_loop.py` + `agent_common/local_tools.py`) rather than the critic transport, configured via a sibling top-level `generation` object (not nested under `critics`). See README.md § Local LLM Support for the full config schema and critic/generation key naming. Tuning notes for the Ollama-specific fields (not covered in README):
 
 `num_ctx` caps the Ollama KV-cache context window. Without it, Ollama uses the model's default (often 32k–128k), which can overflow VRAM and spill to system RAM, making inference very slow. `16384` is a good default for an 8 GB GPU: critic prompts fit comfortably and the KV cache stays in VRAM. Tune down if your GPU is smaller, or up if your prompts are very large.
 
