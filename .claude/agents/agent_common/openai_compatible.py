@@ -5,6 +5,7 @@ for drop-in dispatch from run_local_critic_cli based on config["provider"]."""
 
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -12,12 +13,55 @@ from pathlib import Path
 
 _SSE_DONE = "[DONE]"
 
+# Transient failures worth retrying: rate limits and upstream server errors.
+# Everything else (401/403/404/410/etc) is permanent — retrying a dead model
+# or bad auth just wastes time, so those raise immediately.
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+_MAX_RETRIES = 5
+_BASE_DELAY_S = 2.0
+_MAX_DELAY_S = 60.0
+
+
+def _retry_delay_s(attempt: int, retry_after: str | None) -> float:
+    """Seconds to wait before the next attempt. Honors a numeric Retry-After
+    header when present, otherwise exponential backoff capped at _MAX_DELAY_S."""
+    if retry_after:
+        try:
+            return min(float(retry_after), _MAX_DELAY_S)
+        except ValueError:
+            pass
+    return min(_BASE_DELAY_S * (2**attempt), _MAX_DELAY_S)
+
+
+def _urlopen_with_retry(req: urllib.request.Request, timeout: int = 300):
+    """urlopen with retry/backoff on transient HTTP errors (429, 5xx)."""
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)  # noqa: S310 — see _build_request
+        except urllib.error.HTTPError as e:
+            if e.code not in _RETRYABLE_STATUS or attempt == _MAX_RETRIES:
+                raise
+            delay = _retry_delay_s(attempt, e.headers.get("Retry-After"))
+            print(
+                f"[openai-compatible] HTTP {e.code} {e.reason} — retrying in "
+                f"{delay:.0f}s (attempt {attempt + 1}/{_MAX_RETRIES})",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+    raise RuntimeError("unreachable: retry loop exited without returning or raising")
+
 
 def _load_dotenv(path: str = ".env") -> None:
     """Populate os.environ from a KEY=VALUE .env file in the current working
-    directory, without overriding variables already set in the environment.
-    No-op if the file doesn't exist — .env is an optional convenience, not a
-    required config source (the shell/CI environment is the source of truth)."""
+    directory, without overriding a variable already set to a non-empty
+    value in the environment. No-op if the file doesn't exist — .env is an
+    optional convenience, not a required config source (the shell/CI
+    environment is the source of truth). An empty-string existing value
+    (e.g. a devcontainer/docker-compose `environment:` block that declares
+    the var as a host pass-through but leaves it blank when unset on the
+    host) is treated as unset rather than as a real override — plain
+    os.environ.setdefault would otherwise silently keep it blank and ignore
+    a real key present in .env."""
     try:
         lines = Path(path).read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
@@ -29,8 +73,8 @@ def _load_dotenv(path: str = ".env") -> None:
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key:
-            os.environ.setdefault(key, value)
+        if key and not os.environ.get(key):
+            os.environ[key] = value
 
 
 def _build_request(prompt: str, config: dict) -> urllib.request.Request:
@@ -82,7 +126,7 @@ def _stream_chat_response(
     start = time.monotonic()
 
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310
+        with _urlopen_with_retry(req, timeout=300) as resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8").strip()
                 if not line or not line.startswith("data:"):
@@ -243,7 +287,7 @@ def call_openai_compatible_turn(messages: list[dict], config: dict, tools: list[
     """
     req = _build_turn_request(_to_openai_wire_messages(messages), config, tools)
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310 — see _build_request
+        with _urlopen_with_retry(req, timeout=300) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
