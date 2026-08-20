@@ -1247,5 +1247,250 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(result_path.read_text())["status"], "PASS")
 
 
+class TestResolveGenerationEntry(unittest.TestCase):
+    def test_disabled_returns_none(self):
+        raw = {"default": {"enabled": False, "model": ""}}
+        self.assertIsNone(ollama._resolve_generation_entry(raw, {}))
+
+    def test_enabled_returns_config_with_default_max_turns(self):
+        raw = {"ollama_url": "http://localhost:11434", "default": {"enabled": False, "model": ""}}
+        result = ollama._resolve_generation_entry(raw, {"enabled": True, "model": "qwen3:30b"})
+        self.assertEqual(result["model"], "qwen3:30b")
+        self.assertEqual(result["max_turns"], ollama._DEFAULT_MAX_TURNS)
+
+    def test_explicit_max_turns_respected(self):
+        raw = {"ollama_url": "http://localhost:11434", "default": {"enabled": False, "model": ""}}
+        result = ollama._resolve_generation_entry(
+            raw, {"enabled": True, "model": "qwen3:30b", "max_turns": 10}
+        )
+        self.assertEqual(result["max_turns"], 10)
+
+    def test_command_timeout_and_output_cap_absent_when_unset(self):
+        raw = {"ollama_url": "http://localhost:11434", "default": {"enabled": False, "model": ""}}
+        result = ollama._resolve_generation_entry(raw, {"enabled": True, "model": "qwen3:30b"})
+        self.assertNotIn("command_timeout_s", result)
+        self.assertNotIn("output_max_bytes", result)
+        self.assertNotIn("deny_patterns", result)
+
+    def test_generation_only_fields_passed_through(self):
+        raw = {"ollama_url": "http://localhost:11434", "default": {"enabled": False, "model": ""}}
+        result = ollama._resolve_generation_entry(
+            raw,
+            {
+                "enabled": True,
+                "model": "qwen3:30b",
+                "command_timeout_s": 300,
+                "output_max_bytes": 5000,
+                "deny_patterns": [r"\bnpm\s+publish\b"],
+            },
+        )
+        self.assertEqual(result["command_timeout_s"], 300)
+        self.assertEqual(result["output_max_bytes"], 5000)
+        self.assertEqual(result["deny_patterns"], [r"\bnpm\s+publish\b"])
+
+    def test_shares_default_block_and_provider_surface_with_critics(self):
+        raw = {
+            "ollama_url": "http://localhost:11434",
+            "num_ctx": 16384,
+            "default": {"enabled": True, "model": "shared-model"},
+        }
+        result = ollama._resolve_generation_entry(raw, {})
+        self.assertEqual(result["model"], "shared-model")
+        self.assertEqual(result["num_ctx"], 16384)
+        self.assertEqual(result["provider"], "ollama")
+
+
+class TestLoadLocalLlmGenerationConfig(unittest.TestCase):
+    def setUp(self):
+        self._orig_cwd = Path.cwd()
+        self._tmpdir = tempfile.mkdtemp()
+        os.chdir(self._tmpdir)
+
+    def tearDown(self):
+        os.chdir(self._orig_cwd)
+
+    def _write_config(self, data):
+        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data))
+
+    def test_no_file_returns_none(self):
+        self.assertIsNone(ollama.load_local_llm_generation_config("plan"))
+
+    def test_stage_not_configured_returns_none(self):
+        self._write_config({"ollama_url": "http://localhost:11434", "generation": {}})
+        self.assertIsNone(ollama.load_local_llm_generation_config("plan"))
+
+    def test_stage_configured_returns_resolved_config(self):
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "generation": {"plan": {"enabled": True, "model": "qwen3-coder:30b"}},
+            }
+        )
+        result = ollama.load_local_llm_generation_config("plan")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["model"], "qwen3-coder:30b")
+
+    def test_generation_and_critics_keys_are_independent(self):
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "critics": {"plan": {"enabled": True, "model": "critic-model"}},
+                "generation": {"plan": {"enabled": True, "model": "gen-model"}},
+            }
+        )
+        self.assertEqual(ollama.load_local_llm_generation_config("plan")["model"], "gen-model")
+        self.assertEqual(ollama.load_local_llm_config("plan")["model"], "critic-model")
+
+    def test_list_shaped_stage_returns_none(self):
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "generation": {"plan": [{"id": "a", "enabled": True, "model": "x"}]},
+            }
+        )
+        self.assertIsNone(ollama.load_local_llm_generation_config("plan"))
+
+    def test_corrupt_json_returns_none(self):
+        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not valid json")
+        self.assertIsNone(ollama.load_local_llm_generation_config("plan"))
+
+
+class TestToOllamaWireMessages(unittest.TestCase):
+    def test_system_and_user_pass_through(self):
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+        wire = ollama._to_ollama_wire_messages(messages)
+        self.assertEqual(
+            wire, [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+        )
+
+    def test_assistant_tool_calls_translated_without_id(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "name": "Read", "arguments": {"file_path": "a.md"}}
+                ],
+            }
+        ]
+        wire = ollama._to_ollama_wire_messages(messages)
+        self.assertEqual(
+            wire,
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "Read", "arguments": {"file_path": "a.md"}}}
+                    ],
+                }
+            ],
+        )
+
+    def test_tool_result_drops_tool_call_id(self):
+        messages = [{"role": "tool", "tool_call_id": "call_1", "name": "Read", "content": "result"}]
+        wire = ollama._to_ollama_wire_messages(messages)
+        self.assertEqual(wire, [{"role": "tool", "content": "result"}])
+
+
+class TestParseOllamaChatMessage(unittest.TestCase):
+    def test_content_only_no_tool_calls(self):
+        result = ollama._parse_ollama_chat_message({"content": "done"})
+        self.assertEqual(result, {"content": "done", "tool_calls": []})
+
+    def test_tool_calls_get_synthesized_ids(self):
+        message = {
+            "content": "",
+            "tool_calls": [{"function": {"name": "Write", "arguments": {"file_path": "a.md"}}}],
+        }
+        result = ollama._parse_ollama_chat_message(message)
+        self.assertEqual(len(result["tool_calls"]), 1)
+        self.assertTrue(result["tool_calls"][0]["id"])
+        self.assertEqual(result["tool_calls"][0]["name"], "Write")
+        self.assertEqual(result["tool_calls"][0]["arguments"], {"file_path": "a.md"})
+
+    def test_empty_content_becomes_none(self):
+        result = ollama._parse_ollama_chat_message({"content": ""})
+        self.assertIsNone(result["content"])
+
+
+class TestBuildChatTurnRequest(unittest.TestCase):
+    def test_never_forces_json_format(self):
+        config = {"ollama_url": "http://localhost:11434", "model": "qwen3:30b"}
+        req = ollama._build_chat_turn_request([{"role": "user", "content": "hi"}], config, [])
+        body = json.loads(req.data)
+        self.assertNotIn("format", body)
+        self.assertFalse(body["stream"])
+
+    def test_tools_included_in_body(self):
+        config = {"ollama_url": "http://localhost:11434", "model": "qwen3:30b"}
+        tools = [{"type": "function", "function": {"name": "Read"}}]
+        req = ollama._build_chat_turn_request([{"role": "user", "content": "hi"}], config, tools)
+        body = json.loads(req.data)
+        self.assertEqual(body["tools"], tools)
+
+
+class TestCallLocalLlmTurn(unittest.TestCase):
+    def _fake_resp(self, payload: dict):
+        fake_resp = MagicMock()
+        fake_resp.__enter__.return_value.read.return_value = json.dumps(payload).encode("utf-8")
+        return fake_resp
+
+    def test_returns_canonical_turn_shape(self):
+        config = {"ollama_url": "http://localhost:11434", "model": "qwen3:30b"}
+        payload = {"message": {"content": "hello", "tool_calls": []}, "done": True}
+
+        with (
+            patch.object(ollama, "_ensure_model_context"),
+            patch.object(ollama.urllib.request, "urlopen", return_value=self._fake_resp(payload)),
+        ):
+            result = ollama.call_local_llm_turn([{"role": "user", "content": "hi"}], config, [])
+
+        self.assertEqual(result["content"], "hello")
+        self.assertEqual(result["tool_calls"], [])
+
+    def test_parses_tool_calls_from_response(self):
+        config = {"ollama_url": "http://localhost:11434", "model": "qwen3:30b"}
+        payload = {
+            "message": {
+                "content": "",
+                "tool_calls": [{"function": {"name": "Bash", "arguments": {"command": "ls"}}}],
+            }
+        }
+
+        with (
+            patch.object(ollama, "_ensure_model_context"),
+            patch.object(ollama.urllib.request, "urlopen", return_value=self._fake_resp(payload)),
+        ):
+            result = ollama.call_local_llm_turn([{"role": "user", "content": "hi"}], config, [])
+
+        self.assertEqual(len(result["tool_calls"]), 1)
+        self.assertEqual(result["tool_calls"][0]["name"], "Bash")
+
+
+class TestCallConfiguredLlmTurn(unittest.TestCase):
+    def test_dispatches_to_local_llm_turn_for_ollama_provider(self):
+        config = {"provider": "ollama", "ollama_url": "http://localhost:11434", "model": "x"}
+        with patch.object(
+            ollama, "call_local_llm_turn", return_value={"content": "ok"}
+        ) as mock_call:
+            result = ollama.call_configured_llm_turn([], config, [])
+        mock_call.assert_called_once_with([], config, [])
+        self.assertEqual(result, {"content": "ok"})
+
+    def test_dispatches_to_openai_compatible_turn_for_that_provider(self):
+        config = {"provider": "openai-compatible", "base_url": "https://x", "api_key_env": "K"}
+        with patch.object(
+            ollama.openai_compatible, "call_openai_compatible_turn", return_value={"content": "ok"}
+        ) as mock_call:
+            result = ollama.call_configured_llm_turn([], config, [])
+        mock_call.assert_called_once_with([], config, [])
+        self.assertEqual(result, {"content": "ok"})
+
+
 if __name__ == "__main__":
     unittest.main()

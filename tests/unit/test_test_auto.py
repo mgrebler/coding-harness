@@ -1,7 +1,8 @@
 """Unit tests for ch_3_test_auto.py's _run_test_agent_if_needed — the bounded
 retry-then-hard-fail behaviour added for FOLLOWUP_HARNESS.md Bug 3 (a backgrounded,
 never-awaited subagent call silently truncated the delegated work and let the script
-proceed into a doomed critic loop). No LLM calls (stream_query is mocked)."""
+proceed into a doomed critic loop). No LLM calls (local_agent_loop.run_generation is
+mocked)."""
 
 import sys
 import tempfile
@@ -22,19 +23,23 @@ class TestRunTestAgentIfNeeded(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
             tasks = "- [x] T001 [TEST] done\n"
-            with patch.object(test_auto, "stream_query", new=AsyncMock()) as mock_stream:
+            with patch.object(
+                test_auto.local_agent_loop, "run_generation", new=AsyncMock()
+            ) as mock_run:
                 result = await test_auto._run_test_agent_if_needed(
                     "some-feature", spec_dir, tasks, "constitution", "spec", "plan", "principles"
                 )
 
-            mock_stream.assert_not_called()
+            mock_run.assert_not_called()
             self.assertEqual(result, tasks)
 
     async def test_completes_on_first_attempt(self):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
             _write_tasks(spec_dir, "- [x] T001 [TEST] done\n")
-            with patch.object(test_auto, "stream_query", new=AsyncMock()) as mock_stream:
+            with patch.object(
+                test_auto.local_agent_loop, "run_generation", new=AsyncMock()
+            ) as mock_run:
                 result = await test_auto._run_test_agent_if_needed(
                     "some-feature",
                     spec_dir,
@@ -45,7 +50,7 @@ class TestRunTestAgentIfNeeded(unittest.IsolatedAsyncioTestCase):
                     "principles",
                 )
 
-            self.assertEqual(mock_stream.await_count, 1)
+            self.assertEqual(mock_run.await_count, 1)
             self.assertEqual(result, "- [x] T001 [TEST] done\n")
 
     async def test_retries_once_when_first_attempt_leaves_tasks_unchecked(self):
@@ -54,14 +59,18 @@ class TestRunTestAgentIfNeeded(unittest.IsolatedAsyncioTestCase):
             _write_tasks(spec_dir, "- [ ] T001 [TEST] todo\n")
             calls = []
 
-            async def fake_stream_query(_query):
+            async def fake_run_generation(
+                _log, _stage, *, claude_fallback, system_prompt, user_prompt
+            ):
                 calls.append(1)
                 if len(calls) >= 2:
                     _write_tasks(spec_dir, "- [x] T001 [TEST] done\n")
 
             with patch.object(
-                test_auto, "stream_query", new=AsyncMock(side_effect=fake_stream_query)
-            ) as mock_stream:
+                test_auto.local_agent_loop,
+                "run_generation",
+                new=AsyncMock(side_effect=fake_run_generation),
+            ) as mock_run:
                 result = await test_auto._run_test_agent_if_needed(
                     "some-feature",
                     spec_dir,
@@ -72,7 +81,7 @@ class TestRunTestAgentIfNeeded(unittest.IsolatedAsyncioTestCase):
                     "principles",
                 )
 
-            self.assertEqual(mock_stream.await_count, 2)
+            self.assertEqual(mock_run.await_count, 2)
             self.assertEqual(result, "- [x] T001 [TEST] done\n")
 
     async def test_exits_with_status_1_when_tasks_still_unchecked_after_both_attempts(self):
@@ -81,7 +90,7 @@ class TestRunTestAgentIfNeeded(unittest.IsolatedAsyncioTestCase):
             _write_tasks(spec_dir, "- [ ] T001 [TEST] todo\n")
 
             with (
-                patch.object(test_auto, "stream_query", new=AsyncMock()),
+                patch.object(test_auto.local_agent_loop, "run_generation", new=AsyncMock()),
                 self.assertRaises(SystemExit) as cm,
             ):
                 await test_auto._run_test_agent_if_needed(

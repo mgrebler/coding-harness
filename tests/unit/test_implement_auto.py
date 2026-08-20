@@ -1,7 +1,8 @@
 """Unit tests for ch_4_implement_auto.py's _run_implementation_agent — the bounded
 retry-then-hard-fail behaviour added for FOLLOWUP_HARNESS.md Bug 3 (a backgrounded,
 never-awaited impl-agent call silently truncated the implementation and let the
-script proceed straight into a doomed CI run). No LLM calls (stream_query is mocked)."""
+script proceed straight into a doomed CI run). No LLM calls (local_agent_loop.
+run_generation is mocked)."""
 
 import sys
 import tempfile
@@ -22,19 +23,23 @@ class TestRunImplementationAgent(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
             tasks = "- [x] T001 [IMPL] done\n"
-            with patch.object(impl_auto, "stream_query", new=AsyncMock()) as mock_stream:
+            with patch.object(
+                impl_auto.local_agent_loop, "run_generation", new=AsyncMock()
+            ) as mock_run:
                 result = await impl_auto._run_implementation_agent(
                     "some-feature", spec_dir, "constitution", "spec", "plan", tasks, "quality"
                 )
 
-            mock_stream.assert_not_called()
+            mock_run.assert_not_called()
             self.assertEqual(result, tasks)
 
     async def test_completes_on_first_attempt(self):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
             _write_tasks(spec_dir, "- [x] T001 [IMPL] done\n")
-            with patch.object(impl_auto, "stream_query", new=AsyncMock()) as mock_stream:
+            with patch.object(
+                impl_auto.local_agent_loop, "run_generation", new=AsyncMock()
+            ) as mock_run:
                 result = await impl_auto._run_implementation_agent(
                     "some-feature",
                     spec_dir,
@@ -45,7 +50,7 @@ class TestRunImplementationAgent(unittest.IsolatedAsyncioTestCase):
                     "quality",
                 )
 
-            self.assertEqual(mock_stream.await_count, 1)
+            self.assertEqual(mock_run.await_count, 1)
             self.assertEqual(result, "- [x] T001 [IMPL] done\n")
 
     async def test_retries_once_when_first_attempt_leaves_tasks_unchecked(self):
@@ -55,14 +60,18 @@ class TestRunImplementationAgent(unittest.IsolatedAsyncioTestCase):
 
             calls = []
 
-            async def fake_stream_query(_query):
+            async def fake_run_generation(
+                _log, _stage, *, claude_fallback, system_prompt, user_prompt
+            ):
                 calls.append(1)
                 if len(calls) >= 2:
                     _write_tasks(spec_dir, "- [x] T001 [IMPL] done\n")
 
             with patch.object(
-                impl_auto, "stream_query", new=AsyncMock(side_effect=fake_stream_query)
-            ) as mock_stream:
+                impl_auto.local_agent_loop,
+                "run_generation",
+                new=AsyncMock(side_effect=fake_run_generation),
+            ) as mock_run:
                 result = await impl_auto._run_implementation_agent(
                     "some-feature",
                     spec_dir,
@@ -73,7 +82,7 @@ class TestRunImplementationAgent(unittest.IsolatedAsyncioTestCase):
                     "quality",
                 )
 
-            self.assertEqual(mock_stream.await_count, 2)
+            self.assertEqual(mock_run.await_count, 2)
             self.assertEqual(result, "- [x] T001 [IMPL] done\n")
 
     async def test_exits_with_status_1_when_tasks_still_unchecked_after_both_attempts(self):
@@ -82,7 +91,7 @@ class TestRunImplementationAgent(unittest.IsolatedAsyncioTestCase):
             _write_tasks(spec_dir, "- [ ] T001 [IMPL] todo\n")
 
             with (
-                patch.object(impl_auto, "stream_query", new=AsyncMock()),
+                patch.object(impl_auto.local_agent_loop, "run_generation", new=AsyncMock()),
                 self.assertRaises(SystemExit) as cm,
             ):
                 await impl_auto._run_implementation_agent(

@@ -36,8 +36,8 @@ from ch_1_plan_architecture_critic import build_architecture_review_prompt
 from ch_1_plan_critic import build_plan_critic_prompt
 from claude_agent_sdk import AgentDefinition, query
 
-from agent_common import critic_reconcile
-from agent_common.console import make_logger, setup_log_file, stream_query
+from agent_common import critic_reconcile, local_agent_loop
+from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
     GateSpec,
     finish_if_already_passing,
@@ -289,17 +289,22 @@ async def run(feature: str):
     # --- Step 1: Generate plan.md if needed ---
     if not (spec_dir / "plan.md").exists() or force_regen:
         log("Running plan agent...")
-        await stream_query(
-            query(
-                prompt=f"Generate plan.md for feature {feature}. Write it to specs/{feature}/plan.md."
-                + NO_RECURSION_NOTICE,
+        plan_agent = plan_agent_definition(constitution, spec, arch_principles)
+        user_prompt = (
+            f"Generate plan.md for feature {feature}. Write it to specs/{feature}/plan.md."
+        )
+        await local_agent_loop.run_generation(
+            log,
+            "plan",
+            claude_fallback=lambda: query(
+                prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "plan-agent": plan_agent_definition(constitution, spec, arch_principles)
-                    },
+                    agents={"plan-agent": plan_agent},
                 ),
-            )
+            ),
+            system_prompt=plan_agent.prompt,
+            user_prompt=user_prompt,
         )
 
         if not (spec_dir / "plan.md").exists():
@@ -336,21 +341,24 @@ async def run(feature: str):
         log(
             f"Running plan revision for {pending_label} violations from iteration {pending_iter}..."
         )
-        await stream_query(
-            query(
-                prompt=(
-                    f"Revise plan.md for feature {feature}. "
-                    f"Read {pending_file} for the full violation list. "
-                    f"Write updated plan.md to specs/{feature}/plan.md."
-                )
-                + NO_RECURSION_NOTICE,
+        plan_agent = plan_agent_definition(constitution, spec, arch_principles)
+        user_prompt = (
+            f"Revise plan.md for feature {feature}. "
+            f"Read {pending_file} for the full violation list. "
+            f"Write updated plan.md to specs/{feature}/plan.md."
+        )
+        await local_agent_loop.run_generation(
+            log,
+            "plan",
+            claude_fallback=lambda: query(
+                prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "plan-agent": plan_agent_definition(constitution, spec, arch_principles)
-                    },
+                    agents={"plan-agent": plan_agent},
                 ),
-            )
+            ),
+            system_prompt=plan_agent.prompt,
+            user_prompt=user_prompt,
         )
 
     async def on_both_pass(arch_result: dict) -> None:

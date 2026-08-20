@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -209,6 +210,71 @@ def load_critic_execution_mode(critic_type: str) -> str:
         return "sequential"
     mode = raw.get("critic_execution", {}).get(critic_type, "sequential")
     return mode if mode in ("sequential", "parallel") else "sequential"
+
+
+_DEFAULT_MAX_TURNS = 40
+
+
+def _resolve_generation_entry(raw: dict, stage_override: dict) -> dict | None:
+    """
+    Generation counterpart to _resolve_entry: reuses it for the shared
+    provider/model/transport/num_ctx/max_ctx/keep_alive/num_gpu/num_predict/
+    temperature surface (merging stage_override with raw['default'] exactly
+    as critics do — a project can share one 'default' block across both),
+    then layers on the generation-only agentic-loop fields, each resolved
+    from stage_override -> raw['default'] -> a hardcoded default:
+
+    - max_turns: tool-call round budget before the loop raises
+      local_agent_loop.LocalAgentError (default 40).
+    - command_timeout_s / output_max_bytes / deny_patterns: passed straight
+      through to local_tools.BashSandboxConfig by the caller; absent here
+      unless explicitly set, so BashSandboxConfig's own defaults apply.
+    """
+    resolved = _resolve_entry(raw, stage_override)
+    if resolved is None:
+        return None
+
+    default = raw.get("default", {})
+    merged = {**default, **stage_override}
+
+    resolved["max_turns"] = int(merged.get("max_turns", _DEFAULT_MAX_TURNS))
+    if "command_timeout_s" in merged:
+        resolved["command_timeout_s"] = int(merged["command_timeout_s"])
+    if "output_max_bytes" in merged:
+        resolved["output_max_bytes"] = int(merged["output_max_bytes"])
+    if "deny_patterns" in merged:
+        resolved["deny_patterns"] = list(merged["deny_patterns"])
+    return resolved
+
+
+def load_local_llm_generation_config(stage: str) -> dict | None:
+    """
+    Read .specify/local-llm.json and resolve the local-agentic-loop config
+    for the given generation stage ("plan"/"tasks"/"test"/"implement"), from
+    the top-level "generation" object — a sibling to "critics", not a
+    variant of it (see agent_common/local_agent_loop.py's module docstring
+    for why generation needs its own top-level section). One entry covers
+    every agent role for that stage: initial generation, revision, fix, and
+    CI-fix all resolve through the same config.
+
+    Returns None if disabled, not configured, or the config file is
+    missing/unparseable/malformed — callers (run_generation) treat that
+    identically to "no local LLM configured for this stage" and fall back
+    to the existing Claude Agent SDK path, exactly like critics do when
+    load_local_llm_configs returns [].
+    """
+    config_path = Path(".specify/local-llm.json")
+    if not config_path.exists():
+        return None
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    stage_override = raw.get("generation", {}).get(stage, {})
+    if not isinstance(stage_override, dict):
+        return None
+    return _resolve_generation_entry(raw, stage_override)
 
 
 def _build_request(url: str, **kwargs) -> urllib.request.Request:
@@ -558,6 +624,151 @@ def _call_configured_llm(prompt: str, config: dict, progress_fn=None) -> str:
     if config.get("provider", "ollama") == "openai-compatible":
         return openai_compatible.call_openai_compatible_llm(prompt, config, progress_fn=progress_fn)
     return call_local_llm(prompt, config, progress_fn=progress_fn)
+
+
+# --- Tool-calling transport for the local agentic generation loop ---
+#
+# The functions above (call_local_llm, _build_chat_request) are the critic
+# transport: one prompt in, one JSON string out, format="json" grammar-
+# constrained. The functions below are the sibling transport for
+# local_agent_loop.py's multi-turn tool-calling loop: a canonical
+# provider-agnostic message list in, one turn's {"content", "tool_calls"}
+# out, no forced JSON mode (a turn's final content is free text, not
+# necessarily JSON). See local_agent_loop.py's module docstring for the
+# canonical message shape. Kept as new, separate functions rather than
+# branching the existing ones on `tools`, so the well-tested critic path is
+# untouched.
+
+
+def _to_ollama_wire_messages(messages: list[dict]) -> list[dict]:
+    """Translate the canonical message list into Ollama's /api/chat wire
+    format. Ollama's tool_calls entries carry only {"function": {"name",
+    "arguments"}} — no id — and its "tool" role messages are matched back to
+    the call positionally within the conversation, not by id, so the
+    canonical tool_call_id is simply dropped on the way out."""
+    wire = []
+    for m in messages:
+        role = m["role"]
+        if role == "assistant" and m.get("tool_calls"):
+            wire.append(
+                {
+                    "role": "assistant",
+                    "content": m.get("content") or "",
+                    "tool_calls": [
+                        {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                        for tc in m["tool_calls"]
+                    ],
+                }
+            )
+        elif role == "tool":
+            wire.append({"role": "tool", "content": m["content"]})
+        else:
+            wire.append({"role": role, "content": m.get("content") or ""})
+    return wire
+
+
+def _parse_ollama_chat_message(message: dict) -> dict:
+    """Parse one Ollama /api/chat response 'message' object into the
+    canonical turn shape {"content": str|None, "tool_calls": [{"id","name",
+    "arguments"}]}. Ollama's tool_calls carry no id, so one is synthesized
+    per call — used only to pair a later tool-result message back to this
+    call within our own in-process loop state; never sent back to Ollama
+    (see _to_ollama_wire_messages, which drops it again)."""
+    raw_tool_calls = message.get("tool_calls") or []
+    tool_calls = [
+        {
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "name": tc.get("function", {}).get("name", ""),
+            "arguments": tc.get("function", {}).get("arguments") or {},
+        }
+        for tc in raw_tool_calls
+    ]
+    return {"content": message.get("content") or None, "tool_calls": tool_calls}
+
+
+def _build_chat_turn_request(
+    messages: list[dict], config: dict, tools: list[dict]
+) -> urllib.request.Request:
+    """Build a non-streaming /api/chat request carrying `tools`, for the
+    generation agentic loop. Unlike _build_chat_request (critics), this
+    never forces format="json"."""
+    url = f"{config['ollama_url']}/api/chat"
+    options: dict = {"temperature": config.get("temperature", 0.1)}
+    if config.get("num_ctx"):
+        options["num_ctx"] = config["num_ctx"]
+    if config.get("num_predict"):
+        options["num_predict"] = config["num_predict"]
+    body: dict = {
+        "model": config["model"],
+        "messages": _to_ollama_wire_messages(messages),
+        "tools": tools,
+        "stream": False,
+        "think": False,
+        "options": options,
+    }
+    if "keep_alive" in config:
+        body["keep_alive"] = config["keep_alive"]
+    payload = json.dumps(body).encode("utf-8")
+
+    return _build_request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+
+def call_local_llm_turn(messages: list[dict], config: dict, tools: list[dict]) -> dict:
+    """
+    Non-streaming single-turn call to Ollama's native /api/chat with `tools`,
+    for the local agentic generation loop (local_agent_loop.py). Returns the
+    canonical turn shape {"content": str|None, "tool_calls": [...]}.
+
+    Reuses the same num_ctx auto-sizing and model-context management as
+    call_local_llm (critics): num_ctx is estimated from the serialized
+    request when only max_ctx is set, and _ensure_model_context preloads/
+    reloads the model as needed. Non-streaming (stream: false) trades away
+    live token progress for simpler, more robust tool_call parsing — there
+    is no incremental tool-call-argument-delta assembly to get right.
+    """
+    if config.get("num_ctx") is None and config.get("max_ctx") is not None:
+        serialized = json.dumps(_to_ollama_wire_messages(messages))
+        config = {
+            **config,
+            "num_ctx": estimate_num_ctx(
+                config["ollama_url"],
+                config["model"],
+                serialized,
+                num_predict=config.get("num_predict"),
+                max_ctx=config["max_ctx"],
+            ),
+        }
+
+    req = _build_chat_turn_request(messages, config, tools)
+
+    if config.get("num_ctx") or config.get("num_gpu") is not None:
+        _ensure_model_context(
+            config["ollama_url"],
+            config["model"],
+            config.get("num_ctx"),
+            config.get("keep_alive"),
+            config.get("num_gpu"),
+        )
+
+    with _urlopen(req, timeout=300) as resp:
+        data = json.loads(resp.read())
+
+    _log_vram_state(config["ollama_url"], config["model"])
+
+    return _parse_ollama_chat_message(data.get("message", {}))
+
+
+def call_configured_llm_turn(messages: list[dict], config: dict, tools: list[dict]) -> dict:
+    """Dispatch to the transport matching config["provider"] (default
+    "ollama") — the tool-calling counterpart to _call_configured_llm."""
+    if config.get("provider", "ollama") == "openai-compatible":
+        return openai_compatible.call_openai_compatible_turn(messages, config, tools)
+    return call_local_llm_turn(messages, config, tools)
 
 
 def strip_fences(text: str) -> str:

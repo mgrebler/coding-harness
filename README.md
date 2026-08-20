@@ -392,6 +392,79 @@ JSON: {"result": "ok"}`, `response_format: json_object`) and confirm
 return `404: Function ... Not found for account` until access is granted.
 Confirm with a real chat-completions call, not just the models list.
 
+### Generation (plan/tasks/test/implement authoring)
+
+Everything above configures **critics** — review passes that read a prompt
+and return one JSON verdict, no filesystem access needed. The four
+**generation** stages (`plan`, `tasks`, `test`, `implement` — the agents
+that actually author `plan.md`/`tasks.md`/tests/implementation) can
+independently be pointed at a local or hosted model too, via a separate
+top-level `generation` object in the same `.specify/local-llm.json`:
+
+```json
+{
+  "provider": "ollama",
+  "ollama_url": "http://host.docker.internal:11434",
+  "generation": {
+    "plan":      { "enabled": true,  "model": "qwen3-coder:30b-a3b", "max_turns": 40 },
+    "tasks":     { "enabled": false, "model": "" },
+    "test":      { "enabled": false, "model": "" },
+    "implement": { "enabled": false, "model": "", "command_timeout_s": 180 }
+  }
+}
+```
+
+`generation` is a sibling to `critics`, not a variant of it: a generation
+stage needs real tool access (Read/Write/Edit/Bash/Glob/Grep — the model
+authors files and runs commands itself, including `git commit`), whereas a
+critic never touches the filesystem. One `generation.<stage>` entry covers
+every agent role for that stage — initial generation, revision, and fix (or
+CI-fix for `implement`) all resolve through the same config, mirroring how
+a single `critics.<type>` entry already covers every iteration of that
+critic regardless of round number.
+
+Every field from the critic config surface — `provider`, `ollama_url` /
+`base_url`+`api_key_env`, `num_ctx`, `max_ctx`, `keep_alive`, `num_gpu`,
+`num_predict`, `temperature` — resolves for a generation stage exactly as
+it does for a critic, including sharing the same top-level/`default` block
+if a project wants one backend for everything. Three fields are
+generation-only, since they configure the tool-calling loop itself rather
+than the model call:
+
+- **`max_turns`** — the round budget (one model turn + its tool calls) before
+  the loop gives up and raises an error, treated the same as the agent
+  simply not finishing (the calling `ch-N-*-auto` stage already checks for
+  the expected artifact on disk after generation and aborts if it's
+  missing). Defaults to 40.
+- **`command_timeout_s`** — per-`Bash`-call timeout in seconds (default 120).
+- **`output_max_bytes`** — caps how much of a single `Bash` call's output is
+  fed back to the model, tail-biased since the actionable failure is
+  usually at the end (default ~200KB).
+
+A local/hosted model generating a stage doesn't change anything about how
+that stage is *reviewed* — the corresponding critic (local, hosted, or
+Claude) still runs against whatever was produced, exactly as if Claude had
+written it. Generation and critic backends are fully independent per stage:
+mix and match freely (e.g. a local model drafts `plan.md`, Claude critiques
+it; or both run locally with different models).
+
+**Bash runs with guardrails, not a full sandbox.** Every filesystem tool is
+confined to the project root. `Bash` additionally gets a timeout, an output
+cap, and a denylist rejecting a small set of catastrophic one-liners
+(`rm -rf /`, `git push --force`, `sudo`, `dd`, piping `curl`/`wget` into a
+shell, etc) — configurable per stage via a `deny_patterns` list of regexes,
+merged with the built-in list rather than replacing it. This is
+defense-in-depth, not a jail: the real backstops are that generation
+offload is opt-in per project, the devcontainer is the actual outer sandbox
+boundary, and the unchanged critic gates plus mandatory human PR review are
+still the last word before anything reaches `main`.
+
+**Tool-calling support varies a lot by model.** Many smaller or
+instruction-only models don't emit real tool calls — they narrate them as
+text instead, which the loop can't act on. Sanity-check a candidate model's
+tool-calling support before trusting it with a real feature; the same
+reasoning-leakage caveat from the critic section above applies here too.
+
 ---
 
 ## Key Rules

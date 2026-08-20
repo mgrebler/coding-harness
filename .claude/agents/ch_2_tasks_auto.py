@@ -29,8 +29,8 @@ from pathlib import Path
 from ch_2_tasks_critic import build_tasks_critic_prompt
 from claude_agent_sdk import AgentDefinition, query
 
-from agent_common import critic_reconcile
-from agent_common.console import make_logger, setup_log_file, stream_query
+from agent_common import critic_reconcile, local_agent_loop
+from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
     GateSpec,
     finish_if_already_passing,
@@ -207,23 +207,25 @@ async def _run_format_gate(
             f"Deterministic §T5 format check found {len(violations)} violation(s) "
             f"(attempt {attempt}/{max_attempts}) — kicking back to tasks agent before critic loop..."
         )
-        await stream_query(
-            query(
-                prompt=(
-                    f"Reformat specs/{feature}/tasks.md to comply with the machine-readable task "
-                    f"format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (see .specify/templates/"
-                    f"tasks-template.md). Fix ONLY the lines below — do not change task content, order, "
-                    f"or numbering beyond what's needed to fix the format:\n\n"
-                    + "\n".join(violations)
-                    + NO_RECURSION_NOTICE
-                ),
+        tasks_agent = tasks_agent_definition(constitution, spec, plan, data_model)
+        user_prompt = (
+            f"Reformat specs/{feature}/tasks.md to comply with the machine-readable task "
+            f"format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (see .specify/templates/"
+            f"tasks-template.md). Fix ONLY the lines below — do not change task content, order, "
+            f"or numbering beyond what's needed to fix the format:\n\n" + "\n".join(violations)
+        )
+        await local_agent_loop.run_generation(
+            log,
+            "tasks",
+            claude_fallback=lambda user_prompt=user_prompt, tasks_agent=tasks_agent: query(
+                prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
-                    },
+                    agents={"tasks-agent": tasks_agent},
                 ),
-            )
+            ),
+            system_prompt=tasks_agent.prompt,
+            user_prompt=user_prompt,
         )
 
     remaining = task_format_violations(read_file(spec_dir / "tasks.md"))
@@ -258,17 +260,22 @@ async def run(feature: str):
     # --- Step 1: Generate tasks.md if needed ---
     if not (spec_dir / "tasks.md").exists() or force_regen:
         log("Running tasks agent...")
-        await stream_query(
-            query(
-                prompt=f"Generate tasks.md for feature {feature}. Write it to specs/{feature}/tasks.md."
-                + NO_RECURSION_NOTICE,
+        tasks_agent = tasks_agent_definition(constitution, spec, plan, data_model)
+        user_prompt = (
+            f"Generate tasks.md for feature {feature}. Write it to specs/{feature}/tasks.md."
+        )
+        await local_agent_loop.run_generation(
+            log,
+            "tasks",
+            claude_fallback=lambda: query(
+                prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
-                    },
+                    agents={"tasks-agent": tasks_agent},
                 ),
-            )
+            ),
+            system_prompt=tasks_agent.prompt,
+            user_prompt=user_prompt,
         )
 
         if not (spec_dir / "tasks.md").exists():
@@ -300,21 +307,24 @@ async def run(feature: str):
         log(
             f"Running revision agent to address {len(pending_violations)} violation(s) from iteration {pending_iter}..."
         )
-        await stream_query(
-            query(
-                prompt=(
-                    f"Revise tasks.md for feature {feature} to fix critic violations. "
-                    f"Read specs/{feature}/ch-2-tasks-critic-result-{pending_iter}.json for the violation list. "
-                    f"Write updated tasks.md to specs/{feature}/tasks.md."
-                )
-                + NO_RECURSION_NOTICE,
+        tasks_agent = tasks_agent_definition(constitution, spec, plan, data_model)
+        user_prompt = (
+            f"Revise tasks.md for feature {feature} to fix critic violations. "
+            f"Read specs/{feature}/ch-2-tasks-critic-result-{pending_iter}.json for the violation list. "
+            f"Write updated tasks.md to specs/{feature}/tasks.md."
+        )
+        await local_agent_loop.run_generation(
+            log,
+            "tasks",
+            claude_fallback=lambda: query(
+                prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "tasks-agent": tasks_agent_definition(constitution, spec, plan, data_model)
-                    },
+                    agents={"tasks-agent": tasks_agent},
                 ),
-            )
+            ),
+            system_prompt=tasks_agent.prompt,
+            user_prompt=user_prompt,
         )
 
     async def on_pass(result: dict) -> None:
