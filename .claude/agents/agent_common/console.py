@@ -2,11 +2,31 @@
 
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
 from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+
+
+def _safe_print(text: str, end: str = "\n", retries: int = 20, delay: float = 0.05) -> None:
+    """print(text, end=end, flush=True), retrying on BlockingIOError.
+
+    A large flush can hit EAGAIN if stdout's underlying fd has been put in
+    non-blocking mode (observed when a subprocess — e.g. a webServer's Node
+    process — flips O_NONBLOCK on a shared fd) and the pipe/file buffer is
+    momentarily full. Unlike a normal short write, print() doesn't retry this
+    itself, so a single big CI-output dump can crash the whole orchestrator."""
+    for attempt in range(retries):
+        try:
+            print(text, end=end, flush=True)
+            return
+        except BlockingIOError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay)
+
 
 # Exit code reserved for "hit a Claude usage/session limit" (see SessionLimitError).
 # 0 = clean abort/already-done, 1 = generic failure, 2 = already means "local LLM not
@@ -94,7 +114,7 @@ def stream_subprocess(cmd: list[str], prefix: str = "") -> int:
     if proc.stdout is None:
         raise RuntimeError("subprocess.Popen with stdout=PIPE did not provide a stdout stream")
     for line in proc.stdout:
-        print(f"{prefix}{line}", end="", flush=True)
+        _safe_print(f"{prefix}{line}", end="")
     proc.wait()
     return proc.returncode
 
@@ -103,7 +123,7 @@ def make_logger(agent_name: str):
     """Return a log function prefixed with the agent name."""
 
     def log(msg: str):
-        print(f"[{agent_name}] {msg}", flush=True)
+        _safe_print(f"[{agent_name}] {msg}")
 
     return log
 
@@ -114,12 +134,12 @@ def log_sdk_message(message, prefix: str = ""):
         for block in message.content:
             if isinstance(block, TextBlock) and block.text.strip():
                 for line in block.text.strip().splitlines():
-                    print(f"{prefix}{line}", flush=True)
+                    _safe_print(f"{prefix}{line}")
             elif isinstance(block, ToolUseBlock):
                 args = ", ".join(f"{k}={str(v)[:80]!r}" for k, v in block.input.items())
-                print(f"{prefix}→ {block.name}({args})", flush=True)
+                _safe_print(f"{prefix}→ {block.name}({args})")
     elif isinstance(message, ResultMessage) and message.result:
-        print(f"{prefix}[done] {message.result[:200]}", flush=True)
+        _safe_print(f"{prefix}[done] {message.result[:200]}")
 
 
 async def stream_query(messages, prefix: str = "  ") -> None:

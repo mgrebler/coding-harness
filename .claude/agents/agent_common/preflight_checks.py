@@ -209,7 +209,7 @@ _GENUINE_FAILURE_PATTERNS = [
     re.compile(p, re.IGNORECASE)
     for p in (
         r"assertionerror",
-        r"expect(?:ed)?.{0,40}(?:to (?:be|equal|contain)|received)",
+        r"expect(?:ed)?[\s\S]{0,120}(?:to\s*(?:be|equal|contain)|received)",
         r"cannot find module",
         r"module not found",
         r"is not a function",

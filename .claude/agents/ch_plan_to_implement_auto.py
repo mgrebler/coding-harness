@@ -162,13 +162,14 @@ def run(feature: str):
         _check_stage_result(rc, 3, "test", "ch-3-test-critic-escalation.md")
 
     # --- Stage 4: Implement ---
-    if (
-        stage_is_complete(spec_dir, "ch-4-implement")
-        or find_passing_iteration(
-            spec_dir, IMPL_QUALITY_PREFIX, max_existing_iteration(spec_dir, IMPL_QUALITY_PREFIX)
-        )
-        is not None
-    ):
+    # Unlike stages 1-3, ch_4_implement_auto's on-both-pass path runs CI checks
+    # (and a possible CI-fix-agent + commit-hygiene check) *between* the quality
+    # review passing and finish_stage() actually being called — so a passing
+    # quality-review iteration does NOT by itself prove the stage finished (a
+    # crash or failure in that CI step leaves no completion marker and no
+    # commit). Require the actual completion marker here, not the gate-passing
+    # shortcut stages 1-3 use safely.
+    if stage_is_complete(spec_dir, "ch-4-implement"):
         log("Stage 4/4 (implement): already complete — skipping.")
     else:
         log("Stage 4/4 (implement): running ch-4-implement-auto...")

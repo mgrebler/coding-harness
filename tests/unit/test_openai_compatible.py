@@ -201,6 +201,17 @@ class TestLoadDotenv(unittest.TestCase):
                 openai_compatible._load_dotenv(str(env_path))
                 self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-from-shell")
 
+    def test_overrides_existing_but_empty_env_var(self):
+        """A devcontainer/docker-compose `environment:` block can declare a
+        var as a host pass-through that resolves to an empty string when
+        unset on the host — that shouldn't block a real value in .env."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("NVIDIA_API_KEY=nvapi-from-file\n")
+            with patch.dict("os.environ", {"NVIDIA_API_KEY": ""}, clear=True):
+                openai_compatible._load_dotenv(str(env_path))
+                self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-from-file")
+
     def test_skips_comments_and_blank_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
@@ -216,6 +227,57 @@ class TestLoadDotenv(unittest.TestCase):
             with patch.dict("os.environ", {}, clear=True):
                 openai_compatible._load_dotenv(str(env_path))
                 self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-secret")
+
+
+class TestUrlopenWithRetry(unittest.TestCase):
+    def test_non_retryable_status_raises_immediately_without_sleep(self):
+        error = urllib.error.HTTPError("url", 404, "Not Found", {}, io.BytesIO(b"nope"))
+        with (
+            patch.object(openai_compatible.urllib.request, "urlopen", side_effect=error),
+            patch.object(openai_compatible.time, "sleep") as mock_sleep,
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            openai_compatible._urlopen_with_retry(MagicMock())
+        mock_sleep.assert_not_called()
+
+    def test_succeeds_after_transient_retryable_errors(self):
+        error = urllib.error.HTTPError("url", 503, "Service Unavailable", {}, io.BytesIO(b""))
+        fake_resp = MagicMock()
+        with (
+            patch.object(
+                openai_compatible.urllib.request,
+                "urlopen",
+                side_effect=[error, error, fake_resp],
+            ),
+            patch.object(openai_compatible.time, "sleep") as mock_sleep,
+        ):
+            result = openai_compatible._urlopen_with_retry(MagicMock())
+        self.assertIs(result, fake_resp)
+        self.assertEqual(mock_sleep.call_count, 2)
+
+    def test_raises_after_exhausting_all_retries(self):
+        error = urllib.error.HTTPError("url", 500, "Internal Server Error", {}, io.BytesIO(b""))
+        with (
+            patch.object(openai_compatible.urllib.request, "urlopen", side_effect=error),
+            patch.object(openai_compatible.time, "sleep") as mock_sleep,
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            openai_compatible._urlopen_with_retry(MagicMock())
+        self.assertEqual(mock_sleep.call_count, openai_compatible._MAX_RETRIES)
+
+    def test_retry_after_header_honored_over_exponential_backoff(self):
+        error = urllib.error.HTTPError(
+            "url", 429, "Too Many Requests", {"Retry-After": "7"}, io.BytesIO(b"")
+        )
+        fake_resp = MagicMock()
+        with (
+            patch.object(
+                openai_compatible.urllib.request, "urlopen", side_effect=[error, fake_resp]
+            ),
+            patch.object(openai_compatible.time, "sleep") as mock_sleep,
+        ):
+            openai_compatible._urlopen_with_retry(MagicMock())
+        mock_sleep.assert_called_once_with(7.0)
 
 
 class TestStreamChatResponseHttpError(unittest.TestCase):
@@ -429,6 +491,7 @@ class TestCallOpenaiCompatibleTurn(unittest.TestCase):
         with (
             patch.dict("os.environ", {"NVIDIA_API_KEY": "nvapi-secret"}, clear=True),
             patch.object(openai_compatible.urllib.request, "urlopen", side_effect=error),
+            patch.object(openai_compatible.time, "sleep"),
             self.assertRaises(RuntimeError) as ctx,
         ):
             openai_compatible.call_openai_compatible_turn(
