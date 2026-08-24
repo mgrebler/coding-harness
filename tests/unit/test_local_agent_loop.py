@@ -148,6 +148,39 @@ class TestRunLocalAgentLoop(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "done")
         mock_call.assert_called_once()
 
+    async def test_final_content_is_logged_when_model_stops_without_tool_calls(self):
+        log = MagicMock()
+        config = {"model": "qwen3-coder:30b"}
+
+        with patch.object(
+            local_agent_loop.ollama,
+            "call_configured_llm_turn",
+            return_value={
+                "content": "I need clarification before I can proceed.",
+                "tool_calls": [],
+            },
+        ):
+            result = await local_agent_loop.run_local_agent_loop(log, "system", "user", config)
+
+        self.assertEqual(result, "I need clarification before I can proceed.")
+        logged = " ".join(call.args[0] for call in log.call_args_list)
+        self.assertIn("I need clarification before I can proceed.", logged)
+
+    async def test_empty_content_logged_distinctly_from_none_content(self):
+        log = MagicMock()
+        config = {"model": "qwen3-coder:30b"}
+
+        with patch.object(
+            local_agent_loop.ollama,
+            "call_configured_llm_turn",
+            return_value={"content": None, "tool_calls": []},
+        ):
+            result = await local_agent_loop.run_local_agent_loop(log, "system", "user", config)
+
+        self.assertEqual(result, "")
+        logged = " ".join(call.args[0] for call in log.call_args_list)
+        self.assertIn("empty content", logged)
+
     async def test_sandbox_settings_from_config_applied_to_bash_tool(self):
         log = MagicMock()
         config = {"model": "qwen3-coder:30b", "command_timeout_s": 1}

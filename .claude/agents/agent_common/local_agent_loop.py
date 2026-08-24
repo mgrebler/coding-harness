@@ -81,8 +81,17 @@ async def run_local_agent_loop(log, system_prompt: str, user_prompt: str, config
         tool_calls = response.get("tool_calls") or []
 
         if not tool_calls:
-            log(f"[local-agent] turn {turn}: model stopped calling tools — done.")
-            return response.get("content") or ""
+            content = (response.get("content") or "").strip()
+            if content:
+                log(
+                    f"[local-agent] turn {turn}: model stopped calling tools — done. "
+                    f"Final message:\n{content[:2000]}"
+                )
+            else:
+                log(
+                    f"[local-agent] turn {turn}: model stopped calling tools — done (empty content)."
+                )
+            return content
 
         messages.append(
             {"role": "assistant", "content": response.get("content"), "tool_calls": tool_calls}
