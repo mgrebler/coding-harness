@@ -279,6 +279,47 @@ class TestUrlopenWithRetry(unittest.TestCase):
             openai_compatible._urlopen_with_retry(MagicMock())
         mock_sleep.assert_called_once_with(7.0)
 
+    def test_succeeds_after_transient_read_timeout(self):
+        fake_resp = MagicMock()
+        with (
+            patch.object(
+                openai_compatible.urllib.request,
+                "urlopen",
+                side_effect=[TimeoutError("The read operation timed out"), fake_resp],
+            ),
+            patch.object(openai_compatible.time, "sleep") as mock_sleep,
+        ):
+            result = openai_compatible._urlopen_with_retry(MagicMock())
+        self.assertIs(result, fake_resp)
+        mock_sleep.assert_called_once()
+
+    def test_raises_after_exhausting_all_retries_on_read_timeout(self):
+        with (
+            patch.object(
+                openai_compatible.urllib.request,
+                "urlopen",
+                side_effect=TimeoutError("The read operation timed out"),
+            ),
+            patch.object(openai_compatible.time, "sleep") as mock_sleep,
+            self.assertRaises(TimeoutError),
+        ):
+            openai_compatible._urlopen_with_retry(MagicMock())
+        self.assertEqual(mock_sleep.call_count, openai_compatible._MAX_RETRIES)
+
+    def test_succeeds_after_transient_url_error(self):
+        fake_resp = MagicMock()
+        with (
+            patch.object(
+                openai_compatible.urllib.request,
+                "urlopen",
+                side_effect=[urllib.error.URLError("connection refused"), fake_resp],
+            ),
+            patch.object(openai_compatible.time, "sleep") as mock_sleep,
+        ):
+            result = openai_compatible._urlopen_with_retry(MagicMock())
+        self.assertIs(result, fake_resp)
+        mock_sleep.assert_called_once()
+
 
 class TestStreamChatResponseHttpError(unittest.TestCase):
     def test_http_error_reraised_with_status_and_body(self):
