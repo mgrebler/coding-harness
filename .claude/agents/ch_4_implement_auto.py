@@ -83,7 +83,7 @@ def preflight(spec_dir: Path, feature: str):
         sys.exit(1)
 
     tasks_content = (spec_dir / "tasks.md").read_text(encoding="utf-8")
-    all_done = not unchecked_task_lines(tasks_content)
+    all_done = not unchecked_task_lines(tasks_content, exclude_tag="[MANUAL]")
     existing_results = list(spec_dir.glob(f"{CRITIC_RESULT_PREFIX}-*.json"))
 
     if all_done and not existing_results:
@@ -477,9 +477,13 @@ async def _run_implementation_agent(
     """Run the implementation agent if unchecked tasks remain, retrying once more if
     tasks are still unchecked afterward. Returns the latest tasks.md content. Exits
     the process if tasks remain unchecked after both attempts, rather than proceeding
-    into a CI run that's guaranteed to fail on missing work."""
-    if not unchecked_task_lines(tasks):
-        log("All tasks already checked off — skipping implementation agent.")
+    into a CI run that's guaranteed to fail on missing work. Tasks tagged
+    `[MANUAL]` are excluded from this check — their task text itself states
+    an agent cannot perform them (out-of-repo, human-only actions), so
+    requiring them checked before proceeding would permanently block the
+    stage."""
+    if not unchecked_task_lines(tasks, exclude_tag="[MANUAL]"):
+        log("All agent-executable tasks already checked off — skipping implementation agent.")
         return tasks
 
     max_attempts = 2
@@ -487,9 +491,10 @@ async def _run_implementation_agent(
         log(f"Running implementation agent (attempt {attempt}/{max_attempts})...")
         impl_agent = impl_agent_definition(constitution, spec, plan, tasks, quality_principles)
         user_prompt = (
-            f"Implement all unchecked tasks in specs/{feature}/tasks.md. "
+            f"Implement all unchecked tasks in specs/{feature}/tasks.md, EXCEPT any task tagged "
+            f"[MANUAL] (those require out-of-repo human action and must stay unchecked). "
             f"Follow TDD order: write failing tests first, commit, then implement, commit. "
-            f"Mark each task - [x] in tasks.md after completing it."
+            f"Mark each non-[MANUAL] task - [x] in tasks.md after completing it."
         )
         await local_agent_loop.run_generation(
             log,
@@ -506,7 +511,7 @@ async def _run_implementation_agent(
         )
 
         tasks = read_file(spec_dir / "tasks.md")
-        if not unchecked_task_lines(tasks):
+        if not unchecked_task_lines(tasks, exclude_tag="[MANUAL]"):
             return tasks
         log(
             f"WARNING: implementation agent left unchecked tasks after attempt {attempt}/{max_attempts}."

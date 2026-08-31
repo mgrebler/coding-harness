@@ -59,9 +59,15 @@ def extend_iterations_if_reviewed(
 ) -> tuple[int, bool]:
     """
     Check for a human escalation review file. If it exists and the primary
-    critic loop has already exhausted max_iterations, extend the limit by
+    critic loop has already exhausted its current ceiling, extend the limit by
     max_iterations more and return (new_max, True). Otherwise return
-    (max_iterations, False).
+    (current_ceiling, False).
+
+    The current ceiling is computed from the highest iteration number actually
+    on disk (max_existing_iteration), not recomputed from the max_iterations
+    argument alone — otherwise a second (or later) escalation-review grant would
+    recompute the same fixed ceiling as the first one, which is a silent no-op
+    whenever real progress already exceeds it.
 
     The boolean signals that violations were resolved externally — callers
     should skip the fix agent for the first new iteration.
@@ -72,15 +78,19 @@ def extend_iterations_if_reviewed(
     review_path = spec_dir / review_filename
     if not review_path.exists():
         return max_iterations, False
-    if next_iteration(spec_dir, primary_result_prefix) <= max_iterations:
-        return max_iterations, False
+    current_ceiling = max_existing_iteration(
+        spec_dir, primary_result_prefix, default=max_iterations
+    )
+    if next_iteration(spec_dir, primary_result_prefix) <= current_ceiling:
+        return current_ceiling, False
     _log = log_fn or print
     review_text = review_path.read_text(encoding="utf-8")
+    new_ceiling = current_ceiling + max_iterations
     _log(
-        f"Human escalation review found ({review_filename}) — extending iteration limit by {max_iterations}."
+        f"Human escalation review found ({review_filename}) — extending iteration limit to {new_ceiling}."
     )
     _log(f"Review:\n{review_text.strip()}")
-    return max_iterations + max_iterations, True
+    return new_ceiling, True
 
 
 def load_prior_violations(
