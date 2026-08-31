@@ -25,14 +25,26 @@ from agent_common import console, local_tools, ollama
 
 _DEFAULT_MAX_TURNS = 40
 
+# Some reasoning models never produce a turn with zero tool_calls even after
+# the task is genuinely done — observed as an endless Write→Read→Grep→Bash
+# "re-verify my own prior edit" cycle that just burns the turn budget instead
+# of ever stopping (doubling max_turns only doubled the wasted turns). This
+# is a deterministic circuit breaker for that: if _NO_PROGRESS_TURNS
+# consecutive turns pass with no tool call that actually changes a file's
+# content, treat the model as stuck rather than waiting for max_turns.
+# Mirrors critic_loop.py's own _NO_PROGRESS_THRESHOLD pattern for stuck
+# critic loops.
+_DEFAULT_NO_PROGRESS_TURNS = 6
+
 
 class LocalAgentError(Exception):
     """Raised when the local agentic loop exhausts its turn budget
     (max_turns) without the model stopping on its own — i.e. without a turn
-    that returns no tool_calls. Callers don't need to catch this specially:
-    every *-auto.py generation call site already checks for its expected
-    artifact on disk immediately after generation and exits(1) if it's
-    missing, which is the correct behavior here too."""
+    that returns no tool_calls, and without tripping the no-progress circuit
+    breaker (see _DEFAULT_NO_PROGRESS_TURNS) either. Callers don't need to
+    catch this specially: every *-auto.py generation call site already
+    checks for its expected artifact on disk immediately after generation
+    and exits(1) if it's missing, which is the correct behavior here too."""
 
 
 def _build_sandbox(config: dict) -> local_tools.BashSandboxConfig:
@@ -51,6 +63,21 @@ def _log_tool_call(log, name: str, arguments: dict) -> None:
     log(f"  → {name}({preview})")
 
 
+def _tracks_progress(call: dict, result: str, last_write_content: dict[str, str]) -> bool:
+    """Update last_write_content for a Write call and report whether this
+    single tool call changed a file's content — a Write whose content
+    differs from what was last written to that path (first write counts), or
+    a successful Edit (tool_edit rejects old_string == new_string, so a
+    successful Edit always changes something)."""
+    if call["name"] == "Write":
+        path = call["arguments"].get("file_path", "")
+        content = call["arguments"].get("content", "")
+        changed = last_write_content.get(path) != content
+        last_write_content[path] = content
+        return changed
+    return call["name"] == "Edit" and result.startswith("edited ")
+
+
 async def run_local_agent_loop(log, system_prompt: str, user_prompt: str, config: dict) -> str:
     """
     Drive the multi-turn tool-calling loop against the configured local/
@@ -58,10 +85,15 @@ async def run_local_agent_loop(log, system_prompt: str, user_prompt: str, config
     ollama.load_local_llm_generation_config) until it stops calling tools,
     returning its final text content.
 
-    Termination: a turn with no tool_calls is the signal the model is
-    done — the same signal the Claude Agent SDK's own internal loop relies
-    on. No dedicated 'finish'/'done' tool is needed. Raises LocalAgentError
-    if max_turns is exhausted first.
+    Termination: either of two signals ends the loop successfully —
+    (1) a turn with no tool_calls, the same signal the Claude Agent SDK's own
+    internal loop relies on (no dedicated 'finish'/'done' tool is needed), or
+    (2) the no-progress circuit breaker: _DEFAULT_NO_PROGRESS_TURNS
+    consecutive turns with no tool call that actually changes a file's
+    content, which catches reasoning models that keep calling tools
+    (re-reading/re-verifying their own prior edits) without ever emitting a
+    genuinely empty tool_calls turn. Raises LocalAgentError only if max_turns
+    is exhausted with neither signal having fired.
 
     Turns are non-streaming (see ollama.call_local_llm_turn /
     openai_compatible.call_openai_compatible_turn): simpler, more robust
@@ -70,11 +102,15 @@ async def run_local_agent_loop(log, system_prompt: str, user_prompt: str, config
     """
     sandbox = _build_sandbox(config)
     max_turns = config.get("max_turns", _DEFAULT_MAX_TURNS)
+    no_progress_turns = config.get("no_progress_turns", _DEFAULT_NO_PROGRESS_TURNS)
 
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+
+    last_write_content: dict[str, str] = {}
+    stalled_turns = 0
 
     for turn in range(1, max_turns + 1):
         response = ollama.call_configured_llm_turn(messages, config, local_tools.TOOLS_SCHEMA)
@@ -96,6 +132,7 @@ async def run_local_agent_loop(log, system_prompt: str, user_prompt: str, config
         messages.append(
             {"role": "assistant", "content": response.get("content"), "tool_calls": tool_calls}
         )
+        made_progress = False
         for call in tool_calls:
             _log_tool_call(log, call["name"], call["arguments"])
             result = local_tools.dispatch(call["name"], call["arguments"], sandbox)
@@ -107,7 +144,21 @@ async def run_local_agent_loop(log, system_prompt: str, user_prompt: str, config
                     "content": result,
                 }
             )
+            made_progress |= _tracks_progress(call, result, last_write_content)
         log(f"[local-agent] turn {turn}: {len(tool_calls)} tool call(s) executed.")
+
+        if made_progress:
+            stalled_turns = 0
+        elif last_write_content:  # only start counting once real work has begun
+            stalled_turns += 1
+            if stalled_turns >= no_progress_turns:
+                log(
+                    f"[local-agent] turn {turn}: no file-content-changing tool call in "
+                    f"{stalled_turns} consecutive turns — treating the model as stuck "
+                    "re-verifying already-complete work rather than waiting for max_turns. "
+                    "Returning last known state."
+                )
+                return (response.get("content") or "").strip()
 
     raise LocalAgentError(
         f"local agentic loop exhausted max_turns={max_turns} without the model finishing"

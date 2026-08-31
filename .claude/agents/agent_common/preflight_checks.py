@@ -172,13 +172,42 @@ def task_format_violations(tasks: str) -> list[str]:
 # --- Task completion -----------------------------------------------------
 
 
-def unchecked_task_lines(tasks: str, tag: str | None = None) -> list[str]:
-    """Return every unchecked task line (`- [ ]`) in tasks.md, optionally
-    filtered to lines also containing `tag` (e.g. "[TEST]"). Centralizes the
-    "- [ ]" substring scan that ch_3_test_auto.py and ch_4_implement_auto.py
+# Anchored on the checkbox + task ID starting the (stripped) line, mirroring
+# _CHECKBOX_TXXX_RE above. A naive "- [ ]" substring scan false-positives on
+# prose that merely *mentions* the checkbox/tag syntax as an example (e.g.
+# tasks.md documenting the non-deliverable-task convention: "keeps its
+# `- [ ] T002` checkbox and ID, omits only the `[TEST]`/`[IMPL]` tag") —
+# such a line contains both "- [ ]" and "[TEST]" as substrings without being
+# an actual unchecked task, which caused ch_3_test_auto.py to treat a fully
+# completed test phase as having outstanding [TEST] work.
+_UNCHECKED_TXXX_RE = re.compile(r"^[-*]\s+\[ \]\s*T\d+\b")
+
+
+def unchecked_task_lines(
+    tasks: str, tag: str | None = None, exclude_tag: str | None = None
+) -> list[str]:
+    """Return every unchecked task line (`- [ ] Txxx ...`) in tasks.md,
+    optionally filtered to lines also containing `tag` (e.g. "[TEST]") and/or
+    excluding lines containing `exclude_tag` (e.g. "[MANUAL]"). Centralizes
+    the task-completion scan that ch_3_test_auto.py and ch_4_implement_auto.py
     each used independently to detect outstanding work, so preflight checks
-    and post-agent verification can't drift out of sync with each other."""
-    return [line for line in tasks.splitlines() if "- [ ]" in line and (tag is None or tag in line)]
+    and post-agent verification can't drift out of sync with each other.
+
+    `exclude_tag="[MANUAL]"` exists because the tasks-agent has, across
+    multiple features (e.g. 054, 055, 061), used a `[MANUAL]` tag on tasks
+    whose task text itself says an agent cannot perform them (out-of-repo,
+    human-only actions like a Chrome Web Store Dashboard update). Before this
+    parameter existed, ch_4_implement_auto.py's completion gate required
+    every such task to be checked off before it would even attempt the
+    critic/quality-review/CI gates — something no agent could ever satisfy,
+    permanently blocking the stage."""
+    return [
+        line
+        for line in tasks.splitlines()
+        if _UNCHECKED_TXXX_RE.match(line.strip())
+        and (tag is None or tag in line)
+        and (exclude_tag is None or exclude_tag not in line)
+    ]
 
 
 # --- Red-state artifact validity (§TQ2) ---------------------------------
