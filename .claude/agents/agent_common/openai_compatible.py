@@ -34,7 +34,12 @@ def _retry_delay_s(attempt: int, retry_after: str | None) -> float:
 
 
 def _urlopen_with_retry(req: urllib.request.Request, timeout: int = 300):
-    """urlopen with retry/backoff on transient HTTP errors (429, 5xx)."""
+    """urlopen with retry/backoff on transient HTTP errors (429, 5xx) and on
+    transient network failures (read timeouts, dropped connections, DNS
+    blips). The latter aren't HTTP responses at all — they surface as
+    TimeoutError/URLError — so they're handled in a separate except clause
+    from HTTPError (a URLError subclass) and always retried, unlike HTTPError
+    where only specific status codes are worth retrying."""
     for attempt in range(_MAX_RETRIES + 1):
         try:
             return urllib.request.urlopen(req, timeout=timeout)  # noqa: S310 — see _build_request
@@ -44,6 +49,16 @@ def _urlopen_with_retry(req: urllib.request.Request, timeout: int = 300):
             delay = _retry_delay_s(attempt, e.headers.get("Retry-After"))
             print(
                 f"[openai-compatible] HTTP {e.code} {e.reason} — retrying in "
+                f"{delay:.0f}s (attempt {attempt + 1}/{_MAX_RETRIES})",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+        except (TimeoutError, urllib.error.URLError) as e:
+            if attempt == _MAX_RETRIES:
+                raise
+            delay = _retry_delay_s(attempt, None)
+            print(
+                f"[openai-compatible] {type(e).__name__}: {e} — retrying in "
                 f"{delay:.0f}s (attempt {attempt + 1}/{_MAX_RETRIES})",
                 file=sys.stderr,
             )
