@@ -792,7 +792,9 @@ class TestRunCriticSubprocess(unittest.TestCase):
         with patch.object(ollama.console, "stream_subprocess", return_value=7) as mock_stream:
             result = ollama._run_critic_subprocess(cmd)
 
-        mock_stream.assert_called_once_with(cmd, prefix="")
+        mock_stream.assert_called_once_with(
+            cmd, prefix="", idle_timeout=ollama._CRITIC_IDLE_TIMEOUT_S
+        )
         self.assertEqual(result, 7)
 
     def test_prefix_passed_through(self):
@@ -801,7 +803,9 @@ class TestRunCriticSubprocess(unittest.TestCase):
         with patch.object(ollama.console, "stream_subprocess", return_value=0) as mock_stream:
             ollama._run_critic_subprocess(cmd, prefix="[qwen] ")
 
-        mock_stream.assert_called_once_with(cmd, prefix="[qwen] ")
+        mock_stream.assert_called_once_with(
+            cmd, prefix="[qwen] ", idle_timeout=ollama._CRITIC_IDLE_TIMEOUT_S
+        )
 
 
 class TestRunLocalCriticCliDispatch(unittest.TestCase):
@@ -1018,7 +1022,7 @@ class TestRunOneCritic(unittest.TestCase):
             log = MagicMock()
             with (
                 patch.object(ollama, "_run_critic_subprocess", return_value=1),
-                self.assertRaises(SystemExit),
+                self.assertRaises(ollama.CriticSubprocessError),
             ):
                 ollama._run_one_critic(
                     log,
@@ -1036,7 +1040,27 @@ class TestRunOneCritic(unittest.TestCase):
             log = MagicMock()
             with (
                 patch.object(ollama, "_run_critic_subprocess", return_value=0),
-                self.assertRaises(SystemExit),
+                self.assertRaises(ollama.CriticSubprocessError),
+            ):
+                ollama._run_one_critic(
+                    log,
+                    "plan critic",
+                    Path("script.py"),
+                    "feat",
+                    1,
+                    raw_dir,
+                    {"id": "qwen", "model": "qwen3"},
+                )
+
+    def test_aborts_with_critic_subprocess_error_on_timeout(self):
+        with tempfile.TemporaryDirectory() as d:
+            raw_dir = Path(d) / "raw"
+            log = MagicMock()
+            with (
+                patch.object(
+                    ollama, "_run_critic_subprocess", side_effect=TimeoutError("no output for 900s")
+                ),
+                self.assertRaises(ollama.CriticSubprocessError),
             ):
                 ollama._run_one_critic(
                     log,
@@ -1245,6 +1269,64 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
         result_path = Path("specs/feat/ch-1-plan-critic-result-1.json")
         self.assertTrue(result_path.exists())
         self.assertEqual(json.loads(result_path.read_text())["status"], "PASS")
+
+    async def test_multi_critic_parallel_mode_survives_partial_failure(self):
+        """A CriticSubprocessError raised by one critic's asyncio.to_thread worker
+        (e.g. the SystemExit-turned-Exception from _run_one_critic) must not strand
+        a sibling critic's already-completed result — the gate should still resolve
+        using whichever critics succeeded."""
+        log = MagicMock()
+        configs = [{"id": "a", "model": "m1"}, {"id": "b", "model": "m2"}]
+
+        def fake_run_one(log, label, script, feature, iteration, raw_dir, config, prefix=""):
+            if config["id"] == "a":
+                raise ollama.CriticSubprocessError("critic 'a' failed")
+            return {"id": config["id"], "model": config["model"], "result": {"status": "PASS"}}
+
+        with (
+            patch.object(ollama, "load_local_llm_configs", return_value=configs),
+            patch.object(ollama, "load_critic_execution_mode", return_value="parallel"),
+            patch.object(ollama, "_run_one_critic", side_effect=fake_run_one),
+        ):
+            await ollama.run_gate(
+                log,
+                "plan",
+                "script.py",
+                "feat",
+                1,
+                "plan critic",
+                MagicMock(),
+                result_prefix="ch-1-plan-critic-result",
+                build_reconcile_query=MagicMock(),
+            )
+
+        result_path = Path("specs/feat/ch-1-plan-critic-result-1.json")
+        self.assertTrue(result_path.exists())
+        self.assertEqual(json.loads(result_path.read_text())["status"], "PASS")
+
+    async def test_multi_critic_parallel_mode_aborts_if_all_critics_fail(self):
+        log = MagicMock()
+        configs = [{"id": "a", "model": "m1"}, {"id": "b", "model": "m2"}]
+
+        def fake_run_one(log, label, script, feature, iteration, raw_dir, config, prefix=""):
+            raise ollama.CriticSubprocessError(f"critic '{config['id']}' failed")
+
+        with (
+            patch.object(ollama, "load_local_llm_configs", return_value=configs),
+            patch.object(ollama, "load_critic_execution_mode", return_value="parallel"),
+            patch.object(ollama, "_run_one_critic", side_effect=fake_run_one),
+            self.assertRaises(SystemExit),
+        ):
+            await ollama.run_gate(
+                log,
+                "plan",
+                "script.py",
+                "feat",
+                1,
+                "plan critic",
+                MagicMock(),
+                result_prefix="ch-1-plan-critic-result",
+            )
 
 
 class TestResolveGenerationEntry(unittest.TestCase):

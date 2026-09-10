@@ -1,7 +1,9 @@
 """Console/logging plumbing: stdout/stderr teeing and Claude Agent SDK message printing."""
 
+import queue
 import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -94,7 +96,7 @@ def setup_log_file(path: Path):
     sys.stderr = _Tee(sys.__stderr__, log_fh)  # type: ignore[assignment]
 
 
-def stream_subprocess(cmd: list[str], prefix: str = "") -> int:
+def stream_subprocess(cmd: list[str], prefix: str = "", idle_timeout: float | None = None) -> int:
     """
     Run *cmd* as a subprocess, streaming stdout+stderr line-by-line through
     the current sys.stdout (which may be a _Tee writing to both terminal and
@@ -104,6 +106,12 @@ def stream_subprocess(cmd: list[str], prefix: str = "") -> int:
     subprocesses run concurrently (parallel multi-critic fan-out) so their
     interleaved output stays attributable to a critic id, e.g. "[qwen] ".
     Empty by default, which reproduces the original unprefixed output.
+
+    idle_timeout, if set, kills the subprocess and raises TimeoutError once
+    idle_timeout seconds pass with no new output line — a genuine "no progress"
+    guard, not a flat wall-clock cap, so a slow-but-still-streaming call is never
+    killed. None (the default) reproduces the exact prior behavior: block on
+    proc.stdout with no timeout.
     """
     proc = subprocess.Popen(
         cmd,
@@ -113,8 +121,36 @@ def stream_subprocess(cmd: list[str], prefix: str = "") -> int:
     )
     if proc.stdout is None:
         raise RuntimeError("subprocess.Popen with stdout=PIPE did not provide a stdout stream")
-    for line in proc.stdout:
+
+    if idle_timeout is None:
+        for line in proc.stdout:
+            _safe_print(f"{prefix}{line}", end="")
+        proc.wait()
+        return proc.returncode
+
+    lines: queue.Queue = queue.Queue()
+
+    def _read_lines() -> None:
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)  # EOF sentinel
+
+    reader = threading.Thread(target=_read_lines, daemon=True)
+    reader.start()
+
+    while True:
+        try:
+            line = lines.get(timeout=idle_timeout)
+        except queue.Empty:
+            proc.kill()
+            proc.wait()
+            raise TimeoutError(
+                f"subprocess produced no output for {idle_timeout:.0f}s, killed: {cmd}"
+            ) from None
+        if line is None:
+            break
         _safe_print(f"{prefix}{line}", end="")
+
     proc.wait()
     return proc.returncode
 
