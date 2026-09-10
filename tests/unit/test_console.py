@@ -90,6 +90,24 @@ class TestStreamSubprocess(unittest.TestCase):
         rc = console.stream_subprocess([sys.executable, "-c", "import sys; sys.exit(3)"])
         self.assertEqual(rc, 3)
 
+    def test_idle_timeout_does_not_affect_normal_completion(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = console.stream_subprocess(
+                [sys.executable, "-c", "print('a'); print('b')"], idle_timeout=5
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("a", buf.getvalue())
+        self.assertIn("b", buf.getvalue())
+
+    def test_idle_timeout_kills_hung_subprocess(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf), self.assertRaises(TimeoutError):
+            console.stream_subprocess(
+                [sys.executable, "-c", "import time; time.sleep(30)"], idle_timeout=0.2
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

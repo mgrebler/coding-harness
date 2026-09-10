@@ -22,6 +22,17 @@ _FULL_GPU_OFFLOAD = 999  # sentinel > any real model's layer count; llama.cpp cl
 _ALLOWED_URL_SCHEMES = ("http://", "https://")
 _DEFAULT_PREDICT_RESERVE = 1024  # ctx headroom for generated tokens when num_predict is unset
 _tokenize_unavailable: set[str] = set()  # ollama_urls where /api/tokenize 404'd this process
+_CRITIC_IDLE_TIMEOUT_S = 900  # kill a critic subprocess that produces no output for 15min
+
+
+class CriticSubprocessError(Exception):
+    """A critic subprocess failed (non-zero exit, missing output, or timed out).
+
+    Raised instead of calling sys.exit() so this stays a normal Exception: it must
+    survive being raised inside a worker thread under asyncio.to_thread/gather — a
+    SystemExit (BaseException) crossing that boundary crashes or hangs the event
+    loop nondeterministically instead of propagating cleanly. See FOLLOWUP_HARNESS.md.
+    """
 
 
 def _resolve_provider_fields(provider: str, resolved: dict, raw: dict) -> dict:
@@ -926,8 +937,14 @@ def _run_critic_subprocess(cmd: list, prefix: str = "") -> int:
     prefix: see console.stream_subprocess — used only for parallel multi-critic
     fan-out, where several subprocesses' output would otherwise interleave
     unattributed.
+
+    Raises TimeoutError (via console.stream_subprocess's idle_timeout) if the
+    subprocess produces no output for _CRITIC_IDLE_TIMEOUT_S — a hung critic call
+    (e.g. a stuck upstream request) would otherwise stall the whole gate forever
+    with no operator-visible signal. This is a genuine "no progress" timeout, not
+    a flat wall-clock cap: a slow-but-still-streaming local model is unaffected.
     """
-    return console.stream_subprocess(cmd, prefix=prefix)
+    return console.stream_subprocess(cmd, prefix=prefix, idle_timeout=_CRITIC_IDLE_TIMEOUT_S)
 
 
 def _run_one_critic(
@@ -965,15 +982,19 @@ def _run_one_critic(
             "--critic-id",
             config["id"],
         ]
-        returncode = _run_critic_subprocess(cmd, prefix=prefix)
+        try:
+            returncode = _run_critic_subprocess(cmd, prefix=prefix)
+        except TimeoutError as e:
+            log(f"ERROR: critic '{config['id']}' timed out for {label} iteration {iteration}: {e}")
+            raise CriticSubprocessError(str(e)) from e
         if returncode != 0:
-            log(
-                f"ERROR: critic '{config['id']}' failed for {label} iteration {iteration}. Aborting."
-            )
-            sys.exit(1)
+            msg = f"critic '{config['id']}' failed for {label} iteration {iteration}. Aborting."
+            log(f"ERROR: {msg}")
+            raise CriticSubprocessError(msg)
         if not raw_path.exists():
-            log(f"ERROR: critic '{config['id']}' did not write {raw_path}. Aborting.")
-            sys.exit(1)
+            msg = f"critic '{config['id']}' did not write {raw_path}. Aborting."
+            log(f"ERROR: {msg}")
+            raise CriticSubprocessError(msg)
     return {
         "id": config["id"],
         "model": config["model"],
@@ -992,9 +1013,16 @@ async def _gather_raw_critic_results(
     mode: str,
 ) -> list[dict]:
     """Run every critic in configs (sequentially, or concurrently via
-    asyncio.to_thread when mode == 'parallel') and return their raw results."""
+    asyncio.to_thread when mode == 'parallel') and return their raw results.
+
+    Parallel mode uses return_exceptions=True so one critic's CriticSubprocessError
+    can't strand an already-completed sibling critic's result: failures are logged
+    and dropped, and the gate proceeds with whichever critics succeeded (aborting
+    only if none did). Sequential mode is unaffected by the threading race this
+    guards against, so it keeps its existing fail-fast-on-first-failure behavior.
+    """
     if mode == "parallel":
-        return await asyncio.gather(
+        outcomes = await asyncio.gather(
             *(
                 asyncio.to_thread(
                     _run_one_critic,
@@ -1008,8 +1036,22 @@ async def _gather_raw_critic_results(
                     f"[{config['id']}] ",
                 )
                 for config in configs
-            )
+            ),
+            return_exceptions=True,
         )
+        survivors = []
+        for config, outcome in zip(configs, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                log(f"  {label} critic '{config['id']}' failed: {outcome}")
+            else:
+                survivors.append(outcome)
+        if not survivors:
+            log(
+                f"ERROR: all {len(configs)} critics failed for {label} iteration "
+                f"{iteration}. Aborting."
+            )
+            sys.exit(1)
+        return survivors
     return [
         _run_one_critic(log, label, script, feature, iteration, raw_dir, config)
         for config in configs
@@ -1110,9 +1152,13 @@ async def run_gate(
     if len(configs) == 1:
         config = configs[0]
         log(f"Using local LLM ({config['model']}) for {label}...")
-        returncode = _run_critic_subprocess(
-            [sys.executable, str(script), "--feature", feature, "--iteration", str(iteration)],
-        )
+        try:
+            returncode = _run_critic_subprocess(
+                [sys.executable, str(script), "--feature", feature, "--iteration", str(iteration)],
+            )
+        except TimeoutError as e:
+            log(f"ERROR: local LLM {label} timed out for iteration {iteration}: {e}")
+            sys.exit(1)
         if returncode == 2:
             configs = []  # not configured; fall through to Claude below
         elif returncode != 0:
