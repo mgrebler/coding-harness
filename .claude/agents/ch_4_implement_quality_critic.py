@@ -91,6 +91,11 @@ Review process:
 
 FAIL if: any Critical issue exists, more than 2 High severity issues exist, or confidence is below 7/10.
 
+You do not have a ReportFindings tool or any other structured-output tool in this review — do
+NOT produce a `findings` array or any other shape borrowed from that convention. Output is a
+raw JSON object (via Write/Bash, not a tool call) matching EXACTLY the schema below, with
+top-level `status`, `confidence`, and `blocking_issues` keys:
+
 Output ONLY valid JSON, no preamble, no markdown fences:
 {{
   "iteration": {iteration},

@@ -497,6 +497,71 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
             for k, v in escalation_kwargs.items():
                 self.assertEqual(kwargs[k], v)
 
+    async def test_gate2_off_schema_result_aborts_instead_of_silent_fail(self):
+        """Reproduces the exact FOLLOWUP_HARNESS.md bug: gate2's subagent writes a
+        ReportFindings-shaped {"findings": []} blob instead of the confidence-style
+        schema its prompt asked for. This must abort loudly (SystemExit) rather than
+        being read as a worst-case FAIL with 0 confidence/0 blocking issues — a gate
+        that can never return PASS is a harness bug, not a review verdict."""
+
+        def build_query1(iteration, prev_violations):
+            return "gate1-query"
+
+        def build_query2(iteration, prev_violations):
+            return "gate2-query"
+
+        async def fake_run_gate(
+            log, critic_type, script_name, feature, iteration, label, claude_fallback, **kwargs
+        ):
+            if critic_type == "plan":
+                _write_result(spec_dir, "ch-1-plan-critic-result", iteration, "PASS")
+            else:
+                # Off-schema: no status/confidence/blocking_issues at all.
+                (spec_dir / f"ch-1-plan-architecture-review-result-{iteration}.json").write_text(
+                    json.dumps({"findings": []})
+                )
+
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            gate1 = GateSpec(
+                "ch-1-plan-critic-result",
+                "ch_1_plan_critic.py",
+                "plan",
+                "plan critic",
+                build_query1,
+            )
+            gate2 = GateSpec(
+                "ch-1-plan-architecture-review-result",
+                "ch_1_plan_architecture_critic.py",
+                "plan-architecture-review",
+                "architecture review",
+                build_query2,
+            )
+            run_revision = AsyncMock()
+            on_both_pass = AsyncMock()
+
+            with (
+                patch.object(ollama, "run_gate", side_effect=fake_run_gate),
+                patch.object(critic_loop, "write_escalation") as mock_escalate,
+                self.assertRaises(SystemExit),
+            ):
+                await critic_loop.run_two_gate_loop(
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    3,
+                    gate1,
+                    gate2,
+                    resume_state=(1, None, None),
+                    skip_fix_agent=False,
+                    run_revision=run_revision,
+                    on_both_pass=on_both_pass,
+                    escalation_kwargs={},
+                )
+
+            on_both_pass.assert_not_called()
+            mock_escalate.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

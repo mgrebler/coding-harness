@@ -914,6 +914,12 @@ def run_local_critic_cli(
         print(f"[{label}] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
         sys.exit(1)
 
+    try:
+        resume_state.validate_gate_schema(result, summary_style)
+    except resume_state.GateSchemaError as e:
+        print(f"[{label}] ERROR: LLM response {e}: {cleaned[:500]}", flush=True)
+        sys.exit(1)
+
     result["iteration"] = iteration
 
     result_path = (
