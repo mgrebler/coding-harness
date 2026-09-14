@@ -4,6 +4,27 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+# Required top-level keys per summary_style, mirroring the confidence/violations
+# convention shared with critic_loop.py and ollama.py's _log_cli_result. A gate
+# result missing these must never be silently read as a worst-case FAIL — that's
+# indistinguishable from a real failing review and makes the gate permanently
+# unable to PASS. See FOLLOWUP_HARNESS.md.
+_REQUIRED_KEYS = {
+    "confidence": {"status", "confidence", "blocking_issues"},
+    "violations": {"status", "violations"},
+}
+
+
+class GateSchemaError(Exception):
+    """A gate result file is missing key(s) required for its summary_style."""
+
+
+def validate_gate_schema(result: dict, summary_style: str) -> None:
+    """Raise GateSchemaError if result is missing keys required for summary_style."""
+    missing = sorted(_REQUIRED_KEYS[summary_style] - result.keys())
+    if missing:
+        raise GateSchemaError(f"missing required key(s) {missing}")
+
 
 def next_iteration(spec_dir: Path, result_prefix: str) -> int:
     """Return the next critic iteration number based on existing result files."""
@@ -27,9 +48,21 @@ def max_existing_iteration(spec_dir: Path, result_prefix: str, default: int = 3)
     return max(existing_iterations, default=default)
 
 
-def read_result(spec_dir: Path, result_prefix: str, iteration: int) -> dict:
+def read_result(
+    spec_dir: Path, result_prefix: str, iteration: int, summary_style: str | None = None
+) -> dict:
+    """
+    Read and parse a gate's result file. If summary_style is given, also validate
+    that the result has the keys required for that style, raising GateSchemaError
+    if not — a missing required key is a harness/subagent bug, not a review
+    verdict, and must never be indistinguishable from one. summary_style=None
+    (the default) skips validation, for callers that don't know/need the shape.
+    """
     path = spec_dir / f"{result_prefix}-{iteration}.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    result = json.loads(path.read_text(encoding="utf-8"))
+    if summary_style is not None:
+        validate_gate_schema(result, summary_style)
+    return result
 
 
 def find_passing_iteration(
@@ -107,10 +140,10 @@ def load_prior_violations(
     if iteration <= 1:
         return None
     try:
-        result = read_result(spec_dir, result_prefix, iteration - 1)
+        result = read_result(spec_dir, result_prefix, iteration - 1, summary_style="violations")
         if result.get("status") == "FAIL":
             return result.get("violations", [])
-    except (json.JSONDecodeError, ValueError, OSError):
+    except (json.JSONDecodeError, ValueError, OSError, GateSchemaError):
         pass
     return None
 
@@ -138,8 +171,8 @@ def find_two_gate_resume_state(
 
     prev = iteration - 1
     try:
-        prev_gate1 = read_result(spec_dir, gate1_prefix, prev)
-    except (json.JSONDecodeError, ValueError, OSError):
+        prev_gate1 = read_result(spec_dir, gate1_prefix, prev, summary_style="violations")
+    except (json.JSONDecodeError, ValueError, OSError, GateSchemaError):
         return iteration, None, None
 
     if prev_gate1.get("status") == "FAIL":
@@ -151,8 +184,8 @@ def find_two_gate_resume_state(
         return prev, None, None
 
     try:
-        prev_gate2 = json.loads(gate2_prev_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, ValueError):
+        prev_gate2 = read_result(spec_dir, gate2_prefix, prev, summary_style="confidence")
+    except (json.JSONDecodeError, ValueError, OSError, GateSchemaError):
         return prev, None, None
 
     if prev_gate2.get("status") == "FAIL":

@@ -149,7 +149,15 @@ async def _run_gate_for_iteration(
     else:
         log(f"{gate.label} result for iteration {iteration} already exists — reading status.")
 
-    result = rstate.read_result(spec_dir, gate.result_prefix, iteration)
+    try:
+        result = rstate.read_result(spec_dir, gate.result_prefix, iteration, summary_style)
+    except rstate.GateSchemaError as e:
+        log(
+            f"ERROR: {gate.label} (iteration {iteration}) wrote a result file "
+            f"{e} — path: {path}. This is a harness/subagent bug, not a review verdict; "
+            f"aborting instead of silently treating it as FAIL."
+        )
+        sys.exit(1)
     status = result.get("status", "FAIL")
 
     if summary_style == "confidence":

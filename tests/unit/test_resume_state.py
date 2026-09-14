@@ -93,6 +93,52 @@ class TestFormatViolationsBlock(unittest.TestCase):
         self.assertIn("previous iteration (1)", result)  # iteration - 1 = 1
 
 
+class TestValidateGateSchema(unittest.TestCase):
+    def test_confidence_style_all_keys_present_does_not_raise(self):
+        result = {"status": "PASS", "confidence": 9, "blocking_issues": []}
+        resume_state.validate_gate_schema(result, "confidence")  # no raise
+
+    def test_confidence_style_missing_keys_raises_naming_them(self):
+        with self.assertRaises(resume_state.GateSchemaError) as cm:
+            resume_state.validate_gate_schema({"findings": []}, "confidence")
+        self.assertIn("blocking_issues", str(cm.exception))
+        self.assertIn("confidence", str(cm.exception))
+        self.assertIn("status", str(cm.exception))
+
+    def test_violations_style_all_keys_present_does_not_raise(self):
+        result = {"status": "FAIL", "violations": []}
+        resume_state.validate_gate_schema(result, "violations")  # no raise
+
+    def test_violations_style_missing_violations_raises(self):
+        with self.assertRaises(resume_state.GateSchemaError) as cm:
+            resume_state.validate_gate_schema({"status": "PASS"}, "violations")
+        self.assertIn("violations", str(cm.exception))
+
+
+class TestReadResult(unittest.TestCase):
+    def test_no_summary_style_skips_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "gate-1.json").write_text(json.dumps({"findings": []}))
+            result = resume_state.read_result(Path(d), "gate", 1)
+            self.assertEqual(result, {"findings": []})
+
+    def test_confirmed_bug_input_raises_gate_schema_error(self):
+        """Exact iteration-5 FOLLOWUP_HARNESS.md bug input: a quality-review
+        subagent writing {"findings": []} instead of the confidence-style
+        schema its prompt asked for must be a loud error, not a silent FAIL."""
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "gate-5.json").write_text(json.dumps({"findings": []}))
+            with self.assertRaises(resume_state.GateSchemaError):
+                resume_state.read_result(Path(d), "gate", 5, summary_style="confidence")
+
+    def test_well_formed_confidence_result_passes_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = {"status": "PASS", "confidence": 9, "blocking_issues": []}
+            (Path(d) / "gate-1.json").write_text(json.dumps(data))
+            result = resume_state.read_result(Path(d), "gate", 1, summary_style="confidence")
+            self.assertEqual(result, data)
+
+
 class TestLoadPriorViolations(unittest.TestCase):
     def _write_result(self, d, i, status, violations=None):
         data = {"status": status, "violations": violations or []}
@@ -118,10 +164,19 @@ class TestLoadPriorViolations(unittest.TestCase):
             result = resume_state.load_prior_violations(Path(d), "ch-1-plan-critic-result", 2)
             self.assertEqual(result, viols)
 
+    def test_previous_off_schema_returns_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "ch-1-plan-critic-result-1.json").write_text(json.dumps({"findings": []}))
+            self.assertIsNone(
+                resume_state.load_prior_violations(Path(d), "ch-1-plan-critic-result", 2)
+            )
+
 
 class TestFindTwoGateResumeState(unittest.TestCase):
     def _write(self, d, prefix, i, status, key="violations", items=None):
         data = {"status": status, key: items or []}
+        if key == "blocking_issues":
+            data.setdefault("confidence", 5)  # gate2 is confidence-style — needs both keys
         (Path(d) / f"{prefix}-{i}.json").write_text(json.dumps(data))
 
     def test_iteration_1_unchanged(self):
@@ -161,9 +216,30 @@ class TestFindTwoGateResumeState(unittest.TestCase):
     def test_both_pass_unchanged(self):
         with tempfile.TemporaryDirectory() as d:
             self._write(d, "gate1", 1, "PASS")
-            self._write(d, "gate2", 1, "PASS")
+            self._write(d, "gate2", 1, "PASS", "blocking_issues", [])
             it, g1, g2 = resume_state.find_two_gate_resume_state(Path(d), "gate1", "gate2", 2)
             self.assertEqual(it, 2)
+            self.assertIsNone(g1)
+            self.assertIsNone(g2)
+
+    def test_gate1_off_schema_falls_back_to_no_violations(self):
+        """A gate1 result missing 'violations' (e.g. a ReportFindings-shaped
+        {"findings": []} blob) must not crash resume — same fallback as a
+        malformed/corrupt result file, not a hard error at resume time (the
+        authoritative PASS/FAIL check happens elsewhere)."""
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "gate1-1.json").write_text(json.dumps({"findings": []}))
+            it, g1, g2 = resume_state.find_two_gate_resume_state(Path(d), "gate1", "gate2", 2)
+            self.assertEqual(it, 2)
+            self.assertIsNone(g1)
+            self.assertIsNone(g2)
+
+    def test_gate2_off_schema_falls_back_to_no_violations(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "gate1", 1, "PASS")
+            (Path(d) / "gate2-1.json").write_text(json.dumps({"findings": []}))
+            it, g1, g2 = resume_state.find_two_gate_resume_state(Path(d), "gate1", "gate2", 2)
+            self.assertEqual(it, 1)
             self.assertIsNone(g1)
             self.assertIsNone(g2)
 

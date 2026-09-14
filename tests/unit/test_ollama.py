@@ -831,12 +831,12 @@ class TestRunLocalCriticCliDispatch(unittest.TestCase):
                 sys, "argv", ["ch_1_plan_critic.py", "--feature", "001-x", "--iteration", "1"]
             ),
             patch.object(
-                ollama, "call_local_llm", return_value='{"status": "PASS"}'
+                ollama, "call_local_llm", return_value='{"status": "PASS", "violations": []}'
             ) as mock_ollama_call,
             patch.object(
                 ollama.openai_compatible,
                 "call_openai_compatible_llm",
-                return_value='{"status": "PASS"}',
+                return_value='{"status": "PASS", "violations": []}',
             ) as mock_openai_call,
             patch.object(ollama.files, "write_file"),
         ):
@@ -867,6 +867,62 @@ class TestRunLocalCriticCliDispatch(unittest.TestCase):
         )
         mock_openai_call.assert_called_once()
         mock_ollama_call.assert_not_called()
+
+
+class TestRunLocalCriticCliSchemaValidation(unittest.TestCase):
+    """A local-LLM critic response that doesn't match its summary_style's required
+    schema (e.g. a ReportFindings-shaped {"findings": []} blob instead of the
+    confidence-style schema its prompt asked for) must abort loudly instead of
+    being written to disk as if it were a valid result. See FOLLOWUP_HARNESS.md."""
+
+    def setUp(self):
+        self._orig_cwd = Path.cwd()
+        self._tmpdir = tempfile.mkdtemp()
+        os.chdir(self._tmpdir)
+
+    def tearDown(self):
+        os.chdir(self._orig_cwd)
+
+    def _run(self, llm_response, summary_style):
+        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "ollama_url": "http://localhost:11434",
+                    "default": {"enabled": True, "model": "llama3.2"},
+                }
+            )
+        )
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["ch_4_implement_quality_critic.py", "--feature", "001-x", "--iteration", "5"],
+            ),
+            patch.object(ollama, "call_local_llm", return_value=llm_response),
+            patch.object(ollama.files, "write_file") as mock_write,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            ollama.run_local_critic_cli(
+                "implement-quality-review",
+                "ch-4-implement-code-quality-review-result",
+                lambda spec_dir, iteration: "prompt",
+                summary_style=summary_style,
+            )
+
+        return cm.exception.code, mock_write
+
+    def test_confirmed_bug_input_exits_1_and_never_writes_result(self):
+        code, mock_write = self._run('{"findings": []}', "confidence")
+        self.assertEqual(code, 1)
+        mock_write.assert_not_called()
+
+    def test_missing_violations_key_exits_1_and_never_writes_result(self):
+        code, mock_write = self._run('{"status": "PASS"}', "violations")
+        self.assertEqual(code, 1)
+        mock_write.assert_not_called()
 
 
 class TestRunLocalCriticCliCriticId(unittest.TestCase):
@@ -914,7 +970,9 @@ class TestRunLocalCriticCliCriticId(unittest.TestCase):
                     "deepseek",
                 ],
             ),
-            patch.object(ollama, "call_local_llm", return_value='{"status": "PASS"}'),
+            patch.object(
+                ollama, "call_local_llm", return_value='{"status": "PASS", "violations": []}'
+            ),
         ):
             ollama.run_local_critic_cli(
                 "plan", "ch-1-plan-critic-result", lambda spec_dir, iteration: "prompt"
@@ -957,7 +1015,9 @@ class TestRunLocalCriticCliCriticId(unittest.TestCase):
             patch.object(
                 sys, "argv", ["ch_1_plan_critic.py", "--feature", "001-x", "--iteration", "1"]
             ),
-            patch.object(ollama, "call_local_llm", return_value='{"status": "PASS"}'),
+            patch.object(
+                ollama, "call_local_llm", return_value='{"status": "PASS", "violations": []}'
+            ),
         ):
             ollama.run_local_critic_cli(
                 "plan", "ch-1-plan-critic-result", lambda spec_dir, iteration: "prompt"
