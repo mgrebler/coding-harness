@@ -67,3 +67,27 @@ def read_changed_files(changed_files: list[str], dirs: tuple[str, ...]) -> str:
     return (
         "\n\n".join(sections) if sections else "(no changed files found in specified directories)"
     )
+
+
+def read_directory_tree(root: Path) -> dict[str, str]:
+    """Read all files under root recursively, keyed by path relative to root (posix-style,
+    sorted). Returns {} if root doesn't exist (e.g. docs/ not yet created)."""
+    if not root.exists():
+        return {}
+    tree: dict[str, str] = {}
+    for p in sorted(root.rglob("*")):
+        if p.is_file():
+            rel = p.relative_to(root).as_posix()
+            try:
+                tree[rel] = p.read_text(encoding="utf-8")
+            except Exception:
+                tree[rel] = "(could not read)"
+    return tree
+
+
+def format_directory_tree(tree: dict[str, str], empty_message: str = "(no files)") -> str:
+    """Format a {relative_path: content} mapping (from read_directory_tree) into a
+    prompt-ready block of --- path --- sections."""
+    if not tree:
+        return empty_message
+    return "\n\n".join(f"--- {path} ---\n{content}" for path, content in tree.items())
