@@ -163,6 +163,11 @@ Evidence standard — before adding any item to the violations array you MUST:
   in "location" instead of quoting it too.
 - "finding" must be valid inside a JSON string: plain text with internal newlines written as the
   `\n` escape sequence. Never use `+` or any other concatenation syntax inside the JSON value.
+- If the excerpt you are quoting itself contains a double-quote character (e.g. it shows an
+  example JSON body like {{"status": "ok"}}), every one of those double-quotes MUST be escaped as
+  `\"` in your output. If you are not fully certain you can escape it correctly, paraphrase that
+  part instead of quoting it verbatim (e.g. "a response body of status/ok" rather than copying the
+  literal braces and quotes) — a correct paraphrase is far better than a quote that breaks the JSON.
 - If the quoted content does not show a specific rule broken, it belongs in not_applicable, not violations
 - If your analysis concludes "does not violate" or "no violation found", add it to not_applicable instead — do NOT put it in violations
 - Never report a violation based on hypothetical future scenarios, content that might be added later, or conditions that "could" arise
