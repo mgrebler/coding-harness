@@ -21,7 +21,7 @@ from pathlib import Path
 from agent_common.files import read_changed_files, read_optional, require_files
 from agent_common.git import get_changed_files
 from agent_common.ollama import run_local_critic_cli
-from agent_common.project_conventions import resolve_test_dirs
+from agent_common.project_conventions import looks_like_test_file, resolve_test_dirs
 
 RESULT_PREFIX = "ch-3-test-quality-review-result"
 
@@ -159,7 +159,9 @@ def main():
         tasks = tasks_path.read_text(encoding="utf-8")
 
         changed_files = get_changed_files()
-        changed_test_files = read_changed_files(changed_files, resolve_test_dirs())
+        changed_test_files = read_changed_files(
+            changed_files, resolve_test_dirs(), extra_match=looks_like_test_file
+        )
 
         return build_test_quality_review_prompt(
             constitution,

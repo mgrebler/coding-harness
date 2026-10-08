@@ -39,6 +39,8 @@ _README_CI_KEYWORDS = (
     "continuous integration",
 )
 
+_TEST_FILENAME_RE = re.compile(r"(?i)(\.test\.|\.spec\.|/__tests__/|/tests?/)")
+
 _HEADING_RE = re.compile(r"(?im)^#{1,6}\s*.*$")
 _CI_SECTION_HEADING_RE = re.compile(
     r"(?im)^#{1,6}.*\b(ci requirements|continuous integration)\b.*$"
@@ -196,6 +198,20 @@ def _test_dirs_from_git() -> tuple[str, ...]:
                 if d not in dirs:
                     dirs.append(d)
     return tuple(dirs)
+
+
+def looks_like_test_file(path: str) -> bool:
+    """True if path matches a common test-file naming convention (*.test.*,
+    *.spec.*, or a __tests__/tests/test directory component), independent of
+    resolve_test_dirs()'s constitution/repo-layout resolution. Used as a
+    safety-net fallback so a changed test file whose actual directory isn't
+    one resolve_test_dirs() recognized (e.g. a project-specific test
+    directory constitution.md never mentions, and whose name doesn't match
+    the repo-layout scan either) still reaches the critic instead of being
+    silently dropped from its diff — see FOLLOWUP_HARNESS.md Bug 2, where an
+    installed project's actual test directory (extension/tests/) wasn't
+    listed in its constitution.md and the critic reviewed an empty diff."""
+    return bool(_TEST_FILENAME_RE.search(path))
 
 
 def resolve_test_dirs() -> tuple[str, ...]:

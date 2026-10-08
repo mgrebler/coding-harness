@@ -13,6 +13,25 @@ from pathlib import Path
 
 _SSE_DONE = "[DONE]"
 
+
+class TruncatedResponseError(Exception):
+    """The provider cut the response off (finish_reason == "length") before it
+    could complete — distinct from a generic JSON-parse failure so callers can
+    retry instead of treating it as a critic/model malfunction. See
+    FOLLOWUP_HARNESS.md Bug 1: an unset max_tokens let a provider's own hidden
+    per-model cap truncate critic output mid-JSON, and the resulting
+    json.JSONDecodeError gave no hint that a token budget (not a parsing bug)
+    was the cause.
+
+    partial_content carries whatever was streamed before the cutoff, so a
+    caller can still persist the near-miss verdict (e.g. a FAIL with BLOCKING
+    violations cut off mid-string) instead of losing it to a bare exit."""
+
+    def __init__(self, message: str, partial_content: str = ""):
+        super().__init__(message)
+        self.partial_content = partial_content
+
+
 # Transient failures worth retrying: rate limits and upstream server errors.
 # Everything else (401/403/404/410/etc) is permanent — retrying a dead model
 # or bad auth just wastes time, so those raise immediately.
@@ -129,6 +148,22 @@ def _build_request(prompt: str, config: dict) -> urllib.request.Request:
     )
 
 
+def _parse_sse_chunk(data: str) -> tuple[str, bool] | None:
+    """Parse one SSE data line's JSON chunk into (token, is_truncated), or
+    None if it has no usable content (a keep-alive with an empty choices
+    array, or malformed JSON)."""
+    try:
+        chunk = json.loads(data)
+        choices = chunk.get("choices")
+        if not choices:
+            return None
+        truncated = choices[0].get("finish_reason") == "length"
+        token = choices[0].get("delta", {}).get("content", "")
+        return token, truncated
+    except (KeyError, json.JSONDecodeError):
+        return None
+
+
 def _stream_chat_response(
     req: urllib.request.Request, progress_fn=None, progress_interval: int = 250
 ) -> str:
@@ -139,6 +174,7 @@ def _stream_chat_response(
     content_parts = []
     token_count = 0
     start = time.monotonic()
+    truncated = False
 
     try:
         with _urlopen_with_retry(req, timeout=300) as resp:
@@ -149,19 +185,16 @@ def _stream_chat_response(
                 data = line[len("data:") :].strip()
                 if data == _SSE_DONE:
                     break
-                try:
-                    chunk = json.loads(data)
-                    choices = chunk.get("choices")
-                    if not choices:
-                        continue
-                    token = choices[0].get("delta", {}).get("content", "")
-                    if token:
-                        content_parts.append(token)
-                        token_count += 1
-                        if progress_fn and token_count % progress_interval == 0:
-                            progress_fn(token_count, time.monotonic() - start)
-                except (KeyError, json.JSONDecodeError):
+                parsed = _parse_sse_chunk(data)
+                if parsed is None:
                     continue
+                token, chunk_truncated = parsed
+                truncated = truncated or chunk_truncated
+                if token:
+                    content_parts.append(token)
+                    token_count += 1
+                    if progress_fn and token_count % progress_interval == 0:
+                        progress_fn(token_count, time.monotonic() - start)
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"HTTP {e.code} {e.reason}: {body[:2000]}") from e
@@ -169,7 +202,15 @@ def _stream_chat_response(
     if progress_fn and token_count > 0:
         progress_fn(token_count, time.monotonic() - start, done=True)
 
-    return "".join(content_parts)
+    content = "".join(content_parts)
+    if truncated:
+        raise TruncatedResponseError(
+            f"response truncated by provider (finish_reason=length) after {token_count} "
+            "tokens — the model hit a token budget cap before finishing; raise "
+            "num_predict in local-llm.json for this critic.",
+            partial_content=content,
+        )
+    return content
 
 
 def call_openai_compatible_llm(

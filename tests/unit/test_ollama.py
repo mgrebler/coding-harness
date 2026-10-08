@@ -914,15 +914,38 @@ class TestRunLocalCriticCliSchemaValidation(unittest.TestCase):
 
         return cm.exception.code, mock_write
 
-    def test_confirmed_bug_input_exits_1_and_never_writes_result(self):
+    def test_confirmed_bug_input_exits_1_and_never_writes_canonical_result(self):
         code, mock_write = self._run('{"findings": []}', "confidence")
         self.assertEqual(code, 1)
-        mock_write.assert_not_called()
+        # The raw (schema-invalid) response is persisted for debugging — see
+        # FOLLOWUP_HARNESS.md Bug 1 — but never as the canonical result file,
+        # which must never look like a valid passing/failing verdict.
+        written_paths = [call.args[0] for call in mock_write.call_args_list]
+        self.assertNotIn(
+            Path("specs/001-x/ch-4-implement-code-quality-review-result-5.json"), written_paths
+        )
+        self.assertEqual(len(written_paths), 1)
+        self.assertEqual(
+            written_paths[0],
+            Path(
+                "specs/001-x/ch-4-implement-code-quality-review-result-raw/single-5-FAILED-schema-invalid.txt"
+            ),
+        )
 
-    def test_missing_violations_key_exits_1_and_never_writes_result(self):
+    def test_missing_violations_key_exits_1_and_never_writes_canonical_result(self):
         code, mock_write = self._run('{"status": "PASS"}', "violations")
         self.assertEqual(code, 1)
-        mock_write.assert_not_called()
+        written_paths = [call.args[0] for call in mock_write.call_args_list]
+        self.assertNotIn(
+            Path("specs/001-x/ch-4-implement-code-quality-review-result-5.json"), written_paths
+        )
+        self.assertEqual(len(written_paths), 1)
+        self.assertEqual(
+            written_paths[0],
+            Path(
+                "specs/001-x/ch-4-implement-code-quality-review-result-raw/single-5-FAILED-schema-invalid.txt"
+            ),
+        )
 
 
 class TestRunLocalCriticCliCriticId(unittest.TestCase):
@@ -1334,7 +1357,11 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
         """A CriticSubprocessError raised by one critic's asyncio.to_thread worker
         (e.g. the SystemExit-turned-Exception from _run_one_critic) must not strand
         a sibling critic's already-completed result — the gate should still resolve
-        using whichever critics succeeded."""
+        using whichever critics succeeded, but a crashed critic must NEVER be
+        silently counted as agreement with the survivor(s): even if the lone
+        survivor is a clean PASS, this must route to reconciliation rather than
+        synthesize a trivial pass claiming full critic agreement. See
+        FOLLOWUP_HARNESS.md Bug 1."""
         log = MagicMock()
         configs = [{"id": "a", "model": "m1"}, {"id": "b", "model": "m2"}]
 
@@ -1343,10 +1370,20 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
                 raise ollama.CriticSubprocessError("critic 'a' failed")
             return {"id": config["id"], "model": config["model"], "result": {"status": "PASS"}}
 
+        canonical_path = Path("specs/feat/ch-1-plan-critic-result-1.json")
+
+        def fake_reconcile_query(iteration, raw_results):
+            # Only the surviving critic 'b' reached reconciliation — 'a' crashed.
+            self.assertEqual([r["id"] for r in raw_results], ["b"])
+            canonical_path.parent.mkdir(parents=True, exist_ok=True)
+            canonical_path.write_text(json.dumps({"status": "PASS", "violations": []}))
+            return "reconcile-query-obj"
+
         with (
             patch.object(ollama, "load_local_llm_configs", return_value=configs),
             patch.object(ollama, "load_critic_execution_mode", return_value="parallel"),
             patch.object(ollama, "_run_one_critic", side_effect=fake_run_one),
+            patch.object(ollama.console, "stream_query", new=AsyncMock()) as mock_stream,
         ):
             await ollama.run_gate(
                 log,
@@ -1357,12 +1394,12 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
                 "plan critic",
                 MagicMock(),
                 result_prefix="ch-1-plan-critic-result",
-                build_reconcile_query=MagicMock(),
+                build_reconcile_query=fake_reconcile_query,
             )
 
-        result_path = Path("specs/feat/ch-1-plan-critic-result-1.json")
-        self.assertTrue(result_path.exists())
-        self.assertEqual(json.loads(result_path.read_text())["status"], "PASS")
+        mock_stream.assert_awaited_once_with("reconcile-query-obj")
+        self.assertTrue(canonical_path.exists())
+        self.assertEqual(json.loads(canonical_path.read_text())["status"], "PASS")
 
     async def test_multi_critic_parallel_mode_aborts_if_all_critics_fail(self):
         log = MagicMock()

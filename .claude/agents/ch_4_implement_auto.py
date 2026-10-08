@@ -40,10 +40,14 @@ from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
 from claude_agent_sdk import AgentDefinition, query
 
-from agent_common import critic_reconcile, local_agent_loop
+from agent_common import critic_reconcile, git, local_agent_loop
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
-from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
+from agent_common.driving_agent import (
+    FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS,
+    NO_RECURSION_NOTICE,
+    driving_agent_options,
+)
 from agent_common.files import read_file, require_spec_files
 from agent_common.followup import record_from_result_file, record_non_blocking_concerns
 from agent_common.preflight_checks import oversized_committed_files, unchecked_task_lines
@@ -234,6 +238,8 @@ Key rules:
   constitution §12 CI Requirements) to confirm it now passes
 - Commit all fixed files: git add <files> && git commit -m "fix: address CI failures"
 - Do not stop until every failing check listed above passes
+
+{FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS}
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )
@@ -286,6 +292,8 @@ Key rules:
   prominent finding
 - Commit fixed files: git add <files> && git commit -m "fix: address violations"
 - Do not stop until every violation in the list is addressed and committed
+
+{FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS}
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )
@@ -575,7 +583,13 @@ async def _run_quick_ci_gate(
 
 
 async def _finalize_if_quality_already_passed(
-    spec_dir: Path, feature: str, constitution: str, spec: str, plan: str, max_iterations: int
+    spec_dir: Path,
+    feature: str,
+    constitution: str,
+    spec: str,
+    plan: str,
+    max_iterations: int,
+    baseline_dirty: list[str],
 ) -> bool:
     """If quality review already passed in a prior iteration, run full CI (with one
     fix-agent attempt) and finish the stage. Returns True if it finalized the stage,
@@ -613,6 +627,7 @@ async def _finalize_if_quality_already_passed(
         "after_implement",
         "ch-4-implement",
         "All CI checks passed. Implementation is ready for human review.",
+        exclude_from_commit=baseline_dirty,
     )
     return True
 
@@ -657,6 +672,7 @@ async def _on_both_pass(
     spec: str,
     plan: str,
     quality_result: dict,
+    baseline_dirty: list[str],
 ) -> None:
     record_non_blocking_concerns(
         spec_dir,
@@ -689,6 +705,7 @@ async def _on_both_pass(
         "after_implement",
         "ch-4-implement",
         "All CI checks passed. Implementation is ready for human review.",
+        exclude_from_commit=baseline_dirty,
     )
 
 
@@ -825,6 +842,12 @@ async def run(feature: str):
         log("Implementation stage already complete — nothing to do.")
         return
 
+    # Snapshot what's dirty before this run touches anything, so the final
+    # commit can tell this stage's own new work apart from unrelated
+    # pre-existing drift (e.g. a stray already-modified file left over from
+    # something else) and leave the latter out. See FOLLOWUP_HARNESS.md Bug 4.
+    baseline_dirty = git.dirty_files()
+
     constitution = read_file(Path(".specify/memory/constitution.md"))
     spec = read_file(spec_dir / "spec.md")
     plan = read_file(spec_dir / "plan.md")
@@ -851,7 +874,7 @@ async def run(feature: str):
 
     # --- Resume guard: done if quality review already passed AND full CI is clean ---
     if await _finalize_if_quality_already_passed(
-        spec_dir, feature, constitution, spec, plan, max_iterations
+        spec_dir, feature, constitution, spec, plan, max_iterations, baseline_dirty
     ):
         return
 
@@ -905,7 +928,15 @@ async def run(feature: str):
         resume_state=resume_state,
         skip_fix_agent=_skip_fix_agent,
         run_revision=functools.partial(_run_revision, feature, spec_dir, constitution, spec, plan),
-        on_both_pass=functools.partial(_on_both_pass, feature, spec_dir, constitution, spec, plan),
+        on_both_pass=functools.partial(
+            _on_both_pass,
+            feature,
+            spec_dir,
+            constitution,
+            spec,
+            plan,
+            baseline_dirty=baseline_dirty,
+        ),
         escalation_kwargs={
             "escalation_filename": "ch-4-implement-critic-escalation.md",
             "log_description": "implementation failed review",
