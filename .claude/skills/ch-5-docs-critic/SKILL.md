@@ -84,7 +84,8 @@ not_applicable entry, or an implicit pass (no entry needed for clean passes).
 - No file references functionality this feature removed or renamed, per the shipped diff
 
 ### §D6 — Cross-Audience Leakage [BLOCKING]
-- No internal spec/plan/task IDs, internal file paths, or maintainer-only operational detail appear outside `maintainer/`
+- No internal spec/plan/task IDs (e.g. `T004`, `FR-001`), internal file paths (e.g. `specs/001-feature/tasks.md`), or maintainer-only operational detail appear outside `maintainer/`
+- Read every sentence, not just headings — this leak is often one throwaway sentence tacked onto the end of an otherwise-clean file
 
 ### §D7 — Structural Completeness [BLOCKING]
 - `index.md` links to every top-level file that should be discoverable

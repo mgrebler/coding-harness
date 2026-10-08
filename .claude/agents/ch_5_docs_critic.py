@@ -147,8 +147,12 @@ capability with contradictory details.
 §D5 Staleness [BLOCKING]: no file in the CANDIDATE tree references functionality this feature
 removed or renamed, per the shipped diff.
 
-§D6 Cross-Audience Leakage [BLOCKING]: no internal spec/plan/task IDs, internal file paths, or
-maintainer-only operational detail appear outside maintainer/.
+§D6 Cross-Audience Leakage [BLOCKING]: no internal spec/plan/task IDs (e.g. "T004", "FR-001"),
+internal file paths (e.g. "specs/001-feature/tasks.md"), or maintainer-only operational detail
+appear outside maintainer/. Read every sentence of every user-facing file, not just headings and
+the first paragraph — this kind of leak is often a single throwaway sentence tacked onto the end
+of an otherwise-clean file (e.g. "Implemented per task T004 — see the paired T003 test task for
+the red-state assertion this satisfies"), not something visible from skimming structure alone.
 
 §D7 Structural Completeness [BLOCKING]: index.md links to every top-level file that should be
 discoverable; no orphaned files; no dated/changelog-style entries anywhere in the tree.
