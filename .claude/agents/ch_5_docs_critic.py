@@ -84,7 +84,11 @@ def build_docs_critic_prompt(
 
     tail = (
         "- status is FAIL if any violation is BLOCKING\n"
-        "- status is PASS only if zero BLOCKING violations"
+        "- status is PASS only if zero BLOCKING violations\n"
+        "- A rule you checked and found NOT broken is a clean pass: give it NO entry at all, or at "
+        "most a not_applicable entry with a reason. Never add a 'violation' whose own finding says "
+        "the rule was not broken, and never mark a non-violation as severity BLOCKING — that "
+        "contradicts status and makes the result unusable."
     )
     if output_instructions:
         tail += f"\n{output_instructions}"
@@ -153,6 +157,12 @@ Evidence standard — before adding any item to the violations array you MUST:
 - Quote the exact file path and line(s) (or lack thereof) that constitute the violation, and name
   the specific rule broken (e.g. "reference/auth.md § Login describes a /session endpoint removed
   in this diff" for §D5)
+- "finding" is a SHORT quoted excerpt (one or two lines) from a SINGLE file — never the full
+  contents of a file, and never multiple files' content joined together. If a violation spans two
+  files, pick the one file/line that best demonstrates it for "finding", and name the other file
+  in "location" instead of quoting it too.
+- "finding" must be valid inside a JSON string: plain text with internal newlines written as the
+  `\n` escape sequence. Never use `+` or any other concatenation syntax inside the JSON value.
 - If the quoted content does not show a specific rule broken, it belongs in not_applicable, not violations
 - If your analysis concludes "does not violate" or "no violation found", add it to not_applicable instead — do NOT put it in violations
 - Never report a violation based on hypothetical future scenarios, content that might be added later, or conditions that "could" arise
