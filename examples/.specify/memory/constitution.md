@@ -301,6 +301,7 @@ The following are out of scope for v1 but the architecture must not make them im
 | Implementation Agent | Read `code-quality-principles.md`. Load red-output artifact from paired [TEST] task. Write implementation to pass failing tests. Refactor under green. No new test files. No adding or modifying test cases. Modifying test setup (mocks, fixtures, helpers, `setup.ts`) is permitted when the implementation requires additional test infrastructure not established during the test phase. No spec, plan, or architecture changes. |
 | Verification Agent | Report pass/fail and defects against spec. No fixes. |
 | Refactor Agent | Structural cleanup and drift correction only. Read `architecture.md` and report drift. No new behaviour, no contract changes, no self-directed architectural corrections. |
+| Documentation Agent | Read `documentation-principles.md`. Read the existing `docs/` tree (if present), this feature's `spec.md`/`plan.md`/`tasks.md`, and the shipped diff. Merge this feature's shipped behaviour into `docs/` — add or revise files in the correct Diátaxis category, remove or rewrite obsolete ones. No code, spec, plan, or task changes. |
 
 An agent operating outside its permitted actions has violated this constitution.
 
@@ -354,3 +355,17 @@ An [IMPL] task is BLOCKED until ALL of the following are true for its paired [TE
 The quality bar for test files is defined in `.specify/memory/test-principles.md`. This is the same relationship that `code-quality-principles.md` has to the code-quality gate.
 
 An implementation agent that processes an [IMPL] task without all three conditions being met has violated this constitution.
+
+---
+
+## 20. Documentation Gate
+
+The documentation stage is BLOCKED until ALL of the following are true:
+
+1. `specs/$FEATURE/ch-4-implement-auto-complete` exists (the implement stage has finished).
+2. `docs/` reflects this feature's shipped behaviour — every capability added or changed by this feature has a corresponding new-or-updated file in the correct Diátaxis category, and no pre-existing content this feature didn't touch was regressed.
+3. `specs/$FEATURE/ch-5-docs-critic-result-*.json` exists with `"status": "PASS"`.
+
+The quality bar for `docs/` is defined in `.specify/memory/documentation-principles.md`. This is the same relationship that `test-principles.md` has to the test gate.
+
+A documentation agent that marks the docs stage complete without all three conditions being met has violated this constitution.

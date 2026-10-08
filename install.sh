@@ -26,6 +26,7 @@
 #     .specify/memory/architecture-principles.md
 #     .specify/memory/code-quality-principles.md
 #     .specify/memory/test-principles.md
+#     .specify/memory/documentation-principles.md
 #     .specify/memory/product-context.md
 #     docker-compose.yml
 #     .devcontainer/Dockerfile
@@ -35,6 +36,12 @@
 #   MANAGED SECTION REFRESHED EVERY RUN (rest of the file stays project-owned):
 #     .gitignore
 #     CLAUDE.md
+#
+#   NEVER TOUCHED BY THIS SCRIPT (agent-maintained, continuously updated by the
+#   pipeline itself — not copied, not seeded, not gitignored; created and
+#   rewritten at runtime by ch_5_docs_auto.py, same as tasks.md is created by
+#   ch_2_tasks_auto.py):
+#     docs/
 
 set -euo pipefail
 
@@ -182,7 +189,7 @@ manage_claude_md() {
 ## Spec-Driven Development
 
 This project follows the coding-harness spec-driven pipeline by default:
-`specify → plan → tasks → test → implement`. New features and non-trivial
+`specify → plan → tasks → test → implement → docs`. New features and non-trivial
 changes should go through this pipeline (starting with `/speckit-specify`)
 rather than being implemented directly, unless the user explicitly asks to
 skip it. Full governance rules are in `.specify/memory/constitution.md`.
@@ -249,6 +256,7 @@ init_copy ".specify/memory/architecture.md"
 init_copy ".specify/memory/architecture-principles.md"
 init_copy ".specify/memory/code-quality-principles.md"
 init_copy ".specify/memory/test-principles.md"
+init_copy ".specify/memory/documentation-principles.md"
 init_copy ".specify/memory/product-context.md"
 init_copy "docker-compose.yml"
 init_copy ".devcontainer/Dockerfile"
