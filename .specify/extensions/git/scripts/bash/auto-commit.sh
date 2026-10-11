@@ -10,8 +10,21 @@ set -e
 
 EVENT_NAME="${1:-}"
 if [ -z "$EVENT_NAME" ]; then
-    echo "Usage: $0 <event_name>" >&2
+    echo "Usage: $0 <event_name> [--exclude PATH...]" >&2
     exit 1
+fi
+shift
+
+# --exclude PATH... (optional, must come last): paths to leave out of this
+# commit via git pathspec exclusion — e.g. files that were already dirty
+# before the current stage started, so unrelated pre-existing drift doesn't
+# get silently swept into this commit. See FOLLOWUP_HARNESS.md Bug 4.
+_exclude_pathspecs=()
+if [ "${1:-}" = "--exclude" ]; then
+    shift
+    for _p in "$@"; do
+        _exclude_pathspecs+=(":(exclude)$_p")
+    done
 fi
 
 SCRIPT_DIR="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -134,7 +147,20 @@ if [ -z "$_commit_msg" ]; then
 fi
 
 # Stage and commit
-_git_out=$(git add . 2>&1) || { echo "[specify] Error: git add failed: $_git_out" >&2; exit 1; }
+if [ ${#_exclude_pathspecs[@]} -gt 0 ]; then
+    _git_out=$(git add -- . "${_exclude_pathspecs[@]}" 2>&1) || { echo "[specify] Error: git add failed: $_git_out" >&2; exit 1; }
+else
+    _git_out=$(git add . 2>&1) || { echo "[specify] Error: git add failed: $_git_out" >&2; exit 1; }
+fi
+
+# Everything dirty may have been excluded (e.g. only pre-existing unrelated
+# drift was present) — that's not an error, just nothing new for this stage
+# to commit.
+if git diff --cached --quiet 2>/dev/null; then
+    echo "[specify] No changes to commit after $EVENT_NAME (everything dirty was excluded)" >&2
+    exit 0
+fi
+
 _git_out=$(git commit -q -m "$_commit_msg" 2>&1) || { echo "[specify] Error: git commit failed: $_git_out" >&2; exit 1; }
 
 echo "[OK] Changes committed ${_phase} ${_command_name}" >&2

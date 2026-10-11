@@ -17,13 +17,45 @@ def get_feature_from_branch(agent_name: str) -> str:
     return branch
 
 
-def run_auto_commit(event: str, agent_name: str):
-    """Delegate commit to the speckit-git-commit script for the given event."""
+def dirty_files() -> list[str]:
+    """Return every currently dirty path — staged, unstaged, or untracked —
+    via `git status --porcelain`. Used to snapshot a baseline before a stage
+    does any work, so that stage's final auto-commit can tell its own new
+    changes apart from pre-existing drift that was already sitting dirty in
+    the working tree for unrelated reasons. See FOLLOWUP_HARNESS.md Bug 4."""
+    result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+    paths = []
+    for line in result.stdout.splitlines():
+        path = line[3:]
+        if " -> " in path:  # rename: "old -> new"
+            path = path.split(" -> ", 1)[1]
+        paths.append(path.strip('"'))
+    return paths
+
+
+def run_auto_commit(event: str, agent_name: str, exclude: list[str] | None = None):
+    """Delegate commit to the speckit-git-commit script for the given event.
+
+    exclude (optional): paths to leave out of this commit — typically a
+    baseline of files that were already dirty before the current stage
+    started touching anything, so unrelated pre-existing drift doesn't get
+    silently swept into this feature's commit history alongside its actual
+    changes. See FOLLOWUP_HARNESS.md Bug 4."""
     script = Path(".specify/extensions/git/scripts/bash/auto-commit.sh")
-    if script.exists():
-        subprocess.run(["bash", str(script), event], check=False)
-    else:
+    if not script.exists():
         print(f"[{agent_name}] Warning: auto-commit.sh not found; skipping commit.", flush=True)
+        return
+    cmd = ["bash", str(script), event]
+    if exclude:
+        for path in exclude:
+            print(
+                f"[{agent_name}] Note: leaving pre-existing dirty path out of this commit "
+                f"(it was already dirty before this stage started): {path}",
+                flush=True,
+            )
+        cmd.append("--exclude")
+        cmd.extend(exclude)
+    subprocess.run(cmd, check=False)
 
 
 def resolve_base_ref(base_branch: str = "main") -> str:

@@ -1,6 +1,7 @@
 """File I/O helpers: reading/writing spec files and changed-file content."""
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -50,11 +51,22 @@ def read_changed_source_files(changed_files: list[str]) -> str:
     return "\n\n".join(content_parts) if content_parts else "(no changed files found)"
 
 
-def read_changed_files(changed_files: list[str], dirs: tuple[str, ...]) -> str:
-    """Read files in changed_files that start with any prefix in dirs; return formatted sections."""
+def read_changed_files(
+    changed_files: list[str],
+    dirs: tuple[str, ...],
+    extra_match: Callable[[str], bool] | None = None,
+) -> str:
+    """Read files in changed_files that start with any prefix in dirs, or
+    (when extra_match is given) satisfy extra_match — a safety net for a
+    changed file outside every resolved dir that still looks like a match by
+    some other signal (e.g. project_conventions.looks_like_test_file), so a
+    directory resolution gap doesn't silently drop it from the result. See
+    FOLLOWUP_HARNESS.md Bug 2."""
     sections = []
     for path_str in changed_files:
-        if not any(path_str.startswith(d) for d in dirs):
+        if not any(path_str.startswith(d) for d in dirs) and not (
+            extra_match and extra_match(path_str)
+        ):
             continue
         p = Path(path_str)
         if not p.exists():

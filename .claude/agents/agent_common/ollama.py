@@ -819,8 +819,12 @@ def _log_cli_result(
             )
     else:
         violations = result.get("violations", [])
-        blocking = sum(1 for v in violations if v.get("severity") == "BLOCKING")
-        warnings = sum(1 for v in violations if v.get("severity") == "WARNING")
+        blocking = sum(
+            1 for v in violations if isinstance(v, dict) and v.get("severity") == "BLOCKING"
+        )
+        warnings = sum(
+            1 for v in violations if isinstance(v, dict) and v.get("severity") == "WARNING"
+        )
         if status == "PASS":
             print(f"[{label}] iteration {iteration} → PASS → {result_path}", flush=True)
         else:
@@ -828,6 +832,80 @@ def _log_cli_result(
                 f"[{label}] iteration {iteration} → FAIL ({blocking} blocking, {warnings} warning) → {result_path}",
                 flush=True,
             )
+
+
+def _call_llm_with_truncation_retry(
+    label: str,
+    prompt: str,
+    config: dict,
+    progress_fn,
+    spec_dir: Path,
+    result_prefix: str,
+    critic_id: str | None,
+    iteration: int,
+) -> str:
+    """Call the configured LLM, retrying once if the provider truncated the
+    response (finish_reason=length) — a transient token-budget miss, not a
+    model/critic malfunction. Persists the raw partial response and exits if
+    truncation recurs on the retry. See FOLLOWUP_HARNESS.md Bug 1."""
+    try:
+        return _call_configured_llm(prompt, config, progress_fn=progress_fn)
+    except openai_compatible.TruncatedResponseError as e:
+        print(f"[{label}] WARNING: {e} — retrying once...", flush=True)
+        try:
+            return _call_configured_llm(prompt, config, progress_fn=progress_fn)
+        except openai_compatible.TruncatedResponseError as e2:
+            print(f"[{label}] ERROR: response truncated again after retry: {e2}", flush=True)
+            failure_path = _persist_raw_failure(
+                spec_dir, result_prefix, critic_id, iteration, e2.partial_content, "truncated"
+            )
+            print(f"[{label}] Partial (truncated) raw response saved to {failure_path}", flush=True)
+            sys.exit(1)
+        except Exception as e2:
+            print(f"[{label}] ERROR: local LLM call failed on retry: {e2}", flush=True)
+            sys.exit(1)
+    except Exception as e:
+        print(f"[{label}] ERROR: local LLM call failed: {e}", flush=True)
+        sys.exit(1)
+
+
+def _parse_and_validate_critic_response(
+    label: str,
+    raw: str,
+    summary_style: str,
+    spec_dir: Path,
+    result_prefix: str,
+    critic_id: str | None,
+    iteration: int,
+) -> dict:
+    """Parse a critic's raw response as JSON and validate it against
+    summary_style's required schema, persisting the raw response and exiting
+    on either failure instead of losing it to a bare truncated stdout print.
+    See FOLLOWUP_HARNESS.md Bug 1."""
+    cleaned = strip_fences(raw)
+
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        print(f"[{label}] ERROR: could not parse LLM response as JSON: {e}", flush=True)
+        print(f"[{label}] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
+        failure_path = _persist_raw_failure(
+            spec_dir, result_prefix, critic_id, iteration, raw, "unparseable"
+        )
+        print(f"[{label}] Full raw response saved to {failure_path}", flush=True)
+        sys.exit(1)
+
+    try:
+        resume_state.validate_gate_schema(result, summary_style)
+    except resume_state.GateSchemaError as e:
+        print(f"[{label}] ERROR: LLM response {e}: {cleaned[:500]}", flush=True)
+        failure_path = _persist_raw_failure(
+            spec_dir, result_prefix, critic_id, iteration, raw, "schema-invalid"
+        )
+        print(f"[{label}] Full raw response saved to {failure_path}", flush=True)
+        sys.exit(1)
+
+    return result
 
 
 def run_local_critic_cli(
@@ -899,27 +977,12 @@ def run_local_critic_cli(
         else:
             print(f"[{label}]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True)
 
-    try:
-        raw = _call_configured_llm(prompt, config, progress_fn=_progress)
-    except Exception as e:
-        print(f"[{label}] ERROR: local LLM call failed: {e}", flush=True)
-        sys.exit(1)
-
-    cleaned = strip_fences(raw)
-
-    try:
-        result = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        print(f"[{label}] ERROR: could not parse LLM response as JSON: {e}", flush=True)
-        print(f"[{label}] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
-        sys.exit(1)
-
-    try:
-        resume_state.validate_gate_schema(result, summary_style)
-    except resume_state.GateSchemaError as e:
-        print(f"[{label}] ERROR: LLM response {e}: {cleaned[:500]}", flush=True)
-        sys.exit(1)
-
+    raw = _call_llm_with_truncation_retry(
+        label, prompt, config, _progress, spec_dir, result_prefix, args.critic_id, iteration
+    )
+    result = _parse_and_validate_critic_response(
+        label, raw, summary_style, spec_dir, result_prefix, args.critic_id, iteration
+    )
     result["iteration"] = iteration
 
     result_path = (
@@ -930,6 +993,25 @@ def run_local_critic_cli(
     files.write_file(result_path, json.dumps(result, indent=2))
 
     _log_cli_result(label, iteration, result, result_path, summary_style)
+
+
+def _persist_raw_failure(
+    spec_dir: Path,
+    result_prefix: str,
+    critic_id: str | None,
+    iteration: int,
+    raw_text: str,
+    reason: str,
+) -> Path:
+    """Persist a crashed critic's raw (unparsed/truncated/garbled) response to
+    disk before the caller exits, so the near-miss verdict it may have been
+    mid-way through writing (e.g. a FAIL with BLOCKING violations cut off by
+    truncation) is recoverable from disk instead of only in console scrollback.
+    See FOLLOWUP_HARNESS.md Bug 1."""
+    stem = critic_id or "single"
+    path = spec_dir / f"{result_prefix}-raw" / f"{stem}-{iteration}-FAILED-{reason}.txt"
+    files.write_file(path, raw_text)
+    return path
 
 
 def _run_critic_subprocess(cmd: list, prefix: str = "") -> int:
@@ -1099,13 +1181,23 @@ async def _run_multi_critic_gate(
     )
 
     canonical_path = spec_dir / f"{result_prefix}-{iteration}.json"
-    if critic_reconcile.all_clean_pass(raw_results):
+    # A trivial pass requires every configured critic to have actually run —
+    # a crashed critic must never be silently counted as agreement with the
+    # survivor(s). See FOLLOWUP_HARNESS.md Bug 1.
+    if len(raw_results) == len(configs) and critic_reconcile.all_clean_pass(raw_results):
         canonical = critic_reconcile.synthesize_trivial_pass(raw_results, iteration, summary_style)
         files.write_file(canonical_path, json.dumps(canonical, indent=2))
         log(
-            f"All {len(configs)} critics returned a clean PASS for {label} — skipping reconciliation."
+            f"All {len(raw_results)}/{len(configs)} critics returned a clean PASS for {label} "
+            "— skipping reconciliation."
         )
         return
+
+    if len(raw_results) < len(configs):
+        log(
+            f"Only {len(raw_results)}/{len(configs)} critics for {label} produced a usable "
+            "result — routing to reconciliation instead of a trivial pass."
+        )
 
     if build_reconcile_query is None:
         log(
