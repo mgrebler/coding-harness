@@ -81,6 +81,17 @@ class TestTasksCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
         self.assertIn("§T1", prompt)
         self.assertIn("§T2", prompt)
 
+    def test_pairing_rule_present_when_test_stage_enabled(self):
+        prompt = self._build(test_stage_enabled=True)
+        self.assertIn("apply Constitution", prompt)
+        self.assertNotIn("N/A for this project", prompt)
+
+    def test_pairing_rule_replaced_when_test_stage_disabled(self):
+        prompt = self._build(test_stage_enabled=False)
+        self.assertIn("N/A for this project", prompt)
+        self.assertIn("pipeline.json", prompt)
+        self.assertNotIn("apply Constitution", prompt)
+
 
 class TestTestCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
     def _build(self, **kwargs):

@@ -251,6 +251,34 @@ Here every phase runs on Sonnet by default, except code quality review, which al
 runs on Opus. `ollama`/`openai-compatible` entries ignore `"model"` as a Claude
 selector — it names the local/hosted model instead, per the usual fields below.
 
+### Pipeline stage toggles
+
+The test and docs stages can each be turned off entirely for a project, via a
+top-level `stages` object:
+
+```json
+{
+  "stages": {
+    "test": { "enabled": true },
+    "docs": { "enabled": true }
+  }
+}
+```
+
+Both default to `true` when the config file is absent, has no `stages` key, or omits
+a specific stage — so this is purely opt-out. `plan`, `tasks`, and `implement` are not
+toggleable.
+
+Disabling `test` has one real consequence beyond skipping `/ch-3-test-auto`: the tasks
+agent stops pairing `[IMPL]` tasks with `[TEST]` tasks (plain `[IMPL]`-only tasks
+instead), and `/ch-4-implement-auto`'s test-gate preflight check (constitution §19) is
+skipped — implementation proceeds directly from tasks.md without a prior red-state
+artifact. Set the toggle *before* generating `tasks.md` for a given feature; flipping it
+mid-feature, after `[TEST]` tasks already exist, leaves them permanently unchecked.
+
+Disabling `docs` simply skips `/ch-5-docs-auto` (and the documentation gate, §20) —
+no ripple into any other stage, since docs runs last.
+
 Two ways to control the Ollama context window (`num_ctx`), settable at the
 top level or per-critic like any other field above:
 
@@ -512,7 +540,7 @@ reasoning-leakage caveat from the critic section above applies here too.
 ## Key Rules
 
 - **No agent merges to `main`** — the merge is always a human action after PR review and CI pass.
-- **TDD is mandatory** — failing tests must be written before implementation code.
+- **TDD is mandatory** — failing tests must be written before implementation code, when the test stage is enabled for the project (see § Pipeline Configuration → stage toggles; enabled by default).
 - **One feature at a time** — each feature has its own branch and `specs/NNN-feature/` directory.
 
 ---

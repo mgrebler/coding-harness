@@ -4,6 +4,8 @@ never-awaited impl-agent call silently truncated the implementation and let the
 script proceed straight into a doomed CI run). No LLM calls (local_agent_loop.
 run_generation is mocked)."""
 
+import json
+import os
 import sys
 import tempfile
 import unittest
@@ -16,6 +18,53 @@ import ch_4_implement_auto as impl_auto
 
 def _write_tasks(spec_dir: Path, content: str) -> None:
     (spec_dir / "tasks.md").write_text(content, encoding="utf-8")
+
+
+def _write_feature_files(spec_dir: Path) -> None:
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    (spec_dir / "spec.md").write_text("spec", encoding="utf-8")
+    (spec_dir / "plan.md").write_text("plan", encoding="utf-8")
+    (spec_dir / "tasks.md").write_text("- [ ] T001 [IMPL] todo\n", encoding="utf-8")
+
+
+class TestPreflight(unittest.TestCase):
+    """preflight()'s test-gate branch: skipped entirely when the test stage
+    is disabled via .specify/pipeline.json, enforced as before otherwise."""
+
+    def test_skips_test_gate_check_when_test_stage_disabled(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            spec_dir = root / "specs" / "some-feature"
+            _write_feature_files(spec_dir)
+            config_dir = root / ".specify"
+            config_dir.mkdir()
+            (config_dir / "pipeline.json").write_text(
+                json.dumps({"stages": {"test": {"enabled": False}}}), encoding="utf-8"
+            )
+
+            orig_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                impl_auto.preflight(spec_dir, "some-feature")  # must not raise/exit
+            finally:
+                os.chdir(orig_cwd)
+
+    def test_exits_when_test_stage_enabled_and_no_passing_result(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            spec_dir = root / "specs" / "some-feature"
+            _write_feature_files(spec_dir)
+            # No .specify/pipeline.json at all — test stage defaults to enabled.
+
+            orig_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                with self.assertRaises(SystemExit) as cm:
+                    impl_auto.preflight(spec_dir, "some-feature")
+            finally:
+                os.chdir(orig_cwd)
+
+            self.assertEqual(cm.exception.code, 1)
 
 
 class TestRunImplementationAgent(unittest.IsolatedAsyncioTestCase):

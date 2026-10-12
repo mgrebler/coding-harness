@@ -240,6 +240,24 @@ def load_critic_execution_mode(critic_type: str) -> str:
     return mode if mode in ("sequential", "parallel") else "sequential"
 
 
+def is_stage_enabled(stage: str) -> bool:
+    """
+    Whether a toggleable pipeline stage ("test" or "docs") is enabled for
+    this project, per the top-level "stages" object in .specify/pipeline.json.
+    Defaults to True (today's always-on behavior) when the config file is
+    missing, has no "stages" key, or has no entry for this specific stage —
+    only an explicit {"enabled": false} turns a stage off.
+    """
+    raw = _load_raw_config()
+    stages = raw.get("stages")
+    if not isinstance(stages, dict):
+        return True
+    stage_entry = stages.get(stage)
+    if not isinstance(stage_entry, dict):
+        return True
+    return bool(stage_entry.get("enabled", True))
+
+
 def load_claude_model(critic_type: str) -> str | None:
     """
     Resolve which Claude model, if any, is explicitly configured for this

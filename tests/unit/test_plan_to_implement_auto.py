@@ -49,5 +49,30 @@ class TestCheckStageResult(unittest.TestCase):
         )
 
 
+class TestStageSkipReason(unittest.TestCase):
+    """_stage_skip_reason is the pure helper run() consults before each
+    toggleable stage's existing resume-check block — None when the stage is
+    enabled (the default), a log-ready message when disabled."""
+
+    def test_enabled_stage_returns_none(self):
+        with patch.object(ptia, "is_stage_enabled", return_value=True):
+            self.assertIsNone(ptia._stage_skip_reason(3, "test"))
+
+    def test_disabled_stage_returns_skip_message(self):
+        with patch.object(ptia, "is_stage_enabled", return_value=False):
+            reason = ptia._stage_skip_reason(3, "test")
+
+        self.assertIsNotNone(reason)
+        self.assertIn("Stage 3/5 (test)", reason)
+        self.assertIn("disabled", reason)
+        self.assertIn("pipeline.json", reason)
+
+    def test_disabled_docs_stage_uses_its_own_number_and_key(self):
+        with patch.object(ptia, "is_stage_enabled", return_value=False):
+            reason = ptia._stage_skip_reason(5, "docs")
+
+        self.assertIn("Stage 5/5 (docs)", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

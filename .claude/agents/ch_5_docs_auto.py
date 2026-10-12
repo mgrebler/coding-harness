@@ -43,7 +43,7 @@ from pathlib import Path
 from ch_5_docs_critic import build_docs_critic_prompt
 from claude_agent_sdk import AgentDefinition, query
 
-from agent_common import critic_reconcile, local_agent_loop
+from agent_common import critic_reconcile, local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
     GateSpec,
@@ -231,6 +231,13 @@ async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
     log(f"Starting ch-5-docs-auto for feature: {feature}")
+
+    if not ollama.is_stage_enabled("docs"):
+        log(
+            "Docs stage is disabled via .specify/pipeline.json (stages.docs.enabled=false) "
+            "— nothing to do."
+        )
+        return
 
     preflight(spec_dir, feature)
 

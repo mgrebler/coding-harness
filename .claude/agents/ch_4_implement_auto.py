@@ -40,7 +40,7 @@ from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
 from claude_agent_sdk import AgentDefinition, query
 
-from agent_common import critic_reconcile, local_agent_loop
+from agent_common import critic_reconcile, local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
 from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
@@ -70,17 +70,25 @@ log = make_logger(AGENT_NAME)
 def preflight(spec_dir: Path, feature: str):
     require_spec_files(log, spec_dir, "spec.md", "plan.md", "tasks.md")
 
-    test_quality_results = list(spec_dir.glob("ch-3-test-quality-review-result-*.json"))
-    if not test_quality_results:
-        log("ERROR: Test phase not complete. Run /ch-3-test-auto first.")
-        sys.exit(1)
-    max_quality_iteration = max_existing_iteration(spec_dir, "ch-3-test-quality-review-result")
-    passing = find_passing_iteration(
-        spec_dir, "ch-3-test-quality-review-result", max_quality_iteration
-    )
-    if passing is None:
-        log("ERROR: No passing test-quality-review result found. Run /ch-3-test-auto to resolve.")
-        sys.exit(1)
+    if ollama.is_stage_enabled("test"):
+        test_quality_results = list(spec_dir.glob("ch-3-test-quality-review-result-*.json"))
+        if not test_quality_results:
+            log("ERROR: Test phase not complete. Run /ch-3-test-auto first.")
+            sys.exit(1)
+        max_quality_iteration = max_existing_iteration(spec_dir, "ch-3-test-quality-review-result")
+        passing = find_passing_iteration(
+            spec_dir, "ch-3-test-quality-review-result", max_quality_iteration
+        )
+        if passing is None:
+            log(
+                "ERROR: No passing test-quality-review result found. Run /ch-3-test-auto to resolve."
+            )
+            sys.exit(1)
+    else:
+        log(
+            "Test stage is disabled (.specify/pipeline.json stages.test.enabled=false) — "
+            "skipping test-gate check."
+        )
 
     tasks_content = (spec_dir / "tasks.md").read_text(encoding="utf-8")
     all_done = not unchecked_task_lines(tasks_content, exclude_tag="[MANUAL]")
@@ -114,23 +122,40 @@ def impl_agent_definition(
     tasks: str,
     quality_principles: str,
     model: str | None = None,
+    test_stage_enabled: bool = True,
 ) -> AgentDefinition:
+    load_test_artifact_step = (
+        "1. Load the paired [TEST] task's red-output artifact from specs/*/test-results/<PAIRED-TASKID>-red.txt\n"
+        "2. Read the test file(s) already written by the test phase for this behaviour\n"
+        "3. Write the minimum implementation to make the failing tests pass\n"
+        "4. Run the relevant test suite to confirm green"
+        if test_stage_enabled
+        else (
+            "1. Skip this step — the test stage is disabled for this project "
+            "(.specify/pipeline.json stages.test.enabled=false), so no paired [TEST] "
+            "task or red-output artifact exists\n"
+            "2. Write the implementation for this task's behaviour, per spec.md/plan.md\n"
+            "3. Run this project's typecheck/build command to confirm it's sound"
+        )
+    )
+    tests_intro = (
+        "Tests have already been written and confirmed failing by the test phase."
+        if test_stage_enabled
+        else "The test stage is disabled for this project — there are no pre-written failing tests."
+    )
     return AgentDefinition(
         description="Implements all unchecked [IMPL] tasks in tasks.md.",
         model=model,
         prompt=f"""You are the Implementation Agent for a spec-kit project.
 
-Tests have already been written and confirmed failing by the test phase.
+{tests_intro}
 Your sole function is to implement all unchecked [IMPL] tasks (marked - [ ] and containing [IMPL]) in tasks.md, in order.
 Also process any unchecked tasks with no [TEST]/[IMPL] label (infrastructure/setup tasks).
 
 DO NOT write new test files. DO NOT modify existing test files.
 
 For each [IMPL] task:
-1. Load the paired [TEST] task's red-output artifact from specs/*/test-results/<PAIRED-TASKID>-red.txt
-2. Read the test file(s) already written by the test phase for this behaviour
-3. Write the minimum implementation to make the failing tests pass
-4. Run the relevant test suite to confirm green
+{load_test_artifact_step}
 5. Commit the implementation: git add <impl files> && git commit -m "feat: <task description>"
 6. Mark the task as - [x] in tasks.md and commit: git add specs/.../tasks.md && git commit -m "chore: complete <task id>"
 
@@ -491,6 +516,7 @@ async def _run_implementation_agent(
     plan: str,
     tasks: str,
     quality_principles: str,
+    test_stage_enabled: bool = True,
 ) -> str:
     """Run the implementation agent if unchecked tasks remain, retrying once more if
     tasks are still unchecked afterward. Returns the latest tasks.md content. Exits
@@ -507,11 +533,23 @@ async def _run_implementation_agent(
     max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         log(f"Running implementation agent (attempt {attempt}/{max_attempts})...")
-        impl_agent = impl_agent_definition(constitution, spec, plan, tasks, quality_principles)
+        impl_agent = impl_agent_definition(
+            constitution,
+            spec,
+            plan,
+            tasks,
+            quality_principles,
+            test_stage_enabled=test_stage_enabled,
+        )
+        tdd_instruction = (
+            "Follow TDD order: write failing tests first, commit, then implement, commit."
+            if test_stage_enabled
+            else "The test stage is disabled for this project — implement directly per spec.md/plan.md."
+        )
         user_prompt = (
             f"Implement all unchecked tasks in specs/{feature}/tasks.md, EXCEPT any task tagged "
             f"[MANUAL] (those require out-of-repo human action and must stay unchecked). "
-            f"Follow TDD order: write failing tests first, commit, then implement, commit. "
+            f"{tdd_instruction} "
             f"Mark each non-[MANUAL] task - [x] in tasks.md after completing it."
         )
         await local_agent_loop.run_generation(
@@ -523,7 +561,13 @@ async def _run_implementation_agent(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
                     agents={
                         "impl-agent": impl_agent_definition(
-                            constitution, spec, plan, tasks, quality_principles, model=model
+                            constitution,
+                            spec,
+                            plan,
+                            tasks,
+                            quality_principles,
+                            model=model,
+                            test_stage_enabled=test_stage_enabled,
                         )
                     },
                     model=model,
@@ -886,7 +930,14 @@ async def run(feature: str):
 
     # --- Step 1: Run implementation if unchecked tasks remain ---
     tasks = await _run_implementation_agent(
-        feature, spec_dir, constitution, spec, plan, tasks, quality_principles
+        feature,
+        spec_dir,
+        constitution,
+        spec,
+        plan,
+        tasks,
+        quality_principles,
+        test_stage_enabled=ollama.is_stage_enabled("test"),
     )
 
     # --- Step 1b: Quick CI check before the critic loop ---

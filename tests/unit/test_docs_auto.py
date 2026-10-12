@@ -3,11 +3,13 @@ gates the docs stage on ch-4-implement having actually completed) and
 snapshot_baseline() (which must capture the pre-merge docs/ tree exactly once
 per feature, never overwriting it on a later resumed run). No LLM calls."""
 
+import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
 import ch_5_docs_auto as docs_auto
@@ -17,6 +19,32 @@ def _write_spec_files(spec_dir: Path) -> None:
     (spec_dir / "spec.md").write_text("spec", encoding="utf-8")
     (spec_dir / "plan.md").write_text("plan", encoding="utf-8")
     (spec_dir / "tasks.md").write_text("tasks", encoding="utf-8")
+
+
+class TestRunDisabledStage(unittest.IsolatedAsyncioTestCase):
+    """run() must bail out before preflight() when the docs stage is
+    disabled — no spec.md/plan.md/tasks.md or ch-4-implement completion
+    marker should be required."""
+
+    async def test_returns_early_without_calling_preflight(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            config_dir = root / ".specify"
+            config_dir.mkdir(parents=True)
+            (config_dir / "pipeline.json").write_text(
+                json.dumps({"stages": {"docs": {"enabled": False}}}), encoding="utf-8"
+            )
+
+            orig_cwd = Path.cwd()
+            orig_stdout, orig_stderr = sys.stdout, sys.stderr
+            try:
+                os.chdir(root)
+                with patch.object(docs_auto, "preflight") as mock_preflight:
+                    await docs_auto.run("some-feature")
+                mock_preflight.assert_not_called()
+            finally:
+                os.chdir(orig_cwd)
+                sys.stdout, sys.stderr = orig_stdout, orig_stderr
 
 
 class TestPreflight(unittest.TestCase):

@@ -43,7 +43,7 @@ from ch_3_test_critic import build_test_critic_prompt
 from ch_3_test_quality_critic import build_test_quality_review_prompt
 from claude_agent_sdk import AgentDefinition, query
 
-from agent_common import critic_reconcile, local_agent_loop
+from agent_common import critic_reconcile, local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
     GateSpec,
@@ -582,6 +582,13 @@ async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
     log(f"Starting ch-3-test-auto for feature: {feature}")
+
+    if not ollama.is_stage_enabled("test"):
+        log(
+            "Test stage is disabled via .specify/pipeline.json (stages.test.enabled=false) "
+            "— nothing to do."
+        )
+        return
 
     preflight(spec_dir, feature)
 

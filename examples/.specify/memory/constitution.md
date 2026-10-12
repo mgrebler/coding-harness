@@ -75,7 +75,10 @@ No agent may introduce a dependency, framework, or tool outside this list withou
 
 ## 5. Test-Driven Development
 
-TDD is mandatory. This is not a style preference.
+TDD is mandatory. This is not a style preference. This mandate applies when the test
+stage is enabled for this project (`.specify/pipeline.json` → `stages.test.enabled`,
+default `true`). When disabled, every deliverable is a single `[IMPL]` task — no
+`[TEST]` task, and no pairing requirement (see §6).
 
 ### Task types
 
@@ -87,7 +90,8 @@ Every deliverable is split into two tasks that form an inseparable pair:
 [TEST] tasks are executed in the test phase (`/ch-3-test`).
 [IMPL] tasks are executed in the implement phase (`/speckit-implement`).
 
-The test phase must pass its gate before implementation begins (§19).
+The test phase must pass its gate before implementation begins (§19), when the test
+stage is enabled.
 
 A test agent that writes implementation code has violated this constitution.
 An implementation agent that writes new test files or adds/modifies test cases (`it()` / `test()` / `describe()` blocks) has violated this constitution. Updating test setup — mock definitions, fixture data, helper utilities, `setup.ts` files, `vi.mock(...)` calls — to support the implementation is permitted when the required setup was not established during the test phase.
@@ -126,7 +130,7 @@ is not.
 
 ## 6. Task Atomicity
 
-- One [TEST]/[IMPL] pair = one of: a single schema change, a single API procedure/endpoint, or a single UI component. The pair is the unit of atomicity — both tasks together cover one deliverable.
+- One [TEST]/[IMPL] pair = one of: a single schema change, a single API procedure/endpoint, or a single UI component. The pair is the unit of atomicity — both tasks together cover one deliverable. This pairing requirement itself only applies when the test stage is enabled (§5); when disabled, the atomicity unit is a single [IMPL] task per deliverable.
 - A deliverable that touches both backend and frontend is two [TEST]/[IMPL] pairs (four tasks).
 - Tasks that violate atomicity are rejected before implementation begins.
 - Parallel tasks are marked `[P]` in `tasks.md` and may be implemented concurrently only when they have no shared schema or contract dependency.
@@ -346,7 +350,10 @@ violated this constitution.
 
 ## 19. Test Gate
 
-An [IMPL] task is BLOCKED until ALL of the following are true for its paired [TEST] task:
+When `stages.test.enabled` is `false` in `.specify/pipeline.json` (or the file doesn't
+set it — default `true`), this gate does not apply: an [IMPL] task proceeds without a
+paired [TEST] task. When the test stage is enabled (the default), an [IMPL] task is
+BLOCKED until ALL of the following are true for its paired [TEST] task:
 
 1. The [TEST] task is marked `[x]` in `tasks.md`.
 2. A red-output artifact exists at `specs/$FEATURE/test-results/<TASKID>-red.txt`, containing a meaningful assertion or "not found" failure — not a compile/syntax error in the test file itself.
@@ -354,13 +361,15 @@ An [IMPL] task is BLOCKED until ALL of the following are true for its paired [TE
 
 The quality bar for test files is defined in `.specify/memory/test-principles.md`. This is the same relationship that `code-quality-principles.md` has to the code-quality gate.
 
-An implementation agent that processes an [IMPL] task without all three conditions being met has violated this constitution.
+An implementation agent that processes an [IMPL] task without all three conditions being met, while the test stage is enabled, has violated this constitution.
 
 ---
 
 ## 20. Documentation Gate
 
-The documentation stage is BLOCKED until ALL of the following are true:
+When `stages.docs.enabled` is `false` in `.specify/pipeline.json` (default `true`), the
+documentation stage is skipped entirely and no gate applies. When enabled (the
+default), the documentation stage is BLOCKED until ALL of the following are true:
 
 1. `specs/$FEATURE/ch-4-implement-auto-complete` exists (the implement stage has finished).
 2. `docs/` reflects this feature's shipped behaviour — every capability added or changed by this feature has a corresponding new-or-updated file in the correct Diátaxis category, and no pre-existing content this feature didn't touch was regressed.

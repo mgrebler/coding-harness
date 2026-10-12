@@ -53,6 +53,7 @@ from agent_common.console import (
     stream_subprocess,
 )
 from agent_common.git import get_feature_from_branch
+from agent_common.ollama import is_stage_enabled
 from agent_common.resume_state import (
     find_passing_iteration,
     max_existing_iteration,
@@ -103,6 +104,23 @@ def _check_stage_result(rc: int, stage_num: int, stage_name: str, escalation_hin
         )
         sys.exit(1)
     log(f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): PASSED.")
+
+
+def _stage_skip_reason(stage_num: int, stage_key: str) -> str | None:
+    """
+    Return the log message for skipping stage_num because it's disabled via
+    .specify/pipeline.json's "stages" toggle, or None if it's enabled (the
+    default — a missing config file or an unconfigured stage key is always
+    enabled). Pulled out as a small pure function, separate from the actual
+    subprocess-spawning stage blocks in run(), purely so it's unit-testable
+    without mocking stream_subprocess.
+    """
+    if is_stage_enabled(stage_key):
+        return None
+    return (
+        f"Stage {stage_num}/{TOTAL_STAGES} ({stage_key}): disabled via "
+        f".specify/pipeline.json — skipping."
+    )
 
 
 # Main
@@ -158,7 +176,10 @@ def run(feature: str):
         _check_stage_result(rc, 2, "tasks", "ch-2-tasks-critic-escalation.md")
 
     # --- Stage 3: Test ---
-    if (
+    skip_reason = _stage_skip_reason(3, "test")
+    if skip_reason:
+        log(skip_reason)
+    elif (
         stage_is_complete(spec_dir, "ch-3-test")
         or find_passing_iteration(
             spec_dir, TEST_QUALITY_PREFIX, max_existing_iteration(spec_dir, TEST_QUALITY_PREFIX)
@@ -189,7 +210,10 @@ def run(feature: str):
         _check_stage_result(rc, 4, "implement", "ch-4-implement-critic-escalation.md")
 
     # --- Stage 5: Docs ---
-    if (
+    skip_reason = _stage_skip_reason(5, "docs")
+    if skip_reason:
+        log(skip_reason)
+    elif (
         stage_is_complete(spec_dir, "ch-5-docs")
         or find_passing_iteration(
             spec_dir, DOCS_CRITIC_PREFIX, max_existing_iteration(spec_dir, DOCS_CRITIC_PREFIX)

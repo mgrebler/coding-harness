@@ -1761,5 +1761,43 @@ class TestCallConfiguredLlmTurn(unittest.TestCase):
         self.assertEqual(result, {"content": "ok"})
 
 
+class TestIsStageEnabled(_ConfigDirTestCase):
+    def test_no_config_file_defaults_true(self):
+        self.assertTrue(ollama.is_stage_enabled("test"))
+        self.assertTrue(ollama.is_stage_enabled("docs"))
+
+    def test_no_stages_key_defaults_true(self):
+        self._write_config({"default": {"provider": "claude"}})
+        self.assertTrue(ollama.is_stage_enabled("test"))
+
+    def test_stage_absent_from_stages_defaults_true(self):
+        self._write_config({"stages": {"docs": {"enabled": False}}})
+        self.assertTrue(ollama.is_stage_enabled("test"))
+
+    def test_explicit_false_disables(self):
+        self._write_config({"stages": {"test": {"enabled": False}}})
+        self.assertFalse(ollama.is_stage_enabled("test"))
+
+    def test_explicit_true_stays_enabled(self):
+        self._write_config({"stages": {"test": {"enabled": True}}})
+        self.assertTrue(ollama.is_stage_enabled("test"))
+
+    def test_unknown_stage_name_defaults_true(self):
+        self._write_config({"stages": {"test": {"enabled": False}}})
+        self.assertTrue(ollama.is_stage_enabled("not-a-real-stage"))
+
+    def test_corrupt_config_defaults_true(self):
+        self._write_corrupt()
+        self.assertTrue(ollama.is_stage_enabled("test"))
+
+    def test_non_dict_stages_value_defaults_true(self):
+        self._write_config({"stages": "not-a-dict"})
+        self.assertTrue(ollama.is_stage_enabled("test"))
+
+    def test_non_dict_stage_entry_defaults_true(self):
+        self._write_config({"stages": {"test": "not-a-dict"}})
+        self.assertTrue(ollama.is_stage_enabled("test"))
+
+
 if __name__ == "__main__":
     unittest.main()

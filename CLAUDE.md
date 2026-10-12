@@ -83,7 +83,7 @@ See README.md for the full pipeline walkthrough, docker setup, and command refer
 
 ### TDD Enforcement
 
-Tasks are split into `[TEST]` and `[IMPL]` pairs. The test phase writes only failing tests; the implement phase makes them pass. These are kept strictly separate — no implementation code during `[TEST]` tasks.
+Tasks are split into `[TEST]` and `[IMPL]` pairs. The test phase writes only failing tests; the implement phase makes them pass. These are kept strictly separate — no implementation code during `[TEST]` tasks. This applies only when the test stage is enabled for the project (`.specify/pipeline.json` → `stages.test`, default enabled); see README.md § Pipeline Configuration → stage toggles.
 
 ### Pipeline Configuration
 

@@ -4,6 +4,8 @@ never-awaited subagent call silently truncated the delegated work and let the sc
 proceed into a doomed critic loop). No LLM calls (local_agent_loop.run_generation is
 mocked)."""
 
+import json
+import os
 import sys
 import tempfile
 import unittest
@@ -16,6 +18,31 @@ import ch_3_test_auto as test_auto
 
 def _write_tasks(spec_dir: Path, content: str) -> None:
     (spec_dir / "tasks.md").write_text(content, encoding="utf-8")
+
+
+class TestRunDisabledStage(unittest.IsolatedAsyncioTestCase):
+    """run() must bail out before preflight() when the test stage is
+    disabled — no spec.md/plan.md/tasks.md should be required to exist."""
+
+    async def test_returns_early_without_calling_preflight(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            config_dir = root / ".specify"
+            config_dir.mkdir(parents=True)
+            (config_dir / "pipeline.json").write_text(
+                json.dumps({"stages": {"test": {"enabled": False}}}), encoding="utf-8"
+            )
+
+            orig_cwd = Path.cwd()
+            orig_stdout, orig_stderr = sys.stdout, sys.stderr
+            try:
+                os.chdir(root)
+                with patch.object(test_auto, "preflight") as mock_preflight:
+                    await test_auto.run("some-feature")
+                mock_preflight.assert_not_called()
+            finally:
+                os.chdir(orig_cwd)
+                sys.stdout, sys.stderr = orig_stdout, orig_stderr
 
 
 class TestRunTestAgentIfNeeded(unittest.IsolatedAsyncioTestCase):
