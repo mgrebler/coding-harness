@@ -108,10 +108,16 @@ def preflight(spec_dir: Path, feature: str):
 
 
 def impl_agent_definition(
-    constitution: str, spec: str, plan: str, tasks: str, quality_principles: str
+    constitution: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    quality_principles: str,
+    model: str | None = None,
 ) -> AgentDefinition:
     return AgentDefinition(
         description="Implements all unchecked [IMPL] tasks in tasks.md.",
+        model=model,
         prompt=f"""You are the Implementation Agent for a spec-kit project.
 
 Tests have already been written and confirmed failing by the test phase.
@@ -171,6 +177,7 @@ def critic_agent_definition(
     tasks: str,
     iteration: int,
     violations: list | None = None,
+    model: str | None = None,
 ) -> AgentDefinition:
     violations_block = format_violations_block(violations, iteration)
 
@@ -180,6 +187,7 @@ def critic_agent_definition(
     )
     return AgentDefinition(
         description="Validates implemented code against tasks.md, plan.md, spec.md, and constitution.md.",
+        model=model,
         prompt=build_implement_critic_prompt(
             constitution,
             spec,
@@ -199,9 +207,11 @@ def ci_fix_agent_definition(
     plan: str,
     tasks: str,
     ci_failures: str,
+    model: str | None = None,
 ) -> AgentDefinition:
     return AgentDefinition(
         description="Fixes failing CI checks (typecheck, unit tests, e2e) after both review gates passed.",
+        model=model,
         prompt=f"""You are the CI Fix Agent for a spec-kit project.
 
 Both the implement critic and code quality review have passed. However, one or more of
@@ -245,9 +255,11 @@ def fix_agent_definition(
     plan: str,
     tasks: str,
     violations: list,
+    model: str | None = None,
 ) -> AgentDefinition:
     return AgentDefinition(
         description="Fixes specific implementation violations found by the critic or quality review.",
+        model=model,
         prompt=f"""You are the Fix Agent for a spec-kit project.
 
 Your sole function is to fix the specific violations listed below.
@@ -299,6 +311,7 @@ def quality_review_agent_definition(
     quality_principles: str,
     iteration: int,
     quality_violations: list | None = None,
+    model: str | None = None,
 ) -> AgentDefinition:
     violations_block = format_violations_block(
         quality_violations, iteration, "quality violations (already addressed by the fix agent)"
@@ -310,6 +323,7 @@ def quality_review_agent_definition(
     )
     return AgentDefinition(
         description="Reviews implemented code for quality, maintainability, and operational safety.",
+        model=model,
         prompt=build_quality_review_prompt(
             constitution,
             spec,
@@ -331,6 +345,7 @@ def critic_reconcile_agent_definition(
     tasks: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None = None,
 ) -> AgentDefinition:
     context_block = (
         f"--- CONSTITUTION ---\n{constitution}\n\n"
@@ -344,6 +359,7 @@ def critic_reconcile_agent_definition(
     )
     return AgentDefinition(
         description="Reconciles findings from multiple independent implement critics into one verified result.",
+        model=model,
         prompt=critic_reconcile.build_reconcile_prompt(
             context_block, raw_results, iteration, "violations", output_instructions
         ),
@@ -359,6 +375,7 @@ def quality_review_reconcile_agent_definition(
     quality_principles: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None = None,
 ) -> AgentDefinition:
     context_block = (
         f"--- CONSTITUTION ---\n{constitution}\n\n"
@@ -373,6 +390,7 @@ def quality_review_reconcile_agent_definition(
     )
     return AgentDefinition(
         description="Reconciles findings from multiple independent code-quality-review critics into one verified result.",
+        model=model,
         prompt=critic_reconcile.build_reconcile_prompt(
             context_block, raw_results, iteration, "confidence", output_instructions
         ),
@@ -499,11 +517,16 @@ async def _run_implementation_agent(
         await local_agent_loop.run_generation(
             log,
             "implement",
-            claude_fallback=lambda user_prompt=user_prompt, impl_agent=impl_agent: query(
+            claude_fallback=lambda model, user_prompt=user_prompt, tasks=tasks: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"impl-agent": impl_agent},
+                    agents={
+                        "impl-agent": impl_agent_definition(
+                            constitution, spec, plan, tasks, quality_principles, model=model
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=impl_agent.prompt,
@@ -535,11 +558,16 @@ async def _run_ci_fix_agent(
     await local_agent_loop.run_generation(
         log,
         "implement",
-        claude_fallback=lambda: query(
+        claude_fallback=lambda model: query(
             prompt=user_prompt + NO_RECURSION_NOTICE,
             options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={"ci-fix-agent": ci_fix_agent},
+                agents={
+                    "ci-fix-agent": ci_fix_agent_definition(
+                        constitution, spec, plan, tasks, failure_summary, model=model
+                    )
+                },
+                model=model,
             ),
         ),
         system_prompt=ci_fix_agent.prompt,
@@ -638,11 +666,16 @@ async def _run_revision(
     await local_agent_loop.run_generation(
         log,
         "implement",
-        claude_fallback=lambda: query(
+        claude_fallback=lambda model: query(
             prompt=user_prompt + NO_RECURSION_NOTICE,
             options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={"fix-agent": fix_agent},
+                agents={
+                    "fix-agent": fix_agent_definition(
+                        constitution, spec, plan, tasks_content, pending_violations, model=model
+                    )
+                },
+                model=model,
             ),
         ),
         system_prompt=fix_agent.prompt,
@@ -700,6 +733,7 @@ def _build_critic_query(
     plan: str,
     iteration: int,
     prev_violations,
+    model: str | None,
 ):
     tasks_content = read_file(spec_dir / "tasks.md")
     return query(
@@ -712,9 +746,10 @@ def _build_critic_query(
             allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
             agents={
                 "implement-critic": critic_agent_definition(
-                    constitution, spec, plan, tasks_content, iteration, prev_violations
+                    constitution, spec, plan, tasks_content, iteration, prev_violations, model
                 )
             },
+            model=model,
         ),
     )
 
@@ -728,6 +763,7 @@ def _build_quality_query(
     quality_principles: str,
     iteration: int,
     quality_violations,
+    model: str | None,
 ):
     tasks_content = read_file(spec_dir / "tasks.md")
     return query(
@@ -747,8 +783,10 @@ def _build_quality_query(
                     quality_principles,
                     iteration,
                     quality_violations,
+                    model,
                 )
             },
+            model=model,
         ),
     )
 
@@ -761,6 +799,7 @@ def _build_reconcile_critic_query(
     plan: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None,
 ):
     tasks_content = read_file(spec_dir / "tasks.md")
     return query(
@@ -773,9 +812,10 @@ def _build_reconcile_critic_query(
             allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
             agents={
                 "implement-critic-reconcile": critic_reconcile_agent_definition(
-                    constitution, spec, plan, tasks_content, iteration, raw_results
+                    constitution, spec, plan, tasks_content, iteration, raw_results, model
                 )
             },
+            model=model,
         ),
     )
 
@@ -789,6 +829,7 @@ def _build_reconcile_quality_query(
     quality_principles: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None,
 ):
     tasks_content = read_file(spec_dir / "tasks.md")
     return query(
@@ -808,8 +849,10 @@ def _build_reconcile_quality_query(
                     quality_principles,
                     iteration,
                     raw_results,
+                    model,
                 )
             },
+            model=model,
         ),
     )
 

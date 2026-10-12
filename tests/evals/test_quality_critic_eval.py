@@ -44,7 +44,7 @@ def _setup_tmpdir(impl_fixture: Path) -> Path:
     shutil.copy(FIXTURES / "good" / "plan.md", spec_dir / "plan.md")
     shutil.copy(FIXTURES / "good" / "tasks.md", spec_dir / "tasks.md")
 
-    (tmpdir / ".specify" / "local-llm.json").write_text(json.dumps(LOCAL_LLM_CONFIG))
+    (tmpdir / ".specify" / "pipeline.json").write_text(json.dumps(LOCAL_LLM_CONFIG))
 
     setup_git_repo(
         tmpdir,

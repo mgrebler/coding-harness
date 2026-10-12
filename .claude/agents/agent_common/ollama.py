@@ -23,6 +23,19 @@ _ALLOWED_URL_SCHEMES = ("http://", "https://")
 _DEFAULT_PREDICT_RESERVE = 1024  # ctx headroom for generated tokens when num_predict is unset
 _tokenize_unavailable: set[str] = set()  # ollama_urls where /api/tokenize 404'd this process
 _CRITIC_IDLE_TIMEOUT_S = 900  # kill a critic subprocess that produces no output for 15min
+_CONFIG_PATH = Path(".specify/pipeline.json")
+
+
+def _load_raw_config() -> dict:
+    """Read .specify/pipeline.json, returning {} if missing or unparseable —
+    every loader below treats a missing/malformed file identically to an
+    empty one (nothing configured, fall back to Claude session defaults)."""
+    if not _CONFIG_PATH.exists():
+        return {}
+    try:
+        return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 class CriticSubprocessError(Exception):
@@ -44,7 +57,7 @@ def _resolve_provider_fields(provider: str, resolved: dict, raw: dict) -> dict:
         ollama_url = raw.get("ollama_url", "http://host.docker.internal:11434").rstrip("/")
         if not ollama_url.startswith(_ALLOWED_URL_SCHEMES):
             raise ValueError(
-                f"local-llm.json: ollama_url must be http:// or https://, got: {ollama_url}"
+                f"pipeline.json: ollama_url must be http:// or https://, got: {ollama_url}"
             )
         return {"ollama_url": ollama_url}
 
@@ -55,100 +68,117 @@ def _resolve_provider_fields(provider: str, resolved: dict, raw: dict) -> dict:
         )
         if not base_url or not base_url.rstrip("/").startswith(_ALLOWED_URL_SCHEMES):
             raise ValueError(
-                f"local-llm.json: base_url must be http:// or https://, got: {base_url!r}"
+                f"pipeline.json: base_url must be http:// or https://, got: {base_url!r}"
             )
         if not api_key_env:
             raise ValueError(
-                "local-llm.json: api_key_env is required when provider is 'openai-compatible'"
+                "pipeline.json: api_key_env is required when provider is 'openai-compatible'"
             )
         return {"base_url": base_url.rstrip("/"), "api_key_env": api_key_env}
 
-    raise ValueError(f"local-llm.json: unknown provider {provider!r}")
+    raise ValueError(f"pipeline.json: unknown provider {provider!r}")
 
 
-def _resolve_entry(raw: dict, critic_override: dict) -> dict | None:
+def _resolve_entry(raw: dict, override: str | dict | None) -> dict:
     """
-    Merge critic_override with raw['default'] and resolve the full per-critic
-    config surface (provider/model/transport fields/num_ctx/max_ctx/keep_alive/
-    num_gpu/num_predict/temperature). Returns None if disabled or model unset.
+    Resolve one phase's model-selection entry to {"provider", "model", ...}.
+    Never returns None — every phase always resolves to a concrete choice.
 
-    Shared by load_local_llm_config (critic_override = the single dict at
-    critics[critic_type]) and load_local_llm_configs (critic_override = one
-    element of a list at critics[critic_type]) — the merge/validation logic
-    is identical either way; only where the override dict comes from differs.
+    override is one of:
+      - the literal string "default", or None/absent: inherit raw["default"]
+        wholesale (no field-by-field merge — each entry is self-contained).
+      - a full object {"provider": ..., "model": ..., ...}: used as-is.
+
+    provider defaults to "claude" when unset on the resolved entry — so a
+    missing config file, or an unconfigured phase, both resolve to "whatever
+    Claude model the invoking session already runs under" (model=None),
+    which is a zero-behavior-change default for every existing project with
+    no pipeline.json at all.
+
+    provider == "claude": returns immediately with just {"provider", "model"}
+    — model may be None (inherit session default). No transport/tuning
+    fields are resolved; they're meaningless for the Claude path.
+
+    provider == "ollama"/"openai-compatible": resolves the full local-LLM
+    surface (transport fields via _resolve_provider_fields, plus
+    num_ctx/max_ctx/keep_alive/num_gpu/num_predict/temperature), each field
+    read from the entry itself, else the flat top-level sibling key on raw —
+    this fallback chain is unrelated to the default/override reshape above;
+    it's the existing "tune once at the top" ergonomic for Ollama knobs.
+
+    Shared by load_local_llm_config (override = the single dict/string at
+    critics[critic_type]) and load_local_llm_configs (override = one element
+    of a list at critics[critic_type]) via the single/plural wrappers below.
     """
-    default = raw.get("default", {})
-    resolved = {**default, **critic_override}
+    entry: dict = raw.get("default", {}) if override is None or override == "default" else override
 
-    if not resolved.get("enabled") or not resolved.get("model", "").strip():
-        return None
+    provider = entry.get("provider", "claude")
+    model = entry.get("model")
 
-    provider = resolved.get("provider") if "provider" in resolved else raw.get("provider", "ollama")
+    if provider == "claude":
+        return {"provider": "claude", "model": model}
 
-    result: dict = {
-        "provider": provider,
-        "model": resolved["model"],
-    }
-    result.update(_resolve_provider_fields(provider, resolved, raw))
+    result: dict = {"provider": provider, "model": model or ""}
+    result.update(_resolve_provider_fields(provider, entry, raw))
 
     # Without num_ctx, Ollama defaults to the model's native window (often 32k-128k),
     # which can overflow VRAM and spill to system RAM.
-    num_ctx = resolved["num_ctx"] if "num_ctx" in resolved else raw.get("num_ctx")
+    num_ctx = entry["num_ctx"] if "num_ctx" in entry else raw.get("num_ctx")
     if num_ctx is not None:
         result["num_ctx"] = int(num_ctx)
     # VRAM ceiling for auto-sizing num_ctx from the actual prompt at call time (see
     # estimate_num_ctx). Only consulted when num_ctx above is absent — an explicit
     # num_ctx always wins.
-    max_ctx = resolved["max_ctx"] if "max_ctx" in resolved else raw.get("max_ctx")
+    max_ctx = entry["max_ctx"] if "max_ctx" in entry else raw.get("max_ctx")
     if max_ctx is not None:
         result["max_ctx"] = int(max_ctx)
     # -1 pins the model in VRAM indefinitely, avoiding cold-load latency between calls.
-    keep_alive = resolved.get("keep_alive") if "keep_alive" in resolved else raw.get("keep_alive")
+    keep_alive = entry.get("keep_alive") if "keep_alive" in entry else raw.get("keep_alive")
     if keep_alive is not None:
         result["keep_alive"] = keep_alive
     # Forces this many GPU layers instead of Ollama's own auto-split, which testing
     # showed can leave usable VRAM headroom unused. Defaults to a sentinel above any
     # real model's layer count ("all layers"); _ensure_model_context() falls back to
     # auto-split if the forced value doesn't fit.
-    num_gpu = resolved["num_gpu"] if "num_gpu" in resolved else raw.get("num_gpu")
+    num_gpu = entry["num_gpu"] if "num_gpu" in entry else raw.get("num_gpu")
     result["num_gpu"] = int(num_gpu) if num_gpu is not None else _FULL_GPU_OFFLOAD
     # Caps total generated tokens; reasoning models can otherwise think unboundedly.
-    num_predict = (
-        resolved.get("num_predict") if "num_predict" in resolved else raw.get("num_predict")
-    )
+    num_predict = entry.get("num_predict") if "num_predict" in entry else raw.get("num_predict")
     if num_predict is not None:
         result["num_predict"] = int(num_predict)
     # 0.0 = fully deterministic (greedy) — used for reproducible eval runs.
-    temperature = (
-        resolved.get("temperature") if "temperature" in resolved else raw.get("temperature")
-    )
+    temperature = entry.get("temperature") if "temperature" in entry else raw.get("temperature")
     if temperature is not None:
         result["temperature"] = float(temperature)
     return result
 
 
+def _is_local_backend(resolved: dict) -> bool:
+    """True if resolved (from _resolve_entry) names a usable local-LLM
+    backend — i.e. a non-Claude provider with a non-blank model. Shared by
+    every loader that needs today's "is this phase actually configured for
+    local inference" filter."""
+    return resolved["provider"] in ("ollama", "openai-compatible") and bool(
+        resolved["model"].strip()
+    )
+
+
 def load_local_llm_config(critic_type: str) -> dict | None:
     """
-    Read .specify/local-llm.json and resolve config for the given critic_type.
-    Merges the 'default' block with the per-critic override.
-    Returns a dict with 'provider', 'model', and either 'ollama_url' (provider
-    "ollama", the default) or 'base_url'/'api_key_env' (provider
-    "openai-compatible") if the critic is active, or None if disabled, not
-    configured, or critics[critic_type] is list-shaped (multi-critic — use
+    Read .specify/pipeline.json and resolve the local-LLM backend config for
+    the given critic_type, if any. Returns a dict with 'provider', 'model',
+    and either 'ollama_url' (provider "ollama") or 'base_url'/'api_key_env'
+    (provider "openai-compatible") if this phase resolves to a local
+    backend, or None if it resolves to "claude" (see load_claude_model for
+    that case), or critics[critic_type] is list-shaped (multi-critic — use
     load_local_llm_configs for that case).
     """
-    config_path = Path(".specify/local-llm.json")
-    if not config_path.exists():
+    raw = _load_raw_config()
+    override = raw.get("critics", {}).get(critic_type)
+    if isinstance(override, list):
         return None
-    try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-
-    critic_override = raw.get("critics", {}).get(critic_type, {})
-    if isinstance(critic_override, list):
-        return None
-    return _resolve_entry(raw, critic_override)
+    resolved = _resolve_entry(raw, override)
+    return resolved if _is_local_backend(resolved) else None
 
 
 def load_local_llm_configs(critic_type: str) -> list[dict]:
@@ -156,28 +186,23 @@ def load_local_llm_configs(critic_type: str) -> list[dict]:
     Resolve ALL critic configs configured for critic_type — the plural
     counterpart to load_local_llm_config, powering multi-critic fan-out.
 
-    critics[critic_type] absent or a dict (today's single-critic shape):
+    critics[critic_type] absent, "default", or a dict (single-critic shape):
     delegates to load_local_llm_config for byte-identical resolution, so
     every config shape that exists in production today produces exactly the
-    same output as before, just wrapped in a list. Returns [] if
-    disabled/unconfigured, else [{**single, "id": "default"}].
+    same output as before, just wrapped in a list. Returns [] if this phase
+    doesn't resolve to a local backend, else [{**single, "id": "default"}].
 
     critics[critic_type] a list (multi-critic shape): resolves each element
-    through the same default/top-level merge _resolve_entry applies to the
-    dict case, keeping only entries that resolve (enabled + model set). Each
-    element requires a unique non-empty string "id" — raises ValueError
-    (checked before enabled-filtering, so a typo is caught immediately, not
+    through the same _resolve_entry the single-critic case uses, keeping
+    only entries that resolve to a local backend — an element whose
+    provider resolves to "claude" is silently filtered (not meaningful for
+    a local-critic subprocess fan-out element), not an error. Each element
+    requires a unique non-empty string "id" — raises ValueError (checked
+    before backend-filtering, so a typo is caught immediately, not
     mid-fanout) on a missing or duplicate id.
     """
-    config_path = Path(".specify/local-llm.json")
-    if not config_path.exists():
-        return []
-    try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
-
-    critic_entry = raw.get("critics", {}).get(critic_type, {})
+    raw = _load_raw_config()
+    critic_entry = raw.get("critics", {}).get(critic_type)
     if not isinstance(critic_entry, list):
         single = load_local_llm_config(critic_type)
         return [{**single, "id": "default"}] if single else []
@@ -188,15 +213,13 @@ def load_local_llm_configs(critic_type: str) -> list[dict]:
         critic_id = entry.get("id")
         if not critic_id or not isinstance(critic_id, str):
             raise ValueError(
-                f"local-llm.json: critics.{critic_type}[{i}] is missing a required 'id' string"
+                f"pipeline.json: critics.{critic_type}[{i}] is missing a required 'id' string"
             )
         if critic_id in seen_ids:
-            raise ValueError(
-                f"local-llm.json: critics.{critic_type} has duplicate id {critic_id!r}"
-            )
+            raise ValueError(f"pipeline.json: critics.{critic_type} has duplicate id {critic_id!r}")
         seen_ids.add(critic_id)
         one = _resolve_entry(raw, entry)
-        if one is not None:
+        if _is_local_backend(one):
             resolved.append({**one, "id": critic_id})
     return resolved
 
@@ -205,85 +228,113 @@ def load_critic_execution_mode(critic_type: str) -> str:
     """
     Read the execution mode ("sequential" or "parallel") for a multi-critic
     fan-out from top-level critic_execution[critic_type] in
-    .specify/local-llm.json. Defaults to "sequential" when absent, the
+    .specify/pipeline.json. Defaults to "sequential" when absent, the
     config file is missing, or unparseable — critics commonly share one
     local Ollama GPU host, where different models mid-fanout would thrash
     VRAM/keep_alive pinning, so sequential is the safe default. "parallel"
     is opt-in per phase for critics that target independent endpoints (e.g.
     one local Ollama + one openai-compatible API).
     """
-    config_path = Path(".specify/local-llm.json")
-    if not config_path.exists():
-        return "sequential"
-    try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return "sequential"
+    raw = _load_raw_config()
     mode = raw.get("critic_execution", {}).get(critic_type, "sequential")
     return mode if mode in ("sequential", "parallel") else "sequential"
+
+
+def load_claude_model(critic_type: str) -> str | None:
+    """
+    Resolve which Claude model, if any, is explicitly configured for this
+    critic_type in .specify/pipeline.json. Returns the model string (which
+    may itself be None, meaning "inherit whatever the invoking session
+    already defaults to") when this phase resolves to provider "claude", or
+    None when it resolves to a local backend instead (use
+    load_local_llm_config(s) for that case) — callers only need to consult
+    this on the "no local backend configured" path, mirroring the symmetry
+    between the local and Claude resolution paths.
+
+    A list-shaped critics[critic_type] (multi-critic fan-out) has no single
+    Claude model to resolve — returns None; "claude" isn't meaningful for an
+    individual local-critic subprocess fan-out element anyway (see
+    load_local_llm_configs).
+    """
+    raw = _load_raw_config()
+    override = raw.get("critics", {}).get(critic_type)
+    if isinstance(override, list):
+        return None
+    resolved = _resolve_entry(raw, override)
+    return resolved["model"] if resolved["provider"] == "claude" else None
+
+
+def load_claude_generation_model(stage: str) -> str | None:
+    """Generation counterpart to load_claude_model — resolves from the
+    top-level "generation" object instead of "critics". A list-shaped
+    generation[stage] (not a valid shape — generation has no multi-backend
+    fan-out) returns None, same as load_claude_model does for a list-shaped
+    critics[critic_type]."""
+    raw = _load_raw_config()
+    override = raw.get("generation", {}).get(stage)
+    if isinstance(override, list):
+        return None
+    resolved = _resolve_entry(raw, override)
+    return resolved["model"] if resolved["provider"] == "claude" else None
 
 
 _DEFAULT_MAX_TURNS = 40
 
 
-def _resolve_generation_entry(raw: dict, stage_override: dict) -> dict | None:
+def _resolve_generation_entry(raw: dict, stage_override: str | dict | None) -> dict | None:
     """
     Generation counterpart to _resolve_entry: reuses it for the shared
     provider/model/transport/num_ctx/max_ctx/keep_alive/num_gpu/num_predict/
-    temperature surface (merging stage_override with raw['default'] exactly
-    as critics do — a project can share one 'default' block across both),
-    then layers on the generation-only agentic-loop fields, each resolved
-    from stage_override -> raw['default'] -> a hardcoded default:
+    temperature surface, then layers on the generation-only agentic-loop
+    fields, each resolved from the same effective entry _resolve_entry used
+    (stage_override, or raw['default'] when stage_override is "default"/
+    absent) -> a hardcoded default:
 
     - max_turns: tool-call round budget before the loop raises
       local_agent_loop.LocalAgentError (default 40).
     - command_timeout_s / output_max_bytes / deny_patterns: passed straight
       through to local_tools.BashSandboxConfig by the caller; absent here
       unless explicitly set, so BashSandboxConfig's own defaults apply.
+
+    Returns None if this stage doesn't resolve to a local backend (provider
+    "claude" — see load_claude_generation_model for that case).
     """
     resolved = _resolve_entry(raw, stage_override)
-    if resolved is None:
+    if not _is_local_backend(resolved):
         return None
 
-    default = raw.get("default", {})
-    merged = {**default, **stage_override}
-
-    resolved["max_turns"] = int(merged.get("max_turns", _DEFAULT_MAX_TURNS))
-    if "command_timeout_s" in merged:
-        resolved["command_timeout_s"] = int(merged["command_timeout_s"])
-    if "output_max_bytes" in merged:
-        resolved["output_max_bytes"] = int(merged["output_max_bytes"])
-    if "deny_patterns" in merged:
-        resolved["deny_patterns"] = list(merged["deny_patterns"])
+    entry = raw.get("default", {}) if stage_override in (None, "default") else stage_override
+    resolved["max_turns"] = int(entry.get("max_turns", _DEFAULT_MAX_TURNS))
+    if "command_timeout_s" in entry:
+        resolved["command_timeout_s"] = int(entry["command_timeout_s"])
+    if "output_max_bytes" in entry:
+        resolved["output_max_bytes"] = int(entry["output_max_bytes"])
+    if "deny_patterns" in entry:
+        resolved["deny_patterns"] = list(entry["deny_patterns"])
     return resolved
 
 
 def load_local_llm_generation_config(stage: str) -> dict | None:
     """
-    Read .specify/local-llm.json and resolve the local-agentic-loop config
-    for the given generation stage ("plan"/"tasks"/"test"/"implement"), from
-    the top-level "generation" object — a sibling to "critics", not a
-    variant of it (see agent_common/local_agent_loop.py's module docstring
-    for why generation needs its own top-level section). One entry covers
-    every agent role for that stage: initial generation, revision, fix, and
-    CI-fix all resolve through the same config.
+    Read .specify/pipeline.json and resolve the local-agentic-loop config
+    for the given generation stage ("plan"/"tasks"/"test"/"implement"/
+    "docs"), from the top-level "generation" object — a sibling to
+    "critics", not a variant of it (see agent_common/local_agent_loop.py's
+    module docstring for why generation needs its own top-level section).
+    One entry covers every agent role for that stage: initial generation,
+    revision, fix, and CI-fix all resolve through the same config.
 
-    Returns None if disabled, not configured, or the config file is
-    missing/unparseable/malformed — callers (run_generation) treat that
-    identically to "no local LLM configured for this stage" and fall back
-    to the existing Claude Agent SDK path, exactly like critics do when
-    load_local_llm_configs returns [].
+    Returns None if this stage resolves to provider "claude" (see
+    load_claude_generation_model for that case), or if generation[stage] is
+    list-shaped — generation has no multi-backend fan-out counterpart to
+    critics' list shape, so a list here is simply not a valid entry.
+    Callers (run_generation) treat either case identically to "no local LLM
+    configured for this stage" and fall back to the existing Claude Agent
+    SDK path.
     """
-    config_path = Path(".specify/local-llm.json")
-    if not config_path.exists():
-        return None
-    try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-
-    stage_override = raw.get("generation", {}).get(stage, {})
-    if not isinstance(stage_override, dict):
+    raw = _load_raw_config()
+    stage_override = raw.get("generation", {}).get(stage)
+    if isinstance(stage_override, list):
         return None
     return _resolve_generation_entry(raw, stage_override)
 
@@ -416,7 +467,7 @@ def _log_vram_state(ollama_url: str, model: str) -> None:
     size_total = entry.get("size", size_vram)
     size_ram = max(0, size_total - size_vram)
     ctx = entry.get("context_length", "?")
-    spillage = " (spillage — reduce num_ctx in local-llm.json)" if size_ram > 0 else " ✓"
+    spillage = " (spillage — reduce num_ctx in pipeline.json)" if size_ram > 0 else " ✓"
     print(
         f"[ollama] {entry['name']} — ctx: {ctx} — VRAM: {_fmt_bytes(size_vram)}, RAM: {_fmt_bytes(size_ram)}{spillage}",
         flush=True,
@@ -842,7 +893,7 @@ def run_local_critic_cli(
     -> str; this handles arg parsing, config loading, the model call, and writing
     the result.
 
-    critic_type doubles as the local-llm.json config key and the log-line label —
+    critic_type doubles as the pipeline.json config key and the log-line label —
     both were previously separate params, but they diverged only cosmetically
     (e.g. "plan-critic" vs "plan"), so a single value now serves both purposes.
 
@@ -1074,7 +1125,7 @@ async def _run_multi_critic_gate(
     configs: list[dict],
     result_prefix: str | None,
     summary_style: str,
-    build_reconcile_query: Callable[[int, list[dict]], object] | None,
+    build_reconcile_query: Callable[[int, list[dict], str | None], object] | None,
 ) -> None:
     """The >1-configured-critics branch of run_gate: fan out to every critic,
     then either synthesize a trivial PASS (all critics clean) or hand the
@@ -1115,7 +1166,8 @@ async def _run_multi_critic_gate(
         sys.exit(1)
 
     log(f"Critics reported findings for {label} — running reconciliation...")
-    await console.stream_query(build_reconcile_query(iteration, raw_results))
+    claude_model = load_claude_model(critic_type)
+    await console.stream_query(build_reconcile_query(iteration, raw_results, claude_model))
     if not canonical_path.exists():
         log(f"ERROR: reconciliation did not write {canonical_path}. Aborting.")
         sys.exit(1)
@@ -1128,25 +1180,27 @@ async def run_gate(
     feature: str,
     iteration: int,
     label: str,
-    claude_fallback: Callable,
+    claude_fallback: Callable[[str | None], object],
     result_prefix: str | None = None,
     summary_style: str = "violations",
-    build_reconcile_query: Callable[[int, list[dict]], object] | None = None,
+    build_reconcile_query: Callable[[int, list[dict], str | None], object] | None = None,
 ) -> None:
     """
     Run one review gate for the *-auto.py orchestrators.
 
     - 0 configured critics: fall back to Claude (claude_fallback) — unchanged
-      from before multi-critic support existed.
+      from before multi-critic support existed, except claude_fallback now
+      receives whichever Claude model (if any) is configured for critic_type.
     - 1 configured critic: try its local-LLM subprocess, falling back to Claude
       if it isn't configured (exit code 2). Aborts (sys.exit(1)) on any other
       subprocess failure. Bit-for-bit the same code path as before multi-critic
       support existed — this is what keeps single-critic behaviour unchanged.
     - >1 configured critics: see _run_multi_critic_gate.
 
-    claude_fallback: zero-arg callable returning the async iterator of SDK
-    messages, e.g. `lambda: query(prompt=..., options=...)`. Only invoked when
-    zero critics resolve.
+    claude_fallback: 1-arg callable (the resolved Claude model, or None to
+    inherit the invoking session's default) returning the async iterator of
+    SDK messages, e.g. `lambda model: query(prompt=..., options=driving_agent_options(..., model=model))`.
+    Only invoked when zero critics resolve.
 
     result_prefix/build_reconcile_query are only required when >1 critic can
     resolve for critic_type — gates that will only ever have 0-or-1 critics can
@@ -1189,4 +1243,5 @@ async def run_gate(
         return
 
     if not configs:
-        await console.stream_query(claude_fallback())
+        claude_model = load_claude_model(critic_type)
+        await console.stream_query(claude_fallback(claude_model))

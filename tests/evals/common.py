@@ -30,12 +30,12 @@ def make_llm_config(critic_name: str) -> dict:
         # contents) is the heaviest in the suite and needs more headroom than the
         # others to finish thinking before answering.
         "num_predict": 16384,
-        "default": {"enabled": False, "model": ""},
-        "critics": {critic_name: {"enabled": True, "model": OLLAMA_MODEL}},
+        "default": {"provider": "claude"},
+        "critics": {critic_name: {"provider": "ollama", "model": OLLAMA_MODEL}},
     }
 
 
-# critic_name (the local-llm.json critic_type key) -> (script filename, result-file prefix).
+# critic_name (the pipeline.json critic_type key) -> (script filename, result-file prefix).
 # Neither the key nor either value follows a shared naming convention, so this is a
 # plain lookup rather than a derivation.
 _CRITIC_SCRIPTS = {

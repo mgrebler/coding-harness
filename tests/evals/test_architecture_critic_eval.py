@@ -36,7 +36,7 @@ def _setup_tmpdir(plan_fixture: Path) -> Path:
     shutil.copy(FIXTURES / "architecture-principles.md", memory_dir / "architecture-principles.md")
     shutil.copy(FIXTURES / "spec.md", spec_dir / "spec.md")
     shutil.copy(plan_fixture, spec_dir / "plan.md")
-    (tmpdir / ".specify" / "local-llm.json").write_text(json.dumps(LOCAL_LLM_CONFIG))
+    (tmpdir / ".specify" / "pipeline.json").write_text(json.dumps(LOCAL_LLM_CONFIG))
     return tmpdir
 
 

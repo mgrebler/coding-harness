@@ -33,15 +33,24 @@ NO_RECURSION_NOTICE = (
 )
 
 
-def driving_agent_options(allowed_tools: list[str], agents: dict) -> ClaudeAgentOptions:
+def driving_agent_options(
+    allowed_tools: list[str], agents: dict, model: str | None = None
+) -> ClaudeAgentOptions:
     """
     Options for an internal driving-agent query() call that delegates to
     exactly one purpose-built subagent. setting_sources=[] (not omitted)
     isolates the driving agent from project filesystem settings — the SDK
     default of None loads all sources, so isolation requires an explicit [].
+
+    model: the Claude model to use for this driving-agent call, resolved via
+    agent_common.ollama.load_claude_model/load_claude_generation_model.
+    None (the default) reproduces today's behavior exactly — the SDK's own
+    default for ClaudeAgentOptions.model is already None, meaning "inherit
+    whatever model the invoking session already runs under."
     """
     return ClaudeAgentOptions(
         allowed_tools=allowed_tools,
         agents=agents,
         setting_sources=[],
+        model=model,
     )

@@ -90,11 +90,12 @@ def preflight(spec_dir: Path, feature: str) -> bool:
 
 
 def tasks_agent_definition(
-    constitution: str, spec: str, plan: str, data_model: str
+    constitution: str, spec: str, plan: str, data_model: str, model: str | None = None
 ) -> AgentDefinition:
     data_model_block = f"\n--- DATA MODEL ---\n{data_model}" if data_model else ""
     return AgentDefinition(
         description="Generates tasks.md for the current feature from plan.md, spec.md, and supporting artifacts.",
+        model=model,
         prompt=f"""You are the Tasks Agent for a spec-kit project.
 
 Your sole function is to produce a complete and valid tasks.md for the current feature.
@@ -136,6 +137,7 @@ def critic_agent_definition(
     tasks: str,
     iteration: int,
     violations: list | None = None,
+    model: str | None = None,
 ) -> AgentDefinition:
     violations_block = format_violations_block(
         violations, iteration, "violations (already addressed by the tasks agent)"
@@ -147,6 +149,7 @@ def critic_agent_definition(
     )
     return AgentDefinition(
         description="Validates tasks.md against plan.md, spec.md, and constitution.md. Returns structured JSON.",
+        model=model,
         prompt=build_tasks_critic_prompt(
             constitution,
             spec,
@@ -167,6 +170,7 @@ def tasks_reconcile_agent_definition(
     tasks: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None = None,
 ) -> AgentDefinition:
     context_block = (
         f"--- CONSTITUTION ---\n{constitution}\n\n"
@@ -180,6 +184,7 @@ def tasks_reconcile_agent_definition(
     )
     return AgentDefinition(
         description="Reconciles findings from multiple independent tasks critics into one verified result.",
+        model=model,
         prompt=critic_reconcile.build_reconcile_prompt(
             context_block, raw_results, iteration, "violations", output_instructions
         ),
@@ -217,11 +222,16 @@ async def _run_format_gate(
         await local_agent_loop.run_generation(
             log,
             "tasks",
-            claude_fallback=lambda user_prompt=user_prompt, tasks_agent=tasks_agent: query(
+            claude_fallback=lambda model, user_prompt=user_prompt: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"tasks-agent": tasks_agent},
+                    agents={
+                        "tasks-agent": tasks_agent_definition(
+                            constitution, spec, plan, data_model, model=model
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=tasks_agent.prompt,
@@ -267,11 +277,16 @@ async def run(feature: str):
         await local_agent_loop.run_generation(
             log,
             "tasks",
-            claude_fallback=lambda: query(
+            claude_fallback=lambda model: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"tasks-agent": tasks_agent},
+                    agents={
+                        "tasks-agent": tasks_agent_definition(
+                            constitution, spec, plan, data_model, model=model
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=tasks_agent.prompt,
@@ -316,11 +331,16 @@ async def run(feature: str):
         await local_agent_loop.run_generation(
             log,
             "tasks",
-            claude_fallback=lambda: query(
+            claude_fallback=lambda model: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"tasks-agent": tasks_agent},
+                    agents={
+                        "tasks-agent": tasks_agent_definition(
+                            constitution, spec, plan, data_model, model=model
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=tasks_agent.prompt,
@@ -337,7 +357,7 @@ async def run(feature: str):
             "Tasks are ready for human review. No further action taken.",
         )
 
-    def build_critic_query(iteration: int, prev_violations):
+    def build_critic_query(iteration: int, prev_violations, model: str | None):
         tasks = read_file(spec_dir / "tasks.md")
         return query(
             prompt=(
@@ -349,13 +369,14 @@ async def run(feature: str):
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "tasks-critic": critic_agent_definition(
-                        constitution, spec, plan, tasks, iteration, prev_violations
+                        constitution, spec, plan, tasks, iteration, prev_violations, model
                     )
                 },
+                model=model,
             ),
         )
 
-    def build_reconcile_query(iteration: int, raw_results: list[dict]):
+    def build_reconcile_query(iteration: int, raw_results: list[dict], model: str | None):
         tasks = read_file(spec_dir / "tasks.md")
         return query(
             prompt=(
@@ -367,9 +388,10 @@ async def run(feature: str):
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "tasks-critic-reconcile": tasks_reconcile_agent_definition(
-                        constitution, spec, plan, tasks, iteration, raw_results
+                        constitution, spec, plan, tasks, iteration, raw_results, model
                     )
                 },
+                model=model,
             ),
         )
 

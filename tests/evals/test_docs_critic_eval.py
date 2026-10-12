@@ -50,7 +50,7 @@ def _setup_tmpdir(docs_fixture_dir: Path) -> Path:
 
     shutil.copytree(docs_fixture_dir, tmpdir / "docs")
 
-    (tmpdir / ".specify" / "local-llm.json").write_text(json.dumps(LOCAL_LLM_CONFIG))
+    (tmpdir / ".specify" / "pipeline.json").write_text(json.dumps(LOCAL_LLM_CONFIG))
 
     # No specs/001-health-endpoint/ch-5-docs-baseline/ — this is the first-ever docs
     # run for this fixture project, so there is nothing to regress against.

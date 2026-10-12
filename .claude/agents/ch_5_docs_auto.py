@@ -98,10 +98,16 @@ def snapshot_baseline(spec_dir: Path) -> None:
 
 
 def docs_agent_definition(
-    constitution: str, documentation_principles: str, spec: str, plan: str, tasks: str
+    constitution: str,
+    documentation_principles: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    model: str | None = None,
 ) -> AgentDefinition:
     return AgentDefinition(
         description="Merges this feature's shipped behaviour into docs/, the project's persistent user/maintainer documentation set.",
+        model=model,
         prompt=f"""You are the Documentation Agent for a spec-kit project.
 
 Your sole function is to merge this feature's shipped behaviour into docs/, the project's
@@ -160,6 +166,7 @@ def critic_agent_definition(
     tasks: str,
     iteration: int,
     violations: list | None = None,
+    model: str | None = None,
 ) -> AgentDefinition:
     violations_block = format_violations_block(
         violations, iteration, "violations (already addressed by the docs agent)"
@@ -171,6 +178,7 @@ def critic_agent_definition(
     )
     return AgentDefinition(
         description="Validates this run's merge into docs/ against documentation-principles.md and the shipped diff. Returns structured JSON.",
+        model=model,
         prompt=build_docs_critic_prompt(
             constitution,
             documentation_principles,
@@ -193,6 +201,7 @@ def docs_reconcile_agent_definition(
     tasks: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None = None,
 ) -> AgentDefinition:
     context_block = (
         f"--- CONSTITUTION ---\n{constitution}\n\n"
@@ -207,6 +216,7 @@ def docs_reconcile_agent_definition(
     )
     return AgentDefinition(
         description="Reconciles findings from multiple independent docs critics into one verified result.",
+        model=model,
         prompt=critic_reconcile.build_reconcile_prompt(
             context_block, raw_results, iteration, "violations", output_instructions
         ),
@@ -246,11 +256,16 @@ async def run(feature: str):
         await local_agent_loop.run_generation(
             log,
             "docs",
-            claude_fallback=lambda: query(
+            claude_fallback=lambda model: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"docs-agent": docs_agent},
+                    agents={
+                        "docs-agent": docs_agent_definition(
+                            constitution, documentation_principles, spec, plan, tasks, model=model
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=docs_agent.prompt,
@@ -294,11 +309,16 @@ async def run(feature: str):
         await local_agent_loop.run_generation(
             log,
             "docs",
-            claude_fallback=lambda: query(
+            claude_fallback=lambda model: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"docs-agent": docs_agent},
+                    agents={
+                        "docs-agent": docs_agent_definition(
+                            constitution, documentation_principles, spec, plan, tasks, model=model
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=docs_agent.prompt,
@@ -315,7 +335,7 @@ async def run(feature: str):
             "Documentation is up to date. No further action taken.",
         )
 
-    def build_critic_query(iteration: int, prev_violations):
+    def build_critic_query(iteration: int, prev_violations, model: str | None):
         return query(
             prompt=(
                 f"Validate this run's merge into docs/ for feature {feature}. "
@@ -333,12 +353,14 @@ async def run(feature: str):
                         tasks,
                         iteration,
                         prev_violations,
+                        model,
                     )
                 },
+                model=model,
             ),
         )
 
-    def build_reconcile_query(iteration: int, raw_results: list[dict]):
+    def build_reconcile_query(iteration: int, raw_results: list[dict], model: str | None):
         return query(
             prompt=(
                 f"Reconcile the raw docs-critic findings for feature {feature} into one "
@@ -356,8 +378,10 @@ async def run(feature: str):
                         tasks,
                         iteration,
                         raw_results,
+                        model,
                     )
                 },
+                model=model,
             ),
         )
 

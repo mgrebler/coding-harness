@@ -168,26 +168,29 @@ async def run_local_agent_loop(log, system_prompt: str, user_prompt: str, config
 async def run_generation(
     log,
     stage: str,
-    claude_fallback: Callable,
+    claude_fallback: Callable[[str | None], object],
     system_prompt: str,
     user_prompt: str,
 ) -> None:
     """
     Generation counterpart to ollama.run_gate: if a local/external model is
-    configured for `stage` (.specify/local-llm.json's top-level
+    configured for `stage` (.specify/pipeline.json's top-level
     "generation.<stage>"), run the local agentic loop against it; otherwise
-    fall back to the existing Claude Agent SDK path unconditionally — the
-    same 0-configured -> Claude-fallback semantics run_gate uses for
-    critics. One config per stage covers every agent role for that stage
+    fall back to the existing Claude Agent SDK path — the same
+    no-local-backend -> Claude-fallback semantics run_gate uses for critics,
+    now also resolving which Claude model (if any) is configured for this
+    stage. One config per stage covers every agent role for that stage
     (initial generation, revision, fix, CI-fix all call this the same way).
 
-    claude_fallback: zero-arg callable returning the async iterator of SDK
-    messages, e.g. `lambda: query(prompt=..., options=...)`. Only invoked
-    when no local generation config resolves for `stage`.
+    claude_fallback: 1-arg callable (the resolved Claude model, or None to
+    inherit the invoking session's default) returning the async iterator of
+    SDK messages, e.g. `lambda model: query(prompt=..., options=driving_agent_options(..., model=model))`.
+    Only invoked when no local generation config resolves for `stage`.
     """
     config = ollama.load_local_llm_generation_config(stage)
     if config is None:
-        await console.stream_query(claude_fallback())
+        claude_model = ollama.load_claude_generation_model(stage)
+        await console.stream_query(claude_fallback(claude_model))
         return
 
     log(f"Using local LLM ({config['model']}) for {stage} generation...")
