@@ -239,7 +239,9 @@ async def run(feature: str):
 
     if not list(spec_dir.glob(f"{RESULT_PREFIX}-*.json")):
         log("Running docs agent...")
-        docs_agent = docs_agent_definition(constitution, documentation_principles, spec, plan, tasks)
+        docs_agent = docs_agent_definition(
+            constitution, documentation_principles, spec, plan, tasks
+        )
         user_prompt = f"Merge feature {feature}'s shipped behaviour into docs/."
         await local_agent_loop.run_generation(
             log,
@@ -281,7 +283,9 @@ async def run(feature: str):
         log(
             f"Running revision agent to address {len(pending_violations)} violation(s) from iteration {pending_iter}..."
         )
-        docs_agent = docs_agent_definition(constitution, documentation_principles, spec, plan, tasks)
+        docs_agent = docs_agent_definition(
+            constitution, documentation_principles, spec, plan, tasks
+        )
         user_prompt = (
             f"Revise docs/ for feature {feature} to fix critic violations. "
             f"Read specs/{feature}/ch-5-docs-critic-result-{pending_iter}.json for the violation list. "
@@ -345,7 +349,13 @@ async def run(feature: str):
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "docs-critic-reconcile": docs_reconcile_agent_definition(
-                        constitution, documentation_principles, spec, plan, tasks, iteration, raw_results
+                        constitution,
+                        documentation_principles,
+                        spec,
+                        plan,
+                        tasks,
+                        iteration,
+                        raw_results,
                     )
                 },
             ),
@@ -380,10 +390,10 @@ async def run(feature: str):
                 "violations before the feature can be considered fully documented."
             ),
             "required_action": (
-                f"1. Review the violations above.\n"
-                f"2. Edit the affected files under docs/ manually to address the BLOCKING violations.\n"
-                f"3. Re-run `python .claude/agents/ch_5_docs_auto.py` to restart the automated loop,\n"
-                f"   or run `/ch-5-docs-critic` manually to verify your fixes."
+                "1. Review the violations above.\n"
+                "2. Edit the affected files under docs/ manually to address the BLOCKING violations.\n"
+                "3. Re-run `python .claude/agents/ch_5_docs_auto.py` to restart the automated loop,\n"
+                "   or run `/ch-5-docs-critic` manually to verify your fixes."
             ),
         },
     )
