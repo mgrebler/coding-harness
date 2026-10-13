@@ -37,6 +37,10 @@ Each stage produces a markdown artifact in `specs/NNN-feature/` within the targe
 
 See README.md for the full pipeline walkthrough, docker setup, and command reference.
 
+## Code Style
+
+No comments that merely restate what the code already says — rely on naming and structure to make intent obvious. A comment is justified only when it explains something the code can't: a non-obvious constraint, a workaround, or a tradeoff (the *why*, not the *what*). This applies to the harness's own Python source (`.claude/agents/`, `tests/`). `ruff`'s `ERA` rule catches commented-out code, but nothing here is enforced by lint — it's a review discipline for both human and Claude Code contributors working in this repo.
+
 ## Harness Architecture
 
 ### Ownership Model

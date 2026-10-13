@@ -246,6 +246,23 @@ Flag:
 
 ---
 
+### 11. Self-Documenting Code
+
+Prefer:
+- Names and structure that make intent obvious without narration
+- Comments that explain *why* — a non-obvious constraint, a tradeoff, a workaround
+- Code that needs no comment to be understood
+
+Reject:
+- Comments that restate what the next line already says
+- Comments narrating control flow (e.g. "loop through users", "return the result")
+- Docstrings that repeat the function signature in prose
+
+Flag:
+- Comment density out of proportion to logic complexity
+
+---
+
 ## Code Quality Heuristics
 
 Automatically flag:
@@ -264,6 +281,7 @@ Automatically flag:
 - Large orchestrator methods
 - Feature flags leaking throughout code
 - Commented-out code
+- Explanatory comments that merely restate what the code already says
 - Dead abstractions
 - Async behavior without timeout handling
 - Retries without idempotency guarantees
