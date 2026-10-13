@@ -1,0 +1,6 @@
+{
+  "stages": {
+    "test": { "enabled": true },
+    "docs": { "enabled": true }
+  }
+}

@@ -121,7 +121,7 @@ def _build_request(prompt: str, config: dict) -> urllib.request.Request:
     if not api_key:
         raise RuntimeError(
             f"Environment variable {api_key_env} is not set (required for provider "
-            "'openai-compatible' — local-llm.json only names the env var, never "
+            "'openai-compatible' — pipeline.json only names the env var, never "
             "the key itself)"
         )
 
@@ -308,7 +308,7 @@ def _build_turn_request(
     if not api_key:
         raise RuntimeError(
             f"Environment variable {api_key_env} is not set (required for provider "
-            "'openai-compatible' — local-llm.json only names the env var, never "
+            "'openai-compatible' — pipeline.json only names the env var, never "
             "the key itself)"
         )
 

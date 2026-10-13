@@ -8,7 +8,7 @@ Every filesystem tool is confined to the project root — no path may escape
 it. Bash runs with a fixed cwd, a timeout, an output cap, and a denylist for
 a small set of catastrophic one-liners. This is defense-in-depth, not a
 jail: the real backstops are that local-model generation is opt-in per
-.specify/local-llm.json, the devcontainer is the actual sandbox boundary,
+.specify/pipeline.json, the devcontainer is the actual sandbox boundary,
 and the existing critic gates plus mandatory human PR review are unchanged
 regardless of which backend generated the code."""
 
@@ -47,7 +47,7 @@ class ToolError(Exception):
 
 def _project_root() -> Path:
     """Not cached: mirrors ollama.py's per-call re-read of
-    .specify/local-llm.json, so tests can chdir per-test/per-call."""
+    .specify/pipeline.json, so tests can chdir per-test/per-call."""
     return Path.cwd().resolve()
 
 

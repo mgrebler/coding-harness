@@ -47,7 +47,7 @@ def _setup_tmpdir(test_fixture: Path) -> Path:
     results_dir.mkdir()
     shutil.copy(FIXTURES / "good" / "test-results" / "T001-red.txt", results_dir / "T001-red.txt")
 
-    (tmpdir / ".specify" / "local-llm.json").write_text(json.dumps(LOCAL_LLM_CONFIG))
+    (tmpdir / ".specify" / "pipeline.json").write_text(json.dumps(LOCAL_LLM_CONFIG))
 
     setup_git_repo(
         tmpdir, {TEST_FILE_IN_REPO: test_fixture}, commit_message="Add health endpoint tests"

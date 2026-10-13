@@ -43,7 +43,7 @@ from ch_3_test_critic import build_test_critic_prompt
 from ch_3_test_quality_critic import build_test_quality_review_prompt
 from claude_agent_sdk import AgentDefinition, query
 
-from agent_common import critic_reconcile, local_agent_loop
+from agent_common import critic_reconcile, local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
     GateSpec,
@@ -122,9 +122,11 @@ def test_agent_definition(
     tasks: str,
     test_principles: str,
     feature: str,
+    model: str | None = None,
 ) -> AgentDefinition:
     return AgentDefinition(
         description="Writes failing tests for all unchecked [TEST] tasks in tasks.md.",
+        model=model,
         prompt=f"""You are the Test Agent for a spec-kit project.
 
 Your sole function is to write failing tests for all unchecked [TEST] tasks in tasks.md.
@@ -191,6 +193,7 @@ def test_critic_agent_definition(
     feature: str,
     iteration: int,
     violations: list | None = None,
+    model: str | None = None,
 ) -> AgentDefinition:
     violations_block = format_violations_block(violations, iteration)
 
@@ -200,6 +203,7 @@ def test_critic_agent_definition(
     )
     return AgentDefinition(
         description="Validates test files against test-principles.md, spec.md, and constitution.md.",
+        model=model,
         prompt=build_test_critic_prompt(
             constitution,
             spec,
@@ -224,6 +228,7 @@ def test_quality_review_agent_definition(
     feature: str,
     iteration: int,
     quality_violations: list | None = None,
+    model: str | None = None,
 ) -> AgentDefinition:
     violations_block = format_violations_block(
         quality_violations, iteration, "test quality issues (already addressed by the test agent)"
@@ -235,6 +240,7 @@ def test_quality_review_agent_definition(
     )
     return AgentDefinition(
         description="Reviews test files for assertion quality, test naming, and CI readiness.",
+        model=model,
         prompt=build_test_quality_review_prompt(
             constitution,
             spec,
@@ -258,6 +264,7 @@ def test_critic_reconcile_agent_definition(
     feature: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None = None,
 ) -> AgentDefinition:
     context_block = (
         f"--- CONSTITUTION ---\n{constitution}\n\n"
@@ -272,6 +279,7 @@ def test_critic_reconcile_agent_definition(
     )
     return AgentDefinition(
         description="Reconciles findings from multiple independent test critics into one verified result.",
+        model=model,
         prompt=critic_reconcile.build_reconcile_prompt(
             context_block, raw_results, iteration, "violations", output_instructions
         ),
@@ -288,6 +296,7 @@ def test_quality_review_reconcile_agent_definition(
     feature: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None = None,
 ) -> AgentDefinition:
     context_block = (
         f"--- CONSTITUTION ---\n{constitution}\n\n"
@@ -302,6 +311,7 @@ def test_quality_review_reconcile_agent_definition(
     )
     return AgentDefinition(
         description="Reconciles findings from multiple independent test-quality-review critics into one verified result.",
+        model=model,
         prompt=critic_reconcile.build_reconcile_prompt(
             context_block, raw_results, iteration, "confidence", output_instructions
         ),
@@ -316,9 +326,11 @@ def test_fix_agent_definition(
     tasks: str,
     test_principles: str,
     violations: list,
+    model: str | None = None,
 ) -> AgentDefinition:
     return AgentDefinition(
         description="Fixes specific test violations found by the test critic.",
+        model=model,
         prompt=f"""You are the Test Fix Agent for a spec-kit project.
 
 Your sole function is to fix the specific violations listed below in the test files.
@@ -371,6 +383,7 @@ def _build_reconcile_critic_query(
     test_principles: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None,
 ):
     tasks_content = read_file(spec_dir / "tasks.md")
     return query(
@@ -391,8 +404,10 @@ def _build_reconcile_critic_query(
                     feature,
                     iteration,
                     raw_results,
+                    model,
                 )
             },
+            model=model,
         ),
     )
 
@@ -406,6 +421,7 @@ def _build_reconcile_quality_query(
     test_principles: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None,
 ):
     tasks_content = read_file(spec_dir / "tasks.md")
     return query(
@@ -426,8 +442,10 @@ def _build_reconcile_quality_query(
                     feature,
                     iteration,
                     raw_results,
+                    model,
                 )
             },
+            model=model,
         ),
     )
 
@@ -475,11 +493,16 @@ async def _run_red_state_gate(
         await local_agent_loop.run_generation(
             log,
             "test",
-            claude_fallback=lambda user_prompt=user_prompt, test_agent=test_agent: query(
+            claude_fallback=lambda model, user_prompt=user_prompt: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"test-agent": test_agent},
+                    agents={
+                        "test-agent": test_agent_definition(
+                            constitution, spec, plan, tasks, test_principles, feature, model=model
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=test_agent.prompt,
@@ -528,11 +551,16 @@ async def _run_test_agent_if_needed(
         await local_agent_loop.run_generation(
             log,
             "test",
-            claude_fallback=lambda user_prompt=user_prompt, test_agent=test_agent: query(
+            claude_fallback=lambda model, user_prompt=user_prompt, tasks=tasks: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"test-agent": test_agent},
+                    agents={
+                        "test-agent": test_agent_definition(
+                            constitution, spec, plan, tasks, test_principles, feature, model=model
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=test_agent.prompt,
@@ -560,6 +588,13 @@ async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
     log(f"Starting ch-3-test-auto for feature: {feature}")
+
+    if not ollama.is_stage_enabled("test"):
+        log(
+            "Test stage is disabled via .specify/pipeline.json (stages.test.enabled=false) "
+            "— nothing to do."
+        )
+        return
 
     preflight(spec_dir, feature)
 
@@ -636,11 +671,22 @@ async def run(feature: str):
         await local_agent_loop.run_generation(
             log,
             "test",
-            claude_fallback=lambda: query(
+            claude_fallback=lambda model: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"test-fix-agent": test_fix_agent},
+                    agents={
+                        "test-fix-agent": test_fix_agent_definition(
+                            constitution,
+                            spec,
+                            plan,
+                            tasks_content,
+                            test_principles,
+                            pending_violations,
+                            model=model,
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=test_fix_agent.prompt,
@@ -674,7 +720,7 @@ async def run(feature: str):
             "Test phase complete. Implementation may now begin.",
         )
 
-    def build_critic_query(iteration: int, prev_violations):
+    def build_critic_query(iteration: int, prev_violations, model: str | None):
         tasks_content = read_file(spec_dir / "tasks.md")
         return query(
             prompt=(
@@ -694,12 +740,14 @@ async def run(feature: str):
                         feature,
                         iteration,
                         prev_violations,
+                        model,
                     )
                 },
+                model=model,
             ),
         )
 
-    def build_quality_query(iteration: int, quality_violations):
+    def build_quality_query(iteration: int, quality_violations, model: str | None):
         tasks_content = read_file(spec_dir / "tasks.md")
         return query(
             prompt=(
@@ -720,8 +768,10 @@ async def run(feature: str):
                         feature,
                         iteration,
                         quality_violations,
+                        model,
                     )
                 },
+                model=model,
             ),
         )
 

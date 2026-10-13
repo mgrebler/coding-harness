@@ -206,36 +206,95 @@ The plain `/speckit-plan`, `/speckit-tasks`, `/speckit-implement`, and `/ch-3-te
 
 ---
 
-## Local LLM Support (Optional)
+## Pipeline Configuration (`.specify/pipeline.json`, Optional)
 
-Critic passes can optionally run against a local [Ollama](https://ollama.com) instance, or a hosted OpenAI-compatible API (NVIDIA's hosted inference, OpenAI, Groq, Together.ai, etc), instead of Claude. Edit `.specify/local-llm.json` in your project root:
+Every pipeline stage — each critic and each generation step — can independently run
+against Claude (the default, zero-config), a local [Ollama](https://ollama.com) instance,
+or a hosted OpenAI-compatible API (NVIDIA's hosted inference, OpenAI, Groq, Together.ai,
+etc). Edit `.specify/pipeline.json` in your project root:
 
 ```json
 {
-  "provider": "ollama",
   "ollama_url": "http://host.docker.internal:11434",
-  "default": { "enabled": false, "model": "" },
+  "default": { "provider": "claude" },
   "critics": {
-    "plan":                     { "enabled": true,  "model": "qwen3:30b-a3b" },
-    "plan-architecture-review": { "enabled": true,  "model": "qwen3:30b-a3b" },
+    "plan":                     { "provider": "ollama", "model": "qwen3:30b-a3b" },
+    "plan-architecture-review": { "provider": "ollama", "model": "qwen3:30b-a3b" },
 
-    "tasks":                    { "enabled": false, "model": "", "max_ctx": 32768 },
+    "tasks":                    "default",
 
-    "test":                     { "enabled": false, "model": "" },
-    "test-quality-review":      { "enabled": false, "model": "" },
+    "test":                     "default",
+    "test-quality-review":      "default",
 
-    "implement":                { "enabled": false, "model": "" },
-    "implement-quality-review": { "enabled": false, "model": "qwen3-coder:30b-a3b" },
+    "implement":                "default",
+    "implement-quality-review": { "provider": "ollama", "model": "qwen3-coder:30b-a3b" },
 
-    "docs":                     { "enabled": false, "model": "" }
+    "docs":                     "default"
   }
 }
 ```
+
+Each phase's value is either the literal string `"default"` (inherit the top-level
+`default` entry wholesale) or a full `{"provider": ..., "model": ..., ...}` object used
+as-is — entries never merge field-by-field with `default`, so a phase you do configure
+gets exactly what you wrote, nothing implicitly inherited. `"provider"` is one of
+`"ollama"`, `"openai-compatible"`, or `"claude"`; omitting it on an entry defaults to
+`"claude"`, and omitting `"model"` on a `"claude"` entry means "inherit whatever model
+the invoking Claude Code session already runs under" — so an absent config file, or a
+`default` you never customize, is a zero-behavior-change no-op.
 
 Each phase's secondary review key is named after the primary key it follows, so the
 pairing is explicit from the name alone: `plan` → `plan-architecture-review`, `test` →
 `test-quality-review`, `implement` → `implement-quality-review`. `tasks` and `docs`
 have no secondary gate.
+
+### Picking a specific Claude model
+
+`"provider": "claude"` is an explicit, first-class choice, not just "no local backend
+configured" — set `"model"` to a model alias (`"sonnet"`, `"opus"`, `"haiku"`,
+`"inherit"`) or a full model ID (e.g. `"claude-opus-5-5"`) to pin a phase to a specific
+Claude model regardless of which model the invoking session itself runs under:
+
+```json
+{
+  "default": { "provider": "claude", "model": "sonnet" },
+  "critics": {
+    "implement-quality-review": { "provider": "claude", "model": "opus" }
+  }
+}
+```
+
+Here every phase runs on Sonnet by default, except code quality review, which always
+runs on Opus. `ollama`/`openai-compatible` entries ignore `"model"` as a Claude
+selector — it names the local/hosted model instead, per the usual fields below.
+
+### Pipeline stage toggles
+
+The test and docs stages can each be turned off entirely for a project, via a
+top-level `stages` object:
+
+```json
+{
+  "stages": {
+    "test": { "enabled": true },
+    "docs": { "enabled": true }
+  }
+}
+```
+
+Both default to `true` when the config file is absent, has no `stages` key, or omits
+a specific stage — so this is purely opt-out. `plan`, `tasks`, and `implement` are not
+toggleable.
+
+Disabling `test` has one real consequence beyond skipping `/ch-3-test-auto`: the tasks
+agent stops pairing `[IMPL]` tasks with `[TEST]` tasks (plain `[IMPL]`-only tasks
+instead), and `/ch-4-implement-auto`'s test-gate preflight check (constitution §19) is
+skipped — implementation proceeds directly from tasks.md without a prior red-state
+artifact. Set the toggle *before* generating `tasks.md` for a given feature; flipping it
+mid-feature, after `[TEST]` tasks already exist, leaves them permanently unchecked.
+
+Disabling `docs` simply skips `/ch-5-docs-auto` (and the documentation gate, §20) —
+no ripple into any other stage, since docs runs last.
 
 Two ways to control the Ollama context window (`num_ctx`), settable at the
 top level or per-critic like any other field above:
@@ -265,34 +324,34 @@ once:
 
 ```json
 {
-  "provider": "ollama",
   "ollama_url": "http://host.docker.internal:11434",
-  "default": { "enabled": false, "model": "" },
   "critics": {
     "plan": [
-      { "id": "qwen",     "enabled": true, "model": "qwen3:30b-a3b" },
+      { "id": "qwen",     "provider": "ollama", "model": "qwen3:30b-a3b" },
       {
         "id": "nvidia-llama",
-        "enabled": true,
-        "model": "meta/llama-3.1-70b-instruct",
         "provider": "openai-compatible",
+        "model": "meta/llama-3.1-70b-instruct",
         "base_url": "https://integrate.api.nvidia.com/v1",
         "api_key_env": "NVIDIA_API_KEY"
       }
     ],
-    "plan-architecture-review": { "enabled": true, "model": "qwen3:30b-a3b" }
+    "plan-architecture-review": { "provider": "ollama", "model": "qwen3:30b-a3b" }
   },
   "critic_execution": { "plan": "parallel" }
 }
 ```
 
-Each list entry supports every field a single-critic config does (`enabled`,
-`model`, `provider`, `base_url`/`api_key_env`, `num_ctx`, `max_ctx`,
-`keep_alive`, `num_gpu`, `num_predict`, `temperature`), resolved through the
-same `default` → top-level fallback chain, and requires a unique `id` string
-(a missing or duplicate `id` fails fast at config-load time rather than
-mid-run). A list with only one entry enabled behaves identically to the
-single-object form — nothing special to configure.
+Each list entry supports every field a single-critic config does (`provider`,
+`model`, `base_url`/`api_key_env`, `num_ctx`, `max_ctx`, `keep_alive`,
+`num_gpu`, `num_predict`, `temperature`), resolved exactly like a single
+non-list entry (used as-is, no merge with `default`), and requires a unique
+`id` string (a missing or duplicate `id` fails fast at config-load time
+rather than mid-run). A list with only one entry behaves identically to the
+single-object form — nothing special to configure. `"provider": "claude"` on
+a list entry is never meaningful (there's nothing for a local-critic
+subprocess fan-out to run) and is silently excluded from the fan-out rather
+than erroring.
 
 When more than one critic resolves for a phase, each independently reviews
 the same artifact against the same objective (an identical prompt — only the
@@ -323,27 +382,26 @@ endpoints, e.g. one local Ollama model plus one hosted `openai-compatible`
 API, where there's no shared GPU to contend over.
 
 Multi-critic support applies to the automated `ch-N-*-auto` pipeline, where
-`.specify/local-llm.json` is consulted. The human-triggered `/ch-N-*-review`
+`.specify/pipeline.json` is consulted. The human-triggered `/ch-N-*-review`
 skills are a separate, single-shot Claude-only review path unrelated to this
 config and are unaffected either way.
 
 ### Using a hosted OpenAI-compatible API instead of Ollama
 
 Set `"provider": "openai-compatible"` and supply `base_url` and `api_key_env`
-instead of `ollama_url`:
+alongside `model`:
 
 ```json
 {
-  "provider": "openai-compatible",
   "base_url": "https://integrate.api.nvidia.com/v1",
   "api_key_env": "NVIDIA_API_KEY",
-  "default": { "enabled": true, "model": "moonshotai/kimi-k2.6" },
+  "default": { "provider": "openai-compatible", "model": "moonshotai/kimi-k2.6" },
   "critics": {}
 }
 ```
 
 `api_key_env` names an environment variable holding the API key — **the key
-itself must never be written into this file**, since `.specify/local-llm.json`
+itself must never be written into this file**, since `.specify/pipeline.json`
 is typically committed alongside the rest of the project's specs. Set the
 named variable in your shell/CI environment before running critics, or drop
 it in a `.env` file (`KEY=value` per line) in your project root — it's loaded
@@ -352,26 +410,26 @@ in the environment. `.env` is optional: if it doesn't exist, this is a no-op
 and the shell/CI environment is used as-is. `.env` should never be committed
 (it's gitignored by default) — only `.env.sample` with placeholder values.
 
-`provider` (like every other field above) can be set per-critic instead of
-top-level, so a project can mix backends — e.g. Ollama for most critics, a
-hosted model for one. `num_ctx`/`max_ctx`/`keep_alive`/`num_gpu` are
-Ollama-specific and are ignored when `provider` is `openai-compatible`.
+`base_url`/`api_key_env` can be shared at the top level (as above) or set
+per-entry to mix backends — e.g. Ollama for most critics, a hosted model for
+one — but `provider` and `model` themselves are never inherited from a bare
+top-level field; they always come from the entry itself (or `"default"`,
+inheriting the `default` block wholesale). `num_ctx`/`max_ctx`/`keep_alive`/
+`num_gpu` are Ollama-specific and are ignored when `provider` is
+`openai-compatible`.
 
 For example, Ollama by default with the `test` critic overridden to run
 against NVIDIA instead:
 
 ```json
 {
-  "provider": "ollama",
   "ollama_url": "http://host.docker.internal:11434",
-  "default": { "enabled": false, "model": "" },
   "critics": {
-    "plan": { "enabled": true, "model": "qwen3:30b-a3b" },
+    "plan": { "provider": "ollama", "model": "qwen3:30b-a3b" },
 
     "test": {
-      "enabled": true,
-      "model": "meta/llama-3.3-70b-instruct",
       "provider": "openai-compatible",
+      "model": "meta/llama-3.3-70b-instruct",
       "base_url": "https://integrate.api.nvidia.com/v1",
       "api_key_env": "NVIDIA_API_KEY"
     }
@@ -379,10 +437,11 @@ against NVIDIA instead:
 }
 ```
 
-`plan` falls through to the top-level `provider`/`ollama_url` since its block
-doesn't override them; `test`'s block overrides `provider` and supplies its
-own `base_url`/`api_key_env`, so it never touches `ollama_url` at all. Any
-critic can independently be Ollama, an OpenAI-compatible host, or disabled.
+`plan`'s entry sets its own `provider`/`model` but falls through to the
+top-level `ollama_url` since it doesn't override that; `test`'s entry
+overrides `provider` and supplies its own `base_url`/`api_key_env`, so it
+never touches `ollama_url` at all. Any critic can independently be Ollama,
+an OpenAI-compatible host, or Claude.
 
 #### Recommended models (NVIDIA hosted inference)
 
@@ -420,24 +479,24 @@ JSON: {"result": "ok"}`, `response_format: json_object`) and confirm
 return `404: Function ... Not found for account` until access is granted.
 Confirm with a real chat-completions call, not just the models list.
 
-### Generation (plan/tasks/test/implement authoring)
+### Generation (plan/tasks/test/implement/docs authoring)
 
 Everything above configures **critics** — review passes that read a prompt
-and return one JSON verdict, no filesystem access needed. The four
-**generation** stages (`plan`, `tasks`, `test`, `implement` — the agents
-that actually author `plan.md`/`tasks.md`/tests/implementation) can
-independently be pointed at a local or hosted model too, via a separate
-top-level `generation` object in the same `.specify/local-llm.json`:
+and return one JSON verdict, no filesystem access needed. The five
+**generation** stages (`plan`, `tasks`, `test`, `implement`, `docs` — the
+agents that actually author `plan.md`/`tasks.md`/tests/implementation/`docs/`)
+can independently be pointed at a local or hosted model too, via a separate
+top-level `generation` object in the same `.specify/pipeline.json`:
 
 ```json
 {
-  "provider": "ollama",
   "ollama_url": "http://host.docker.internal:11434",
   "generation": {
-    "plan":      { "enabled": true,  "model": "qwen3-coder:30b-a3b", "max_turns": 40 },
-    "tasks":     { "enabled": false, "model": "" },
-    "test":      { "enabled": false, "model": "" },
-    "implement": { "enabled": false, "model": "", "command_timeout_s": 180 }
+    "plan":      { "provider": "ollama", "model": "qwen3-coder:30b-a3b", "max_turns": 40 },
+    "tasks":     "default",
+    "test":      "default",
+    "implement": { "provider": "claude", "model": "opus", "command_timeout_s": 180 },
+    "docs":      "default"
   }
 }
 ```
@@ -498,7 +557,7 @@ reasoning-leakage caveat from the critic section above applies here too.
 ## Key Rules
 
 - **No agent merges to `main`** — the merge is always a human action after PR review and CI pass.
-- **TDD is mandatory** — failing tests must be written before implementation code.
+- **TDD is mandatory** — failing tests must be written before implementation code, when the test stage is enabled for the project (see § Pipeline Configuration → stage toggles; enabled by default).
 - **One feature at a time** — each feature has its own branch and `specs/NNN-feature/` directory.
 
 ---
@@ -531,7 +590,7 @@ OLLAMA_MODEL=qwen3:30b-a3b bash tests/run_tests.sh
 OLLAMA_URL=http://host.docker.internal:11434 bash tests/run_tests.sh
 ```
 
-The eval tests configure Ollama via a `.specify/local-llm.json` written into each test's temp directory — no changes to your local config needed. If Ollama is unreachable or the model isn't pulled, tests skip with a clear message rather than erroring.
+The eval tests configure Ollama via a `.specify/pipeline.json` written into each test's temp directory — no changes to your local config needed. If Ollama is unreachable or the model isn't pulled, tests skip with a clear message rather than erroring.
 
 ## Linting
 

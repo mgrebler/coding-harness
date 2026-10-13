@@ -96,9 +96,12 @@ def preflight(spec_dir: Path, feature: str) -> bool:
 # Subagent definitions
 
 
-def plan_agent_definition(constitution: str, spec: str, arch_principles: str) -> AgentDefinition:
+def plan_agent_definition(
+    constitution: str, spec: str, arch_principles: str, model: str | None = None
+) -> AgentDefinition:
     return AgentDefinition(
         description="Generates plan.md for the current feature from spec.md and constitution.md.",
+        model=model,
         prompt=f"""You are the Plan Agent for a spec-kit project.
 
 Your sole function is to produce a complete and valid plan.md for the current feature.
@@ -146,6 +149,7 @@ def critic_agent_definition(
     plan: str,
     iteration: int,
     violations: list | None = None,
+    model: str | None = None,
 ) -> AgentDefinition:
     violations_block = format_violations_block(
         violations, iteration, "violations (already addressed by the plan agent)"
@@ -157,6 +161,7 @@ def critic_agent_definition(
     )
     return AgentDefinition(
         description="Validates plan.md against constitution.md, architecture.md, and spec.md. Returns structured JSON.",
+        model=model,
         prompt=build_plan_critic_prompt(
             constitution,
             architecture,
@@ -178,6 +183,7 @@ def arch_review_agent_definition(
     arch_principles: str,
     iteration: int,
     arch_violations: list | None = None,
+    model: str | None = None,
 ) -> AgentDefinition:
     violations_block = format_violations_block(
         arch_violations, iteration, "architecture violations (already addressed by the plan agent)"
@@ -189,6 +195,7 @@ def arch_review_agent_definition(
     )
     return AgentDefinition(
         description="Reviews plan.md for architecture quality, best practices, and operational safety.",
+        model=model,
         prompt=build_architecture_review_prompt(
             constitution,
             architecture,
@@ -210,6 +217,7 @@ def plan_reconcile_agent_definition(
     plan: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None = None,
 ) -> AgentDefinition:
     context_block = (
         f"--- CONSTITUTION ---\n{constitution}\n\n"
@@ -223,6 +231,7 @@ def plan_reconcile_agent_definition(
     )
     return AgentDefinition(
         description="Reconciles findings from multiple independent plan critics into one verified result.",
+        model=model,
         prompt=critic_reconcile.build_reconcile_prompt(
             context_block, raw_results, iteration, "violations", output_instructions
         ),
@@ -238,6 +247,7 @@ def arch_review_reconcile_agent_definition(
     arch_principles: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None = None,
 ) -> AgentDefinition:
     context_block = (
         f"--- CONSTITUTION ---\n{constitution}\n\n"
@@ -252,6 +262,7 @@ def arch_review_reconcile_agent_definition(
     )
     return AgentDefinition(
         description="Reconciles findings from multiple independent architecture-review critics into one verified result.",
+        model=model,
         prompt=critic_reconcile.build_reconcile_prompt(
             context_block, raw_results, iteration, "confidence", output_instructions
         ),
@@ -296,11 +307,16 @@ async def run(feature: str):
         await local_agent_loop.run_generation(
             log,
             "plan",
-            claude_fallback=lambda: query(
+            claude_fallback=lambda model: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"plan-agent": plan_agent},
+                    agents={
+                        "plan-agent": plan_agent_definition(
+                            constitution, spec, arch_principles, model=model
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=plan_agent.prompt,
@@ -350,11 +366,16 @@ async def run(feature: str):
         await local_agent_loop.run_generation(
             log,
             "plan",
-            claude_fallback=lambda: query(
+            claude_fallback=lambda model: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"plan-agent": plan_agent},
+                    agents={
+                        "plan-agent": plan_agent_definition(
+                            constitution, spec, arch_principles, model=model
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=plan_agent.prompt,
@@ -371,7 +392,7 @@ async def run(feature: str):
             "Plan is ready for human review. No further action taken.",
         )
 
-    def build_critic_query(iteration: int, prev_violations):
+    def build_critic_query(iteration: int, prev_violations, model: str | None):
         plan = read_file(spec_dir / "plan.md")
         return query(
             prompt=(
@@ -383,13 +404,14 @@ async def run(feature: str):
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "plan-critic": critic_agent_definition(
-                        constitution, architecture, spec, plan, iteration, prev_violations
+                        constitution, architecture, spec, plan, iteration, prev_violations, model
                     )
                 },
+                model=model,
             ),
         )
 
-    def build_reconcile_critic_query(iteration: int, raw_results: list[dict]):
+    def build_reconcile_critic_query(iteration: int, raw_results: list[dict], model: str | None):
         plan = read_file(spec_dir / "plan.md")
         return query(
             prompt=(
@@ -401,13 +423,14 @@ async def run(feature: str):
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "plan-critic-reconcile": plan_reconcile_agent_definition(
-                        constitution, architecture, spec, plan, iteration, raw_results
+                        constitution, architecture, spec, plan, iteration, raw_results, model
                     )
                 },
+                model=model,
             ),
         )
 
-    def build_reconcile_arch_query(iteration: int, raw_results: list[dict]):
+    def build_reconcile_arch_query(iteration: int, raw_results: list[dict], model: str | None):
         plan = read_file(spec_dir / "plan.md")
         return query(
             prompt=(
@@ -426,12 +449,14 @@ async def run(feature: str):
                         arch_principles,
                         iteration,
                         raw_results,
+                        model,
                     )
                 },
+                model=model,
             ),
         )
 
-    def build_arch_query(iteration: int, arch_violations):
+    def build_arch_query(iteration: int, arch_violations, model: str | None):
         plan = read_file(spec_dir / "plan.md")
         return query(
             prompt=(
@@ -450,8 +475,10 @@ async def run(feature: str):
                         arch_principles,
                         iteration,
                         arch_violations,
+                        model,
                     )
                 },
+                model=model,
             ),
         )
 

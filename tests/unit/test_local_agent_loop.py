@@ -213,11 +213,14 @@ class TestRunGeneration(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 local_agent_loop.ollama, "load_local_llm_generation_config", return_value=None
             ),
+            patch.object(
+                local_agent_loop.ollama, "load_claude_generation_model", return_value="opus"
+            ),
             patch.object(local_agent_loop.console, "stream_query", new=AsyncMock()) as mock_stream,
         ):
             await local_agent_loop.run_generation(log, "plan", claude_fallback, "system", "user")
 
-        claude_fallback.assert_called_once()
+        claude_fallback.assert_called_once_with("opus")
         mock_stream.assert_awaited_once_with("claude-query-obj")
 
     async def test_configured_runs_local_loop_instead_of_claude(self):

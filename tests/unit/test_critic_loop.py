@@ -132,8 +132,8 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
         the real critic subprocess/agent does."""
         build_query_calls = []
 
-        def build_query(iteration, prev_violations):
-            build_query_calls.append((iteration, prev_violations))
+        def build_query(iteration, prev_violations, model):
+            build_query_calls.append((iteration, prev_violations, model))
             return "query-object"
 
         async def fake_run_gate(
@@ -299,10 +299,10 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
 
 class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
     def _make_gates(self, spec_dir, gate1_results, gate2_results):
-        def build_query1(iteration, prev_violations):
+        def build_query1(iteration, prev_violations, model):
             return "gate1-query"
 
-        def build_query2(iteration, prev_violations):
+        def build_query2(iteration, prev_violations, model):
             return "gate2-query"
 
         async def fake_run_gate(
@@ -504,10 +504,10 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
         being read as a worst-case FAIL with 0 confidence/0 blocking issues — a gate
         that can never return PASS is a harness bug, not a review verdict."""
 
-        def build_query1(iteration, prev_violations):
+        def build_query1(iteration, prev_violations, model):
             return "gate1-query"
 
-        def build_query2(iteration, prev_violations):
+        def build_query2(iteration, prev_violations, model):
             return "gate2-query"
 
         async def fake_run_gate(

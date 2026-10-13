@@ -30,7 +30,9 @@ class TestStripFences(unittest.TestCase):
         self.assertEqual(result, '{"a": 1}')
 
 
-class TestLoadLocalLlmConfig(unittest.TestCase):
+class _ConfigDirTestCase(unittest.TestCase):
+    """Shared chdir-into-a-tmpdir setup for tests that write .specify/pipeline.json."""
+
     def setUp(self):
         self._orig_cwd = Path.cwd()
         self._tmpdir = tempfile.mkdtemp()
@@ -40,29 +42,116 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         os.chdir(self._orig_cwd)
 
     def _write_config(self, data):
-        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
+        path = Path(self._tmpdir) / ".specify" / "pipeline.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data))
 
+    def _write_corrupt(self):
+        path = Path(self._tmpdir) / ".specify" / "pipeline.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{invalid json")
+
+
+class TestResolveEntry(unittest.TestCase):
+    """Direct coverage of _resolve_entry's contract: the default/override
+    reshape, the "claude" provider's early-return behavior, and the
+    self-contained (no-merge) nature of a non-"default" object entry."""
+
+    def test_literal_default_string_inherits_top_level_default(self):
+        raw = {"default": {"provider": "claude", "model": "opus"}}
+        result = ollama._resolve_entry(raw, "default")
+        self.assertEqual(result, {"provider": "claude", "model": "opus"})
+
+    def test_none_override_inherits_top_level_default(self):
+        raw = {"default": {"provider": "claude", "model": "opus"}}
+        result = ollama._resolve_entry(raw, None)
+        self.assertEqual(result, {"provider": "claude", "model": "opus"})
+
+    def test_no_default_and_no_override_resolves_to_claude_with_none_model(self):
+        result = ollama._resolve_entry({}, None)
+        self.assertEqual(result, {"provider": "claude", "model": None})
+
+    def test_claude_provider_never_resolves_transport_or_tuning_fields(self):
+        raw = {"ollama_url": "http://localhost:11434", "num_ctx": 8192}
+        override = {
+            "provider": "claude",
+            "model": "sonnet",
+            "num_ctx": 99999,
+            "ollama_url": "http://should-be-ignored:1",
+        }
+        result = ollama._resolve_entry(raw, override)
+        self.assertEqual(result, {"provider": "claude", "model": "sonnet"})
+
+    def test_object_entry_is_self_contained_no_merge_with_default(self):
+        """A non-'default' object override must NOT inherit fields from
+        raw['default'] — only the flat top-level sibling-key fallback (for
+        num_ctx etc.) applies, which is a different, unrelated mechanism."""
+        raw = {
+            "ollama_url": "http://localhost:11434",
+            "default": {"provider": "ollama", "model": "default-model", "num_ctx": 4096},
+        }
+        override = {"provider": "ollama", "model": "override-model"}
+        result = ollama._resolve_entry(raw, override)
+        self.assertEqual(result["model"], "override-model")
+        # num_ctx was only set on 'default', not on the override or top-level raw —
+        # must NOT leak in via a merge with 'default'.
+        self.assertNotIn("num_ctx", result)
+
+    def test_object_entry_still_uses_top_level_sibling_fallback(self):
+        """The flat top-level sibling-key fallback (unrelated to 'default')
+        still applies to a self-contained object entry."""
+        raw = {"ollama_url": "http://localhost:11434", "num_ctx": 8192}
+        override = {"provider": "ollama", "model": "m"}
+        result = ollama._resolve_entry(raw, override)
+        self.assertEqual(result["num_ctx"], 8192)
+
+    def test_provider_defaults_to_claude_when_absent_from_entry(self):
+        result = ollama._resolve_entry({}, {"model": "something"})
+        self.assertEqual(result, {"provider": "claude", "model": "something"})
+
+    def test_ollama_provider_resolves_full_surface(self):
+        raw = {"ollama_url": "http://localhost:11434"}
+        result = ollama._resolve_entry(raw, {"provider": "ollama", "model": "llama3.2"})
+        self.assertEqual(result["provider"], "ollama")
+        self.assertEqual(result["model"], "llama3.2")
+        self.assertIn("ollama_url", result)
+        self.assertEqual(result["num_gpu"], ollama._FULL_GPU_OFFLOAD)
+
+
+class TestIsLocalBackend(unittest.TestCase):
+    def test_claude_provider_is_not_local(self):
+        self.assertFalse(ollama._is_local_backend({"provider": "claude", "model": "opus"}))
+
+    def test_ollama_with_model_is_local(self):
+        self.assertTrue(ollama._is_local_backend({"provider": "ollama", "model": "m"}))
+
+    def test_ollama_with_blank_model_is_not_local(self):
+        self.assertFalse(ollama._is_local_backend({"provider": "ollama", "model": ""}))
+
+    def test_openai_compatible_with_model_is_local(self):
+        self.assertTrue(ollama._is_local_backend({"provider": "openai-compatible", "model": "m"}))
+
+
+class TestLoadLocalLlmConfig(_ConfigDirTestCase):
     def test_no_file_returns_none(self):
         self.assertIsNone(ollama.load_local_llm_config("plan"))
 
-    def test_default_disabled_returns_none(self):
+    def test_default_claude_returns_none(self):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": False, "model": ""},
+                "default": {"provider": "claude"},
                 "critics": {},
             }
         )
         self.assertIsNone(ollama.load_local_llm_config("plan"))
 
-    def test_critic_override_enabled_returns_config(self):
+    def test_critic_override_ollama_returns_config(self):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": False, "model": ""},
-                "critics": {"plan": {"enabled": True, "model": "qwen3:4b"}},
+                "default": {"provider": "claude"},
+                "critics": {"plan": {"provider": "ollama", "model": "qwen3:4b"}},
             }
         )
         result = ollama.load_local_llm_config("plan")
@@ -75,7 +164,7 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
             {
                 "ollama_url": "http://localhost:11434",
                 "num_ctx": 8192,
-                "default": {"enabled": True, "model": "llama3.2"},
+                "default": {"provider": "ollama", "model": "llama3.2"},
             }
         )
         result = ollama.load_local_llm_config("plan")
@@ -85,7 +174,7 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": True, "model": "llama3.2"},
+                "default": {"provider": "ollama", "model": "llama3.2"},
             }
         )
         result = ollama.load_local_llm_config("plan")
@@ -96,7 +185,7 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
             {
                 "ollama_url": "http://localhost:11434",
                 "max_ctx": 24576,
-                "default": {"enabled": True, "model": "llama3.2"},
+                "default": {"provider": "ollama", "model": "llama3.2"},
             }
         )
         result = ollama.load_local_llm_config("plan")
@@ -106,7 +195,7 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": True, "model": "llama3.2"},
+                "default": {"provider": "ollama", "model": "llama3.2"},
             }
         )
         result = ollama.load_local_llm_config("plan")
@@ -117,8 +206,8 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
             {
                 "ollama_url": "http://localhost:11434",
                 "max_ctx": 16384,
-                "default": {"enabled": True, "model": "llama3.2"},
-                "critics": {"plan": {"enabled": True, "model": "llama3.2", "max_ctx": 32768}},
+                "default": {"provider": "ollama", "model": "llama3.2"},
+                "critics": {"plan": {"provider": "ollama", "model": "llama3.2", "max_ctx": 32768}},
             }
         )
         result = ollama.load_local_llm_config("plan")
@@ -128,7 +217,7 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": True, "model": "llama3.2"},
+                "default": {"provider": "ollama", "model": "llama3.2"},
             }
         )
         result = ollama.load_local_llm_config("plan")
@@ -139,17 +228,17 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
             {
                 "ollama_url": "http://localhost:11434",
                 "num_gpu": 20,
-                "default": {"enabled": True, "model": "llama3.2"},
+                "default": {"provider": "ollama", "model": "llama3.2"},
             }
         )
         result = ollama.load_local_llm_config("plan")
         self.assertEqual(result["num_gpu"], 20)
 
-    def test_default_enabled_returns_config(self):
+    def test_default_ollama_returns_config(self):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": True, "model": "llama3.2"},
+                "default": {"provider": "ollama", "model": "llama3.2"},
                 "critics": {},
             }
         )
@@ -161,36 +250,29 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": True, "model": ""},
+                "default": {"provider": "ollama", "model": ""},
                 "critics": {},
             }
         )
         self.assertIsNone(ollama.load_local_llm_config("plan"))
 
     def test_corrupt_json_returns_none(self):
-        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{invalid json")
+        self._write_corrupt()
         self.assertIsNone(ollama.load_local_llm_config("plan"))
 
-    def test_provider_defaults_to_ollama_when_absent(self):
-        self._write_config(
-            {
-                "ollama_url": "http://localhost:11434",
-                "default": {"enabled": True, "model": "llama3.2"},
-            }
-        )
-        result = ollama.load_local_llm_config("plan")
-        self.assertEqual(result["provider"], "ollama")
-        self.assertIn("ollama_url", result)
+    def test_provider_defaults_to_claude_when_absent_from_default_and_entry(self):
+        self._write_config({"ollama_url": "http://localhost:11434"})
+        self.assertIsNone(ollama.load_local_llm_config("plan"))
 
     def test_openai_compatible_provider_returns_base_url_and_api_key_env(self):
         self._write_config(
             {
-                "provider": "openai-compatible",
-                "base_url": "https://integrate.api.nvidia.com/v1",
-                "api_key_env": "NVIDIA_API_KEY",
-                "default": {"enabled": True, "model": "moonshotai/kimi-k2.6"},
+                "default": {
+                    "provider": "openai-compatible",
+                    "base_url": "https://integrate.api.nvidia.com/v1",
+                    "api_key_env": "NVIDIA_API_KEY",
+                    "model": "moonshotai/kimi-k2.6",
+                }
             }
         )
         result = ollama.load_local_llm_config("plan")
@@ -202,9 +284,11 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
     def test_openai_compatible_missing_base_url_raises(self):
         self._write_config(
             {
-                "provider": "openai-compatible",
-                "api_key_env": "NVIDIA_API_KEY",
-                "default": {"enabled": True, "model": "moonshotai/kimi-k2.6"},
+                "default": {
+                    "provider": "openai-compatible",
+                    "api_key_env": "NVIDIA_API_KEY",
+                    "model": "moonshotai/kimi-k2.6",
+                }
             }
         )
         with self.assertRaises(ValueError):
@@ -213,9 +297,11 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
     def test_openai_compatible_missing_api_key_env_raises(self):
         self._write_config(
             {
-                "provider": "openai-compatible",
-                "base_url": "https://integrate.api.nvidia.com/v1",
-                "default": {"enabled": True, "model": "moonshotai/kimi-k2.6"},
+                "default": {
+                    "provider": "openai-compatible",
+                    "base_url": "https://integrate.api.nvidia.com/v1",
+                    "model": "moonshotai/kimi-k2.6",
+                }
             }
         )
         with self.assertRaises(ValueError):
@@ -224,36 +310,31 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
     def test_openai_compatible_invalid_base_url_scheme_raises(self):
         self._write_config(
             {
-                "provider": "openai-compatible",
-                "base_url": "ftp://integrate.api.nvidia.com/v1",
-                "api_key_env": "NVIDIA_API_KEY",
-                "default": {"enabled": True, "model": "moonshotai/kimi-k2.6"},
+                "default": {
+                    "provider": "openai-compatible",
+                    "base_url": "ftp://integrate.api.nvidia.com/v1",
+                    "api_key_env": "NVIDIA_API_KEY",
+                    "model": "moonshotai/kimi-k2.6",
+                }
             }
         )
         with self.assertRaises(ValueError):
             ollama.load_local_llm_config("plan")
 
     def test_unknown_provider_raises(self):
-        self._write_config(
-            {
-                "provider": "bogus-provider",
-                "default": {"enabled": True, "model": "llama3.2"},
-            }
-        )
+        self._write_config({"default": {"provider": "bogus-provider", "model": "llama3.2"}})
         with self.assertRaises(ValueError):
             ollama.load_local_llm_config("plan")
 
     def test_provider_critic_override(self):
         self._write_config(
             {
-                "provider": "ollama",
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": True, "model": "llama3.2"},
+                "default": {"provider": "ollama", "model": "llama3.2"},
                 "critics": {
                     "plan": {
-                        "enabled": True,
-                        "model": "moonshotai/kimi-k2.6",
                         "provider": "openai-compatible",
+                        "model": "moonshotai/kimi-k2.6",
                         "base_url": "https://integrate.api.nvidia.com/v1",
                         "api_key_env": "NVIDIA_API_KEY",
                     }
@@ -269,36 +350,23 @@ class TestLoadLocalLlmConfig(unittest.TestCase):
         self.assertIn("ollama_url", tasks_result)
 
 
-class TestLoadLocalLlmConfigs(unittest.TestCase):
+class TestLoadLocalLlmConfigs(_ConfigDirTestCase):
     """Plural counterpart to TestLoadLocalLlmConfig — covers the list-shaped
     critics[phase] multi-critic config."""
-
-    def setUp(self):
-        self._orig_cwd = Path.cwd()
-        self._tmpdir = tempfile.mkdtemp()
-        os.chdir(self._tmpdir)
-
-    def tearDown(self):
-        os.chdir(self._orig_cwd)
-
-    def _write_config(self, data):
-        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data))
 
     def test_no_file_returns_empty_list(self):
         self.assertEqual(ollama.load_local_llm_configs("plan"), [])
 
     def test_absent_critic_key_returns_empty_list(self):
-        self._write_config({"default": {"enabled": False, "model": ""}, "critics": {}})
+        self._write_config({"default": {"provider": "claude"}, "critics": {}})
         self.assertEqual(ollama.load_local_llm_configs("plan"), [])
 
     def test_dict_shape_delegates_to_singular_and_wraps_as_default_id(self):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": False, "model": ""},
-                "critics": {"plan": {"enabled": True, "model": "qwen3:4b"}},
+                "default": {"provider": "claude"},
+                "critics": {"plan": {"provider": "ollama", "model": "qwen3:4b"}},
             }
         )
         single = ollama.load_local_llm_config("plan")
@@ -307,11 +375,11 @@ class TestLoadLocalLlmConfigs(unittest.TestCase):
         self.assertEqual(configs[0]["id"], "default")
         self.assertEqual({k: v for k, v in configs[0].items() if k != "id"}, single)
 
-    def test_dict_shape_disabled_returns_empty_list(self):
+    def test_dict_shape_claude_returns_empty_list(self):
         self._write_config(
             {
-                "default": {"enabled": False, "model": ""},
-                "critics": {"plan": {"enabled": False, "model": ""}},
+                "default": {"provider": "claude"},
+                "critics": {"plan": {"provider": "claude", "model": "opus"}},
             }
         )
         self.assertEqual(ollama.load_local_llm_configs("plan"), [])
@@ -320,11 +388,11 @@ class TestLoadLocalLlmConfigs(unittest.TestCase):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": False, "model": ""},
+                "default": {"provider": "claude"},
                 "critics": {
                     "plan": [
-                        {"id": "qwen", "enabled": True, "model": "qwen3:30b-a3b"},
-                        {"id": "deepseek", "enabled": True, "model": "deepseek-r1:32b"},
+                        {"id": "qwen", "provider": "ollama", "model": "qwen3:30b-a3b"},
+                        {"id": "deepseek", "provider": "ollama", "model": "deepseek-r1:32b"},
                     ]
                 },
             }
@@ -334,15 +402,15 @@ class TestLoadLocalLlmConfigs(unittest.TestCase):
         self.assertEqual(configs[0]["model"], "qwen3:30b-a3b")
         self.assertEqual(configs[1]["model"], "deepseek-r1:32b")
 
-    def test_list_shape_filters_disabled_entries(self):
+    def test_list_shape_filters_claude_entries(self):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": False, "model": ""},
+                "default": {"provider": "claude"},
                 "critics": {
                     "plan": [
-                        {"id": "qwen", "enabled": True, "model": "qwen3:30b-a3b"},
-                        {"id": "off", "enabled": False, "model": "deepseek-r1:32b"},
+                        {"id": "qwen", "provider": "ollama", "model": "qwen3:30b-a3b"},
+                        {"id": "off", "provider": "claude", "model": "opus"},
                     ]
                 },
             }
@@ -353,8 +421,8 @@ class TestLoadLocalLlmConfigs(unittest.TestCase):
     def test_list_shape_missing_id_raises(self):
         self._write_config(
             {
-                "default": {"enabled": False, "model": ""},
-                "critics": {"plan": [{"enabled": True, "model": "qwen3:30b-a3b"}]},
+                "default": {"provider": "claude"},
+                "critics": {"plan": [{"provider": "ollama", "model": "qwen3:30b-a3b"}]},
             }
         )
         with self.assertRaises(ValueError):
@@ -364,11 +432,11 @@ class TestLoadLocalLlmConfigs(unittest.TestCase):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": False, "model": ""},
+                "default": {"provider": "claude"},
                 "critics": {
                     "plan": [
-                        {"id": "qwen", "enabled": True, "model": "qwen3:30b-a3b"},
-                        {"id": "qwen", "enabled": True, "model": "deepseek-r1:32b"},
+                        {"id": "qwen", "provider": "ollama", "model": "qwen3:30b-a3b"},
+                        {"id": "qwen", "provider": "ollama", "model": "deepseek-r1:32b"},
                     ]
                 },
             }
@@ -379,17 +447,15 @@ class TestLoadLocalLlmConfigs(unittest.TestCase):
     def test_list_shape_mixed_providers_resolve_independently(self):
         self._write_config(
             {
-                "provider": "ollama",
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": False, "model": ""},
+                "default": {"provider": "claude"},
                 "critics": {
                     "plan": [
-                        {"id": "qwen", "enabled": True, "model": "qwen3:30b-a3b"},
+                        {"id": "qwen", "provider": "ollama", "model": "qwen3:30b-a3b"},
                         {
                             "id": "nvidia",
-                            "enabled": True,
-                            "model": "meta/llama-3.1-70b-instruct",
                             "provider": "openai-compatible",
+                            "model": "meta/llama-3.1-70b-instruct",
                             "base_url": "https://integrate.api.nvidia.com/v1",
                             "api_key_env": "NVIDIA_API_KEY",
                         },
@@ -405,26 +471,11 @@ class TestLoadLocalLlmConfigs(unittest.TestCase):
         self.assertEqual(by_id["nvidia"]["base_url"], "https://integrate.api.nvidia.com/v1")
 
     def test_corrupt_json_returns_empty_list(self):
-        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{invalid json")
+        self._write_corrupt()
         self.assertEqual(ollama.load_local_llm_configs("plan"), [])
 
 
-class TestLoadCriticExecutionMode(unittest.TestCase):
-    def setUp(self):
-        self._orig_cwd = Path.cwd()
-        self._tmpdir = tempfile.mkdtemp()
-        os.chdir(self._tmpdir)
-
-    def tearDown(self):
-        os.chdir(self._orig_cwd)
-
-    def _write_config(self, data):
-        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data))
-
+class TestLoadCriticExecutionMode(_ConfigDirTestCase):
     def test_no_file_defaults_to_sequential(self):
         self.assertEqual(ollama.load_critic_execution_mode("plan"), "sequential")
 
@@ -441,10 +492,73 @@ class TestLoadCriticExecutionMode(unittest.TestCase):
         self.assertEqual(ollama.load_critic_execution_mode("plan"), "sequential")
 
     def test_corrupt_json_defaults_to_sequential(self):
-        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{invalid json")
+        self._write_corrupt()
         self.assertEqual(ollama.load_critic_execution_mode("plan"), "sequential")
+
+
+class TestLoadClaudeModel(_ConfigDirTestCase):
+    def test_no_file_returns_none(self):
+        self.assertIsNone(ollama.load_claude_model("plan"))
+
+    def test_unconfigured_phase_inherits_top_level_default(self):
+        self._write_config({"default": {"provider": "claude", "model": "opus"}})
+        self.assertEqual(ollama.load_claude_model("plan"), "opus")
+
+    def test_phase_explicitly_configured_to_ollama_returns_none(self):
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"provider": "claude", "model": "opus"},
+                "critics": {"plan": {"provider": "ollama", "model": "qwen3"}},
+            }
+        )
+        self.assertIsNone(ollama.load_claude_model("plan"))
+
+    def test_phase_explicitly_configured_to_claude_overrides_default(self):
+        self._write_config(
+            {
+                "default": {"provider": "claude", "model": "opus"},
+                "critics": {"plan": {"provider": "claude", "model": "sonnet"}},
+            }
+        )
+        self.assertEqual(ollama.load_claude_model("plan"), "sonnet")
+
+    def test_list_shaped_critic_returns_none(self):
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "critics": {"plan": [{"id": "a", "provider": "ollama", "model": "m"}]},
+            }
+        )
+        self.assertIsNone(ollama.load_claude_model("plan"))
+
+
+class TestLoadClaudeGenerationModel(_ConfigDirTestCase):
+    def test_no_file_returns_none(self):
+        self.assertIsNone(ollama.load_claude_generation_model("plan"))
+
+    def test_unconfigured_stage_inherits_top_level_default(self):
+        self._write_config({"default": {"provider": "claude", "model": "opus"}})
+        self.assertEqual(ollama.load_claude_generation_model("plan"), "opus")
+
+    def test_stage_explicitly_configured_to_ollama_returns_none(self):
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"provider": "claude", "model": "opus"},
+                "generation": {"plan": {"provider": "ollama", "model": "qwen3"}},
+            }
+        )
+        self.assertIsNone(ollama.load_claude_generation_model("plan"))
+
+    def test_stage_explicitly_configured_to_claude_overrides_default(self):
+        self._write_config(
+            {
+                "default": {"provider": "claude", "model": "opus"},
+                "generation": {"plan": {"provider": "claude", "model": "sonnet"}},
+            }
+        )
+        self.assertEqual(ollama.load_claude_generation_model("plan"), "sonnet")
 
 
 class TestEstimatePromptTokens(unittest.TestCase):
@@ -808,23 +922,13 @@ class TestRunCriticSubprocess(unittest.TestCase):
         )
 
 
-class TestRunLocalCriticCliDispatch(unittest.TestCase):
+class TestRunLocalCriticCliDispatch(_ConfigDirTestCase):
     """Confirms run_local_critic_cli routes the actual LLM call to the transport
     matching config["provider"] — the one dispatch point added for the
     openai-compatible provider."""
 
-    def setUp(self):
-        self._orig_cwd = Path.cwd()
-        self._tmpdir = tempfile.mkdtemp()
-        os.chdir(self._tmpdir)
-
-    def tearDown(self):
-        os.chdir(self._orig_cwd)
-
     def _run(self, config):
-        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(config))
+        self._write_config(config)
 
         with (
             patch.object(
@@ -850,7 +954,7 @@ class TestRunLocalCriticCliDispatch(unittest.TestCase):
         mock_ollama_call, mock_openai_call = self._run(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": True, "model": "llama3.2"},
+                "default": {"provider": "ollama", "model": "llama3.2"},
             }
         )
         mock_ollama_call.assert_called_once()
@@ -859,40 +963,30 @@ class TestRunLocalCriticCliDispatch(unittest.TestCase):
     def test_dispatches_to_openai_compatible_for_that_provider(self):
         mock_ollama_call, mock_openai_call = self._run(
             {
-                "provider": "openai-compatible",
-                "base_url": "https://integrate.api.nvidia.com/v1",
-                "api_key_env": "NVIDIA_API_KEY",
-                "default": {"enabled": True, "model": "moonshotai/kimi-k2.6"},
+                "default": {
+                    "provider": "openai-compatible",
+                    "base_url": "https://integrate.api.nvidia.com/v1",
+                    "api_key_env": "NVIDIA_API_KEY",
+                    "model": "moonshotai/kimi-k2.6",
+                }
             }
         )
         mock_openai_call.assert_called_once()
         mock_ollama_call.assert_not_called()
 
 
-class TestRunLocalCriticCliSchemaValidation(unittest.TestCase):
+class TestRunLocalCriticCliSchemaValidation(_ConfigDirTestCase):
     """A local-LLM critic response that doesn't match its summary_style's required
     schema (e.g. a ReportFindings-shaped {"findings": []} blob instead of the
     confidence-style schema its prompt asked for) must abort loudly instead of
     being written to disk as if it were a valid result. See FOLLOWUP_HARNESS.md."""
 
-    def setUp(self):
-        self._orig_cwd = Path.cwd()
-        self._tmpdir = tempfile.mkdtemp()
-        os.chdir(self._tmpdir)
-
-    def tearDown(self):
-        os.chdir(self._orig_cwd)
-
     def _run(self, llm_response, summary_style):
-        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "ollama_url": "http://localhost:11434",
-                    "default": {"enabled": True, "model": "llama3.2"},
-                }
-            )
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"provider": "ollama", "model": "llama3.2"},
+            }
         )
 
         with (
@@ -948,33 +1042,20 @@ class TestRunLocalCriticCliSchemaValidation(unittest.TestCase):
         )
 
 
-class TestRunLocalCriticCliCriticId(unittest.TestCase):
+class TestRunLocalCriticCliCriticId(_ConfigDirTestCase):
     """--critic-id routes to load_local_llm_configs and the raw-subdir result
     path; its absence must remain byte-identical to the pre-multi-critic
     behaviour already covered by TestRunLocalCriticCliDispatch."""
-
-    def setUp(self):
-        self._orig_cwd = Path.cwd()
-        self._tmpdir = tempfile.mkdtemp()
-        os.chdir(self._tmpdir)
-
-    def tearDown(self):
-        os.chdir(self._orig_cwd)
-
-    def _write_config(self, data):
-        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data))
 
     def test_critic_id_writes_to_raw_subdir(self):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": False, "model": ""},
+                "default": {"provider": "claude"},
                 "critics": {
                     "plan": [
-                        {"id": "qwen", "enabled": True, "model": "qwen3:30b-a3b"},
-                        {"id": "deepseek", "enabled": True, "model": "deepseek-r1:32b"},
+                        {"id": "qwen", "provider": "ollama", "model": "qwen3:30b-a3b"},
+                        {"id": "deepseek", "provider": "ollama", "model": "deepseek-r1:32b"},
                     ]
                 },
             }
@@ -1010,8 +1091,10 @@ class TestRunLocalCriticCliCriticId(unittest.TestCase):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": False, "model": ""},
-                "critics": {"plan": [{"id": "qwen", "enabled": True, "model": "qwen3:30b-a3b"}]},
+                "default": {"provider": "claude"},
+                "critics": {
+                    "plan": [{"id": "qwen", "provider": "ollama", "model": "qwen3:30b-a3b"}]
+                },
             }
         )
         with (
@@ -1031,7 +1114,7 @@ class TestRunLocalCriticCliCriticId(unittest.TestCase):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "default": {"enabled": True, "model": "llama3.2"},
+                "default": {"provider": "ollama", "model": "llama3.2"},
             }
         )
         with (
@@ -1170,13 +1253,27 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
         claude_fallback = MagicMock(return_value="claude-query-obj")
         with (
             patch.object(ollama, "load_local_llm_configs", return_value=[]),
+            patch.object(ollama, "load_claude_model", return_value=None),
             patch.object(ollama.console, "stream_query", new=AsyncMock()) as mock_stream,
         ):
             await ollama.run_gate(
                 log, "plan", "script.py", "feat", 1, "plan critic", claude_fallback
             )
-        claude_fallback.assert_called_once()
+        claude_fallback.assert_called_once_with(None)
         mock_stream.assert_awaited_once_with("claude-query-obj")
+
+    async def test_zero_configs_passes_resolved_claude_model_to_fallback(self):
+        log = MagicMock()
+        claude_fallback = MagicMock(return_value="claude-query-obj")
+        with (
+            patch.object(ollama, "load_local_llm_configs", return_value=[]),
+            patch.object(ollama, "load_claude_model", return_value="opus"),
+            patch.object(ollama.console, "stream_query", new=AsyncMock()),
+        ):
+            await ollama.run_gate(
+                log, "plan", "script.py", "feat", 1, "plan critic", claude_fallback
+            )
+        claude_fallback.assert_called_once_with("opus")
 
     async def test_one_config_runs_without_critic_id_flag(self):
         log = MagicMock()
@@ -1203,12 +1300,13 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(ollama, "load_local_llm_configs", return_value=[config]),
             patch.object(ollama, "_run_critic_subprocess", return_value=2),
+            patch.object(ollama, "load_claude_model", return_value=None),
             patch.object(ollama.console, "stream_query", new=AsyncMock()) as mock_stream,
         ):
             await ollama.run_gate(
                 log, "plan", "script.py", "feat", 1, "plan critic", claude_fallback
             )
-        claude_fallback.assert_called_once()
+        claude_fallback.assert_called_once_with(None)
         mock_stream.assert_awaited_once_with("claude-query-obj")
 
     async def test_multi_critic_all_clean_pass_skips_reconciliation(self):
@@ -1263,7 +1361,7 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
 
         canonical_path = Path("specs/feat/ch-1-plan-critic-result-1.json")
 
-        def fake_reconcile_query(iteration, raw_results):
+        def fake_reconcile_query(iteration, raw_results, claude_model):
             canonical_path.parent.mkdir(parents=True, exist_ok=True)
             canonical_path.write_text(json.dumps({"status": "FAIL", "violations": []}))
             return "reconcile-query-obj"
@@ -1271,6 +1369,7 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(ollama, "load_local_llm_configs", return_value=configs),
             patch.object(ollama, "load_critic_execution_mode", return_value="sequential"),
+            patch.object(ollama, "load_claude_model", return_value=None),
             patch.object(ollama, "_run_one_critic", side_effect=fake_run_one),
             patch.object(ollama.console, "stream_query", new=AsyncMock()) as mock_stream,
         ):
@@ -1288,6 +1387,49 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
 
         mock_stream.assert_awaited_once_with("reconcile-query-obj")
         self.assertTrue(canonical_path.exists())
+
+    async def test_multi_critic_reconciliation_receives_resolved_claude_model(self):
+        log = MagicMock()
+        configs = [{"id": "a", "model": "m1"}, {"id": "b", "model": "m2"}]
+
+        def fake_run_one(log, label, script, feature, iteration, raw_dir, config, prefix=""):
+            status = "FAIL" if config["id"] == "a" else "PASS"
+            violations = [{"rule": "x", "severity": "BLOCKING"}] if status == "FAIL" else []
+            return {
+                "id": config["id"],
+                "model": config["model"],
+                "result": {"status": status, "violations": violations},
+            }
+
+        canonical_path = Path("specs/feat/ch-1-plan-critic-result-1.json")
+        received = {}
+
+        def fake_reconcile_query(iteration, raw_results, claude_model):
+            received["claude_model"] = claude_model
+            canonical_path.parent.mkdir(parents=True, exist_ok=True)
+            canonical_path.write_text(json.dumps({"status": "FAIL", "violations": []}))
+            return "reconcile-query-obj"
+
+        with (
+            patch.object(ollama, "load_local_llm_configs", return_value=configs),
+            patch.object(ollama, "load_critic_execution_mode", return_value="sequential"),
+            patch.object(ollama, "load_claude_model", return_value="opus"),
+            patch.object(ollama, "_run_one_critic", side_effect=fake_run_one),
+            patch.object(ollama.console, "stream_query", new=AsyncMock()),
+        ):
+            await ollama.run_gate(
+                log,
+                "plan",
+                "script.py",
+                "feat",
+                1,
+                "plan critic",
+                MagicMock(),
+                result_prefix="ch-1-plan-critic-result",
+                build_reconcile_query=fake_reconcile_query,
+            )
+
+        self.assertEqual(received["claude_model"], "opus")
 
     async def test_multi_critic_missing_result_prefix_aborts(self):
         log = MagicMock()
@@ -1372,7 +1514,7 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
 
         canonical_path = Path("specs/feat/ch-1-plan-critic-result-1.json")
 
-        def fake_reconcile_query(iteration, raw_results):
+        def fake_reconcile_query(iteration, raw_results, claude_model):
             # Only the surviving critic 'b' reached reconciliation — 'a' crashed.
             self.assertEqual([r["id"] for r in raw_results], ["b"])
             canonical_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1427,36 +1569,36 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
 
 
 class TestResolveGenerationEntry(unittest.TestCase):
-    def test_disabled_returns_none(self):
-        raw = {"default": {"enabled": False, "model": ""}}
-        self.assertIsNone(ollama._resolve_generation_entry(raw, {}))
+    def test_claude_default_returns_none(self):
+        raw = {"default": {"provider": "claude"}}
+        self.assertIsNone(ollama._resolve_generation_entry(raw, None))
 
-    def test_enabled_returns_config_with_default_max_turns(self):
-        raw = {"ollama_url": "http://localhost:11434", "default": {"enabled": False, "model": ""}}
-        result = ollama._resolve_generation_entry(raw, {"enabled": True, "model": "qwen3:30b"})
+    def test_ollama_override_returns_config_with_default_max_turns(self):
+        raw = {"ollama_url": "http://localhost:11434", "default": {"provider": "claude"}}
+        result = ollama._resolve_generation_entry(raw, {"provider": "ollama", "model": "qwen3:30b"})
         self.assertEqual(result["model"], "qwen3:30b")
         self.assertEqual(result["max_turns"], ollama._DEFAULT_MAX_TURNS)
 
     def test_explicit_max_turns_respected(self):
-        raw = {"ollama_url": "http://localhost:11434", "default": {"enabled": False, "model": ""}}
+        raw = {"ollama_url": "http://localhost:11434", "default": {"provider": "claude"}}
         result = ollama._resolve_generation_entry(
-            raw, {"enabled": True, "model": "qwen3:30b", "max_turns": 10}
+            raw, {"provider": "ollama", "model": "qwen3:30b", "max_turns": 10}
         )
         self.assertEqual(result["max_turns"], 10)
 
     def test_command_timeout_and_output_cap_absent_when_unset(self):
-        raw = {"ollama_url": "http://localhost:11434", "default": {"enabled": False, "model": ""}}
-        result = ollama._resolve_generation_entry(raw, {"enabled": True, "model": "qwen3:30b"})
+        raw = {"ollama_url": "http://localhost:11434", "default": {"provider": "claude"}}
+        result = ollama._resolve_generation_entry(raw, {"provider": "ollama", "model": "qwen3:30b"})
         self.assertNotIn("command_timeout_s", result)
         self.assertNotIn("output_max_bytes", result)
         self.assertNotIn("deny_patterns", result)
 
     def test_generation_only_fields_passed_through(self):
-        raw = {"ollama_url": "http://localhost:11434", "default": {"enabled": False, "model": ""}}
+        raw = {"ollama_url": "http://localhost:11434", "default": {"provider": "claude"}}
         result = ollama._resolve_generation_entry(
             raw,
             {
-                "enabled": True,
+                "provider": "ollama",
                 "model": "qwen3:30b",
                 "command_timeout_s": 300,
                 "output_max_bytes": 5000,
@@ -1467,32 +1609,19 @@ class TestResolveGenerationEntry(unittest.TestCase):
         self.assertEqual(result["output_max_bytes"], 5000)
         self.assertEqual(result["deny_patterns"], [r"\bnpm\s+publish\b"])
 
-    def test_shares_default_block_and_provider_surface_with_critics(self):
+    def test_unconfigured_stage_inherits_top_level_default(self):
         raw = {
             "ollama_url": "http://localhost:11434",
             "num_ctx": 16384,
-            "default": {"enabled": True, "model": "shared-model"},
+            "default": {"provider": "ollama", "model": "shared-model"},
         }
-        result = ollama._resolve_generation_entry(raw, {})
+        result = ollama._resolve_generation_entry(raw, None)
         self.assertEqual(result["model"], "shared-model")
         self.assertEqual(result["num_ctx"], 16384)
         self.assertEqual(result["provider"], "ollama")
 
 
-class TestLoadLocalLlmGenerationConfig(unittest.TestCase):
-    def setUp(self):
-        self._orig_cwd = Path.cwd()
-        self._tmpdir = tempfile.mkdtemp()
-        os.chdir(self._tmpdir)
-
-    def tearDown(self):
-        os.chdir(self._orig_cwd)
-
-    def _write_config(self, data):
-        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data))
-
+class TestLoadLocalLlmGenerationConfig(_ConfigDirTestCase):
     def test_no_file_returns_none(self):
         self.assertIsNone(ollama.load_local_llm_generation_config("plan"))
 
@@ -1504,7 +1633,7 @@ class TestLoadLocalLlmGenerationConfig(unittest.TestCase):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "generation": {"plan": {"enabled": True, "model": "qwen3-coder:30b"}},
+                "generation": {"plan": {"provider": "ollama", "model": "qwen3-coder:30b"}},
             }
         )
         result = ollama.load_local_llm_generation_config("plan")
@@ -1515,8 +1644,8 @@ class TestLoadLocalLlmGenerationConfig(unittest.TestCase):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "critics": {"plan": {"enabled": True, "model": "critic-model"}},
-                "generation": {"plan": {"enabled": True, "model": "gen-model"}},
+                "critics": {"plan": {"provider": "ollama", "model": "critic-model"}},
+                "generation": {"plan": {"provider": "ollama", "model": "gen-model"}},
             }
         )
         self.assertEqual(ollama.load_local_llm_generation_config("plan")["model"], "gen-model")
@@ -1526,15 +1655,13 @@ class TestLoadLocalLlmGenerationConfig(unittest.TestCase):
         self._write_config(
             {
                 "ollama_url": "http://localhost:11434",
-                "generation": {"plan": [{"id": "a", "enabled": True, "model": "x"}]},
+                "generation": {"plan": [{"id": "a", "provider": "ollama", "model": "x"}]},
             }
         )
         self.assertIsNone(ollama.load_local_llm_generation_config("plan"))
 
     def test_corrupt_json_returns_none(self):
-        path = Path(self._tmpdir) / ".specify" / "local-llm.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{not valid json")
+        self._write_corrupt()
         self.assertIsNone(ollama.load_local_llm_generation_config("plan"))
 
 
@@ -1669,6 +1796,44 @@ class TestCallConfiguredLlmTurn(unittest.TestCase):
             result = ollama.call_configured_llm_turn([], config, [])
         mock_call.assert_called_once_with([], config, [])
         self.assertEqual(result, {"content": "ok"})
+
+
+class TestIsStageEnabled(_ConfigDirTestCase):
+    def test_no_config_file_defaults_true(self):
+        self.assertTrue(ollama.is_stage_enabled("test"))
+        self.assertTrue(ollama.is_stage_enabled("docs"))
+
+    def test_no_stages_key_defaults_true(self):
+        self._write_config({"default": {"provider": "claude"}})
+        self.assertTrue(ollama.is_stage_enabled("test"))
+
+    def test_stage_absent_from_stages_defaults_true(self):
+        self._write_config({"stages": {"docs": {"enabled": False}}})
+        self.assertTrue(ollama.is_stage_enabled("test"))
+
+    def test_explicit_false_disables(self):
+        self._write_config({"stages": {"test": {"enabled": False}}})
+        self.assertFalse(ollama.is_stage_enabled("test"))
+
+    def test_explicit_true_stays_enabled(self):
+        self._write_config({"stages": {"test": {"enabled": True}}})
+        self.assertTrue(ollama.is_stage_enabled("test"))
+
+    def test_unknown_stage_name_defaults_true(self):
+        self._write_config({"stages": {"test": {"enabled": False}}})
+        self.assertTrue(ollama.is_stage_enabled("not-a-real-stage"))
+
+    def test_corrupt_config_defaults_true(self):
+        self._write_corrupt()
+        self.assertTrue(ollama.is_stage_enabled("test"))
+
+    def test_non_dict_stages_value_defaults_true(self):
+        self._write_config({"stages": "not-a-dict"})
+        self.assertTrue(ollama.is_stage_enabled("test"))
+
+    def test_non_dict_stage_entry_defaults_true(self):
+        self._write_config({"stages": {"test": "not-a-dict"}})
+        self.assertTrue(ollama.is_stage_enabled("test"))
 
 
 if __name__ == "__main__":

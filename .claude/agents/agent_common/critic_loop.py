@@ -88,12 +88,15 @@ class GateSpec(NamedTuple):
 
     result_prefix: result file prefix, e.g. "ch-1-plan-critic-result"
     script_name: standalone critic script passed to run_gate, e.g. "ch_1_plan_critic.py"
-    critic_type: local-LLM critic_type key in .specify/local-llm.json, e.g. "plan"
+    critic_type: local-LLM critic_type key in .specify/pipeline.json, e.g. "plan"
     label: display label used in log lines and passed to run_gate, e.g. "plan critic"
-    build_query: (iteration, prior_violations) -> the query(...) call to run via run_gate
-    build_reconcile_query: (iteration, raw_results) -> the query(...) call that
-        reconciles >1 critics' raw findings into the canonical result, when
-        critic_type resolves to more than one configured critic. None (the
+    build_query: (iteration, prior_violations, claude_model) -> the query(...) call
+        to run via run_gate. claude_model is the resolved Claude model (or None) —
+        only meaningful when this gate falls back to Claude; build_query itself
+        decides how to use it (pass to driving_agent_options/AgentDefinition).
+    build_reconcile_query: (iteration, raw_results, claude_model) -> the query(...)
+        call that reconciles >1 critics' raw findings into the canonical result,
+        when critic_type resolves to more than one configured critic. None (the
         default) for gates that will only ever have 0-or-1 critics configured.
     """
 
@@ -101,8 +104,8 @@ class GateSpec(NamedTuple):
     script_name: str
     critic_type: str
     label: str
-    build_query: Callable[[int, list | None], object]
-    build_reconcile_query: Callable[[int, list[dict]], object] | None = None
+    build_query: Callable[[int, list | None, str | None], object]
+    build_reconcile_query: Callable[[int, list[dict], str | None], object] | None = None
 
 
 async def _run_gate_for_iteration(
@@ -139,7 +142,7 @@ async def _run_gate_for_iteration(
             feature,
             iteration,
             gate.label,
-            lambda: gate.build_query(iteration, prev_violations),
+            lambda model: gate.build_query(iteration, prev_violations, model),
             result_prefix=gate.result_prefix,
             summary_style=summary_style,
             build_reconcile_query=gate.build_reconcile_query,

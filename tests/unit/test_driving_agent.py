@@ -31,6 +31,14 @@ class TestDrivingAgentOptions(unittest.TestCase):
         self.assertEqual(options.allowed_tools, ["Read", "Agent"])
         self.assertIs(options.agents, agents)
 
+    def test_model_omitted_defaults_to_none(self):
+        options = driving_agent_options(allowed_tools=["Read"], agents={})
+        self.assertIsNone(options.model)
+
+    def test_model_passed_through_when_given(self):
+        options = driving_agent_options(allowed_tools=["Read"], agents={}, model="opus")
+        self.assertEqual(options.model, "opus")
+
 
 if __name__ == "__main__":
     unittest.main()

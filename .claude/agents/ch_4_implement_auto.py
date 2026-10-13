@@ -40,7 +40,7 @@ from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
 from claude_agent_sdk import AgentDefinition, query
 
-from agent_common import critic_reconcile, git, local_agent_loop
+from agent_common import critic_reconcile, git, local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
 from agent_common.driving_agent import (
@@ -74,17 +74,25 @@ log = make_logger(AGENT_NAME)
 def preflight(spec_dir: Path, feature: str):
     require_spec_files(log, spec_dir, "spec.md", "plan.md", "tasks.md")
 
-    test_quality_results = list(spec_dir.glob("ch-3-test-quality-review-result-*.json"))
-    if not test_quality_results:
-        log("ERROR: Test phase not complete. Run /ch-3-test-auto first.")
-        sys.exit(1)
-    max_quality_iteration = max_existing_iteration(spec_dir, "ch-3-test-quality-review-result")
-    passing = find_passing_iteration(
-        spec_dir, "ch-3-test-quality-review-result", max_quality_iteration
-    )
-    if passing is None:
-        log("ERROR: No passing test-quality-review result found. Run /ch-3-test-auto to resolve.")
-        sys.exit(1)
+    if ollama.is_stage_enabled("test"):
+        test_quality_results = list(spec_dir.glob("ch-3-test-quality-review-result-*.json"))
+        if not test_quality_results:
+            log("ERROR: Test phase not complete. Run /ch-3-test-auto first.")
+            sys.exit(1)
+        max_quality_iteration = max_existing_iteration(spec_dir, "ch-3-test-quality-review-result")
+        passing = find_passing_iteration(
+            spec_dir, "ch-3-test-quality-review-result", max_quality_iteration
+        )
+        if passing is None:
+            log(
+                "ERROR: No passing test-quality-review result found. Run /ch-3-test-auto to resolve."
+            )
+            sys.exit(1)
+    else:
+        log(
+            "Test stage is disabled (.specify/pipeline.json stages.test.enabled=false) — "
+            "skipping test-gate check."
+        )
 
     tasks_content = (spec_dir / "tasks.md").read_text(encoding="utf-8")
     all_done = not unchecked_task_lines(tasks_content, exclude_tag="[MANUAL]")
@@ -112,23 +120,46 @@ def preflight(spec_dir: Path, feature: str):
 
 
 def impl_agent_definition(
-    constitution: str, spec: str, plan: str, tasks: str, quality_principles: str
+    constitution: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    quality_principles: str,
+    model: str | None = None,
+    test_stage_enabled: bool = True,
 ) -> AgentDefinition:
+    load_test_artifact_step = (
+        "1. Load the paired [TEST] task's red-output artifact from specs/*/test-results/<PAIRED-TASKID>-red.txt\n"
+        "2. Read the test file(s) already written by the test phase for this behaviour\n"
+        "3. Write the minimum implementation to make the failing tests pass\n"
+        "4. Run the relevant test suite to confirm green"
+        if test_stage_enabled
+        else (
+            "1. Skip this step — the test stage is disabled for this project "
+            "(.specify/pipeline.json stages.test.enabled=false), so no paired [TEST] "
+            "task or red-output artifact exists\n"
+            "2. Write the implementation for this task's behaviour, per spec.md/plan.md\n"
+            "3. Run this project's typecheck/build command to confirm it's sound"
+        )
+    )
+    tests_intro = (
+        "Tests have already been written and confirmed failing by the test phase."
+        if test_stage_enabled
+        else "The test stage is disabled for this project — there are no pre-written failing tests."
+    )
     return AgentDefinition(
         description="Implements all unchecked [IMPL] tasks in tasks.md.",
+        model=model,
         prompt=f"""You are the Implementation Agent for a spec-kit project.
 
-Tests have already been written and confirmed failing by the test phase.
+{tests_intro}
 Your sole function is to implement all unchecked [IMPL] tasks (marked - [ ] and containing [IMPL]) in tasks.md, in order.
 Also process any unchecked tasks with no [TEST]/[IMPL] label (infrastructure/setup tasks).
 
 DO NOT write new test files. DO NOT modify existing test files.
 
 For each [IMPL] task:
-1. Load the paired [TEST] task's red-output artifact from specs/*/test-results/<PAIRED-TASKID>-red.txt
-2. Read the test file(s) already written by the test phase for this behaviour
-3. Write the minimum implementation to make the failing tests pass
-4. Run the relevant test suite to confirm green
+{load_test_artifact_step}
 5. Commit the implementation: git add <impl files> && git commit -m "feat: <task description>"
 6. Mark the task as - [x] in tasks.md and commit: git add specs/.../tasks.md && git commit -m "chore: complete <task id>"
 
@@ -175,6 +206,7 @@ def critic_agent_definition(
     tasks: str,
     iteration: int,
     violations: list | None = None,
+    model: str | None = None,
 ) -> AgentDefinition:
     violations_block = format_violations_block(violations, iteration)
 
@@ -184,6 +216,7 @@ def critic_agent_definition(
     )
     return AgentDefinition(
         description="Validates implemented code against tasks.md, plan.md, spec.md, and constitution.md.",
+        model=model,
         prompt=build_implement_critic_prompt(
             constitution,
             spec,
@@ -203,9 +236,11 @@ def ci_fix_agent_definition(
     plan: str,
     tasks: str,
     ci_failures: str,
+    model: str | None = None,
 ) -> AgentDefinition:
     return AgentDefinition(
         description="Fixes failing CI checks (typecheck, unit tests, e2e) after both review gates passed.",
+        model=model,
         prompt=f"""You are the CI Fix Agent for a spec-kit project.
 
 Both the implement critic and code quality review have passed. However, one or more of
@@ -251,9 +286,11 @@ def fix_agent_definition(
     plan: str,
     tasks: str,
     violations: list,
+    model: str | None = None,
 ) -> AgentDefinition:
     return AgentDefinition(
         description="Fixes specific implementation violations found by the critic or quality review.",
+        model=model,
         prompt=f"""You are the Fix Agent for a spec-kit project.
 
 Your sole function is to fix the specific violations listed below.
@@ -307,6 +344,7 @@ def quality_review_agent_definition(
     quality_principles: str,
     iteration: int,
     quality_violations: list | None = None,
+    model: str | None = None,
 ) -> AgentDefinition:
     violations_block = format_violations_block(
         quality_violations, iteration, "quality violations (already addressed by the fix agent)"
@@ -318,6 +356,7 @@ def quality_review_agent_definition(
     )
     return AgentDefinition(
         description="Reviews implemented code for quality, maintainability, and operational safety.",
+        model=model,
         prompt=build_quality_review_prompt(
             constitution,
             spec,
@@ -339,6 +378,7 @@ def critic_reconcile_agent_definition(
     tasks: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None = None,
 ) -> AgentDefinition:
     context_block = (
         f"--- CONSTITUTION ---\n{constitution}\n\n"
@@ -352,6 +392,7 @@ def critic_reconcile_agent_definition(
     )
     return AgentDefinition(
         description="Reconciles findings from multiple independent implement critics into one verified result.",
+        model=model,
         prompt=critic_reconcile.build_reconcile_prompt(
             context_block, raw_results, iteration, "violations", output_instructions
         ),
@@ -367,6 +408,7 @@ def quality_review_reconcile_agent_definition(
     quality_principles: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None = None,
 ) -> AgentDefinition:
     context_block = (
         f"--- CONSTITUTION ---\n{constitution}\n\n"
@@ -381,6 +423,7 @@ def quality_review_reconcile_agent_definition(
     )
     return AgentDefinition(
         description="Reconciles findings from multiple independent code-quality-review critics into one verified result.",
+        model=model,
         prompt=critic_reconcile.build_reconcile_prompt(
             context_block, raw_results, iteration, "confidence", output_instructions
         ),
@@ -481,6 +524,7 @@ async def _run_implementation_agent(
     plan: str,
     tasks: str,
     quality_principles: str,
+    test_stage_enabled: bool = True,
 ) -> str:
     """Run the implementation agent if unchecked tasks remain, retrying once more if
     tasks are still unchecked afterward. Returns the latest tasks.md content. Exits
@@ -497,21 +541,44 @@ async def _run_implementation_agent(
     max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         log(f"Running implementation agent (attempt {attempt}/{max_attempts})...")
-        impl_agent = impl_agent_definition(constitution, spec, plan, tasks, quality_principles)
+        impl_agent = impl_agent_definition(
+            constitution,
+            spec,
+            plan,
+            tasks,
+            quality_principles,
+            test_stage_enabled=test_stage_enabled,
+        )
+        tdd_instruction = (
+            "Follow TDD order: write failing tests first, commit, then implement, commit."
+            if test_stage_enabled
+            else "The test stage is disabled for this project — implement directly per spec.md/plan.md."
+        )
         user_prompt = (
             f"Implement all unchecked tasks in specs/{feature}/tasks.md, EXCEPT any task tagged "
             f"[MANUAL] (those require out-of-repo human action and must stay unchecked). "
-            f"Follow TDD order: write failing tests first, commit, then implement, commit. "
+            f"{tdd_instruction} "
             f"Mark each non-[MANUAL] task - [x] in tasks.md after completing it."
         )
         await local_agent_loop.run_generation(
             log,
             "implement",
-            claude_fallback=lambda user_prompt=user_prompt, impl_agent=impl_agent: query(
+            claude_fallback=lambda model, user_prompt=user_prompt, tasks=tasks: query(
                 prompt=user_prompt + NO_RECURSION_NOTICE,
                 options=driving_agent_options(
                     allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={"impl-agent": impl_agent},
+                    agents={
+                        "impl-agent": impl_agent_definition(
+                            constitution,
+                            spec,
+                            plan,
+                            tasks,
+                            quality_principles,
+                            model=model,
+                            test_stage_enabled=test_stage_enabled,
+                        )
+                    },
+                    model=model,
                 ),
             ),
             system_prompt=impl_agent.prompt,
@@ -543,11 +610,16 @@ async def _run_ci_fix_agent(
     await local_agent_loop.run_generation(
         log,
         "implement",
-        claude_fallback=lambda: query(
+        claude_fallback=lambda model: query(
             prompt=user_prompt + NO_RECURSION_NOTICE,
             options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={"ci-fix-agent": ci_fix_agent},
+                agents={
+                    "ci-fix-agent": ci_fix_agent_definition(
+                        constitution, spec, plan, tasks, failure_summary, model=model
+                    )
+                },
+                model=model,
             ),
         ),
         system_prompt=ci_fix_agent.prompt,
@@ -653,11 +725,16 @@ async def _run_revision(
     await local_agent_loop.run_generation(
         log,
         "implement",
-        claude_fallback=lambda: query(
+        claude_fallback=lambda model: query(
             prompt=user_prompt + NO_RECURSION_NOTICE,
             options=driving_agent_options(
                 allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={"fix-agent": fix_agent},
+                agents={
+                    "fix-agent": fix_agent_definition(
+                        constitution, spec, plan, tasks_content, pending_violations, model=model
+                    )
+                },
+                model=model,
             ),
         ),
         system_prompt=fix_agent.prompt,
@@ -717,6 +794,7 @@ def _build_critic_query(
     plan: str,
     iteration: int,
     prev_violations,
+    model: str | None,
 ):
     tasks_content = read_file(spec_dir / "tasks.md")
     return query(
@@ -729,9 +807,10 @@ def _build_critic_query(
             allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
             agents={
                 "implement-critic": critic_agent_definition(
-                    constitution, spec, plan, tasks_content, iteration, prev_violations
+                    constitution, spec, plan, tasks_content, iteration, prev_violations, model
                 )
             },
+            model=model,
         ),
     )
 
@@ -745,6 +824,7 @@ def _build_quality_query(
     quality_principles: str,
     iteration: int,
     quality_violations,
+    model: str | None,
 ):
     tasks_content = read_file(spec_dir / "tasks.md")
     return query(
@@ -764,8 +844,10 @@ def _build_quality_query(
                     quality_principles,
                     iteration,
                     quality_violations,
+                    model,
                 )
             },
+            model=model,
         ),
     )
 
@@ -778,6 +860,7 @@ def _build_reconcile_critic_query(
     plan: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None,
 ):
     tasks_content = read_file(spec_dir / "tasks.md")
     return query(
@@ -790,9 +873,10 @@ def _build_reconcile_critic_query(
             allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
             agents={
                 "implement-critic-reconcile": critic_reconcile_agent_definition(
-                    constitution, spec, plan, tasks_content, iteration, raw_results
+                    constitution, spec, plan, tasks_content, iteration, raw_results, model
                 )
             },
+            model=model,
         ),
     )
 
@@ -806,6 +890,7 @@ def _build_reconcile_quality_query(
     quality_principles: str,
     iteration: int,
     raw_results: list[dict],
+    model: str | None,
 ):
     tasks_content = read_file(spec_dir / "tasks.md")
     return query(
@@ -825,8 +910,10 @@ def _build_reconcile_quality_query(
                     quality_principles,
                     iteration,
                     raw_results,
+                    model,
                 )
             },
+            model=model,
         ),
     )
 
@@ -866,7 +953,14 @@ async def run(feature: str):
 
     # --- Step 1: Run implementation if unchecked tasks remain ---
     tasks = await _run_implementation_agent(
-        feature, spec_dir, constitution, spec, plan, tasks, quality_principles
+        feature,
+        spec_dir,
+        constitution,
+        spec,
+        plan,
+        tasks,
+        quality_principles,
+        test_stage_enabled=ollama.is_stage_enabled("test"),
     )
 
     # --- Step 1b: Quick CI check before the critic loop ---
