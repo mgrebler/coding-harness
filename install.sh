@@ -203,7 +203,8 @@ manage_claude_md() {
 
 This project follows the coding-harness spec-driven pipeline by default:
 `specify → plan → tasks → test → implement → docs`. New features and non-trivial
-changes should go through this pipeline (starting with `/speckit-specify`)
+changes should go through this pipeline (starting with `/ch-specify`, which
+grounds the spec in the existing `docs/` tree when one exists)
 rather than being implemented directly, unless the user explicitly asks to
 skip it. Full governance rules are in `.specify/memory/constitution.md`.
 

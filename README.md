@@ -100,14 +100,15 @@ You are the gatekeeper at each stage: review the artifact, then run the next com
 ### Step 1 — Specify
 
 ```
-/speckit-specify <feature description>
+/ch-specify <feature description>     # or /speckit-specify for the same flow without docs/ grounding
 ```
 
 - Creates a numbered feature branch (`NNN-feature-name`)
 - Writes `specs/NNN-feature/spec.md` from your description
 - Runs a quality checklist; asks for clarification (max 3 questions) if needed
+- If `docs/` exists (see "Adopting the Docs Stage into an Existing Project" below), reads it first to tell new capability apart from a change to behaviour already documented there, so the spec frames it accordingly
 
-Already tracked as a GitHub issue? Use `/ch-specify-from-issue <issue-number-or-url>` instead — it fetches the issue's title and body via the `gh` CLI and feeds them into the same flow, producing an identical `spec.md` with a source line back to the issue.
+Already tracked as a GitHub issue? Use `/ch-specify-from-issue <issue-number-or-url>` instead — it fetches the issue's title and body via the `gh` CLI, delegates through `/ch-specify` (so it gets the same `docs/` grounding), and produces an identical `spec.md` with a source line back to the issue.
 
 **Review** `specs/NNN-feature/spec.md`. Edit it directly or give Claude feedback. Then:
 
@@ -175,7 +176,7 @@ feature onward.
 After specifying the feature, run the entire plan → tasks → test → implement → docs pipeline unattended:
 
 ```
-/speckit-specify <feature description>
+/ch-specify <feature description>
 # or: /ch-specify-from-issue <issue-number-or-url>
 ```
 
@@ -191,18 +192,19 @@ This chains five stages — plan, tasks, test, implement, docs — with built-in
 
 ## Quick Reference
 
-`/speckit-specify` starts every feature (or `/ch-specify-from-issue <issue-number-or-url>` to source it from an existing GitHub issue instead of typing the description). After that, the `/ch-*` commands below are what you actually run — each wraps a SpecKit generation step in an iterative critic loop:
+`/ch-specify` starts every feature (or `/ch-specify-from-issue <issue-number-or-url>` to source it from an existing GitHub issue instead of typing the description — it delegates through `/ch-specify` too). After that, the `/ch-*` commands below are what you actually run — each wraps a SpecKit generation step in an iterative critic loop:
 
 | Command | Generation step | Critic gate(s) |
 |---------|-----------------|-----------------|
-| `/ch-1-plan-auto` | `/speckit-plan` | plan critic → plan-architecture-review |
+| `/ch-specify` | `/speckit-specify` | (none — specify has no critic; adds `docs/` grounding only) |
+| `/ch-1-plan-auto` | `/speckit-plan` | plan critic (now also checks `docs/` consistency) → plan-architecture-review |
 | `/ch-2-tasks-auto` | `/speckit-tasks` | tasks critic |
 | `/ch-3-test-auto` | `/ch-3-test` | test critic → test-quality-review |
 | `/ch-4-implement-auto` | `/speckit-implement` | implement critic → implement-quality-review |
 | `/ch-5-docs-auto` | (none — docs has no plain-generation counterpart) | docs critic |
 | `/ch-plan-to-implement-auto` | all of the above | all of the above, chained |
 
-The plain `/speckit-plan`, `/speckit-tasks`, `/speckit-implement`, and `/ch-3-test` commands generate a single artifact with **no critic loop** — use them only if you want to hand-edit before any automated critique runs, not as the default path.
+The plain `/speckit-specify`, `/speckit-plan`, `/speckit-tasks`, `/speckit-implement`, and `/ch-3-test` commands generate a single artifact with **no critic loop** — use them only if you want to hand-edit before any automated critique runs, not as the default path. `/speckit-specify` also skips the `docs/`-grounding step `/ch-specify` adds.
 
 ---
 
