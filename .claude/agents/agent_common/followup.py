@@ -18,7 +18,10 @@ from pathlib import Path
 FOLLOWUP_FILENAME = "FOLLOWUP-non-blocking-concerns.md"
 
 
-def _format_concern(concern: dict) -> str:
+def _format_concern(concern: dict | str) -> str:
+    if isinstance(concern, str):
+        return f"- {concern}"
+
     title = concern.get("title") or concern.get("finding") or "(untitled concern)"
     severity = concern.get("severity", "unspecified severity")
     location = concern.get("location", "location unspecified")
