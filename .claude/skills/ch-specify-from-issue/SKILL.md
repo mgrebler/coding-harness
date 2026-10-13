@@ -91,7 +91,7 @@ You **MUST** consider the user input before proceeding (if not empty).
    ```
    Spec is ready for planning. Run /ch-1-plan-auto to generate and critic-review the plan
    (recommended for review between each stage), or /ch-plan-to-implement-auto to run the
-   full plan → tasks → test → implement pipeline unattended.
+   full plan → tasks → test → implement → docs pipeline unattended.
    ```
    Then append one line:
    ```

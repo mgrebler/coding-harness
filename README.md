@@ -1,6 +1,6 @@
 # coding-harness
 
-coding-harness builds on [GitHub's SpecKit](https://github.com/github/spec-kit) spec-driven flow — specify → plan → tasks → implement — and adds autonomous agents that drive each stage, plus a strict test-first split between writing tests and writing implementation code: `specify → ch-1-plan-auto → ch-2-tasks-auto → ch-3-test-auto → ch-4-implement-auto`.
+coding-harness builds on [GitHub's SpecKit](https://github.com/github/spec-kit) spec-driven flow — specify → plan → tasks → implement — and adds autonomous agents that drive each stage, plus a strict test-first split between writing tests and writing implementation code, and a final stage that keeps a persistent user/maintainer documentation set current: `specify → ch-1-plan-auto → ch-2-tasks-auto → ch-3-test-auto → ch-4-implement-auto → ch-5-docs-auto`.
 
 **Why this matters:** agentic development is fast, but code that "looks right" can quietly drift from your architecture, skip tests, or break conventions. coding-harness keeps agents fast *and* maintainable by gating every stage behind critic agents grounded in documents your team owns — `constitution.md`, `architecture.md`, `test-principles.md`, and more. A plan must pass an architecture review before tasks are generated; tests and implementation must pass a quality review before they're considered done. Humans remain the only ones who can merge to `main`.
 
@@ -71,7 +71,7 @@ git subtree pull --prefix=.coding-harness <harness-repo-url> main
 Every feature follows the same pipeline:
 
 ```
-specify → plan → tasks → test → implement → PR
+specify → plan → tasks → test → implement → docs → PR
 ```
 
 Two modes are supported:
@@ -141,13 +141,21 @@ Review the failing test files. Then:
 
 ### Step 5 — Review the implementation
 
-When implementation is complete, review the code changes and verify CI passes locally. Then open a PR. **The merge is always a human action.**
+Review the code changes and verify CI passes locally. Then:
+
+```
+/ch-5-docs-auto
+```
+
+### Step 6 — Review the documentation
+
+Review the changes under `docs/`. Then open a PR. **The merge is always a human action.**
 
 ---
 
 ## Fully Automatic Mode
 
-After specifying the feature, run the entire plan → tasks → test → implement pipeline unattended:
+After specifying the feature, run the entire plan → tasks → test → implement → docs pipeline unattended:
 
 ```
 /speckit-specify <feature description>
@@ -160,7 +168,7 @@ Review and edit `specs/NNN-feature/spec.md` if needed, then:
 /ch-plan-to-implement-auto
 ```
 
-This chains four stages — plan, tasks, test, implement — with built-in critic loops at each stage.
+This chains five stages — plan, tasks, test, implement, docs — with built-in critic loops at each stage.
 
 ---
 
@@ -174,6 +182,7 @@ This chains four stages — plan, tasks, test, implement — with built-in criti
 | `/ch-2-tasks-auto` | `/speckit-tasks` | tasks critic |
 | `/ch-3-test-auto` | `/ch-3-test` | test critic → test-quality-review |
 | `/ch-4-implement-auto` | `/speckit-implement` | implement critic → implement-quality-review |
+| `/ch-5-docs-auto` | (none — docs has no plain-generation counterpart) | docs critic |
 | `/ch-plan-to-implement-auto` | all of the above | all of the above, chained |
 
 The plain `/speckit-plan`, `/speckit-tasks`, `/speckit-implement`, and `/ch-3-test` commands generate a single artifact with **no critic loop** — use them only if you want to hand-edit before any automated critique runs, not as the default path.
@@ -199,15 +208,17 @@ Critic passes can optionally run against a local [Ollama](https://ollama.com) in
     "test-quality-review":      { "enabled": false, "model": "" },
 
     "implement":                { "enabled": false, "model": "" },
-    "implement-quality-review": { "enabled": false, "model": "qwen3-coder:30b-a3b" }
+    "implement-quality-review": { "enabled": false, "model": "qwen3-coder:30b-a3b" },
+
+    "docs":                     { "enabled": false, "model": "" }
   }
 }
 ```
 
 Each phase's secondary review key is named after the primary key it follows, so the
 pairing is explicit from the name alone: `plan` → `plan-architecture-review`, `test` →
-`test-quality-review`, `implement` → `implement-quality-review`. `tasks` has no
-secondary gate.
+`test-quality-review`, `implement` → `implement-quality-review`. `tasks` and `docs`
+have no secondary gate.
 
 Two ways to control the Ollama context window (`num_ctx`), settable at the
 top level or per-critic like any other field above:
@@ -491,7 +502,7 @@ python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
 
 ### Layer 2 — Critic evals (requires local Ollama)
 
-Each critic script (`ch_1_plan_critic.py`, `ch_1_plan_architecture_critic.py`, `ch_2_tasks_critic.py`, `ch_3_test_critic.py`, `ch_3_test_quality_critic.py`, `ch_4_implement_critic.py`, `ch_4_implement_quality_critic.py`) is run against known-good and known-bad fixture artifacts. The result JSON is asserted. This catches prompt degradation, rule drift, or regressions in critic logic. Not run in CI — no local Ollama instance available there; run locally before pushing changes that touch a critic's prompt or scoring logic.
+Each critic script (`ch_1_plan_critic.py`, `ch_1_plan_architecture_critic.py`, `ch_2_tasks_critic.py`, `ch_3_test_critic.py`, `ch_3_test_quality_critic.py`, `ch_4_implement_critic.py`, `ch_4_implement_quality_critic.py`, `ch_5_docs_critic.py`) is run against known-good and known-bad fixture artifacts. The result JSON is asserted. This catches prompt degradation, rule drift, or regressions in critic logic. Not run in CI — no local Ollama instance available there; run locally before pushing changes that touch a critic's prompt or scoring logic.
 
 Fixtures live in `tests/evals/fixtures/` — a minimal "health endpoint" feature with good and bad variants for each pipeline stage.
 
@@ -518,7 +529,7 @@ ruff format .
 
 ## What This Repo Contains
 
-The `speckit-*` skills (including the `speckit-git-*` git extension) and the five templates in `.specify/templates/` come from upstream [SpecKit](https://github.com/github/spec-kit). Everything else — the `ch-*` skills and agents, the critic loop pattern, and the principle docs beyond `constitution.md` (`architecture.md`, `architecture-principles.md`, `code-quality-principles.md`, `test-principles.md`, `product-context.md`) — is coding-harness's own addition.
+The `speckit-*` skills (including the `speckit-git-*` git extension) and the five templates in `.specify/templates/` come from upstream [SpecKit](https://github.com/github/spec-kit). Everything else — the `ch-*` skills and agents, the critic loop pattern, the principle docs beyond `constitution.md` (`architecture.md`, `architecture-principles.md`, `code-quality-principles.md`, `test-principles.md`, `documentation-principles.md`, `product-context.md`), and the `docs/` output of the documentation stage — is coding-harness's own addition.
 
 ```
 speckit/
@@ -527,7 +538,7 @@ speckit/
 │   └── skills/             # Upstream /speckit-* commands plus this harness's /ch-* commands
 ├── .specify/
 │   ├── extensions/         # Git integration scripts
-│   ├── memory/             # Generic critic quality bars (architecture, code, test principles)
+│   ├── memory/             # Generic critic quality bars (architecture, code, test, documentation principles)
 │   ├── scripts/            # Bash helpers
 │   ├── templates/          # Spec/plan/tasks/constitution templates
 │   └── workflows/          # Workflow registry
@@ -564,6 +575,7 @@ speckit/
 │       ├── test_test_critic_eval.py
 │       ├── test_test_quality_critic_eval.py
 │       ├── test_implement_critic_eval.py
-│       └── test_quality_critic_eval.py
+│       ├── test_quality_critic_eval.py
+│       └── test_docs_critic_eval.py
 └── install.sh              # Install/update script
 ```

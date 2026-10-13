@@ -52,6 +52,7 @@ _CRITIC_SCRIPTS = {
         "ch-4-implement-code-quality-review-result",
     ),
     "test-quality-review": ("ch_3_test_quality_critic.py", "ch-3-test-quality-review-result"),
+    "docs": ("ch_5_docs_critic.py", "ch-5-docs-critic-result"),
 }
 
 

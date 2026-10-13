@@ -1,14 +1,14 @@
 ---
 name: ch-plan-to-implement-auto
-description: Runs the full plan → tasks → test → implement pipeline for the current feature branch unattended, without stopping for review between stages. Chains ch_1_plan_auto.py, ch_2_tasks_auto.py, ch_3_test_auto.py, and ch_4_implement_auto.py sequentially. Resume-safe — re-running after any interruption continues from the first incomplete stage.
+description: Runs the full plan → tasks → test → implement → docs pipeline for the current feature branch unattended, without stopping for review between stages. Chains ch_1_plan_auto.py, ch_2_tasks_auto.py, ch_3_test_auto.py, ch_4_implement_auto.py, and ch_5_docs_auto.py sequentially. Resume-safe — re-running after any interruption continues from the first incomplete stage.
 user-invocable: true
 ---
 
 # Plan-to-Implement Auto-Orchestrator
 
 Run the full automated pipeline for the current feature branch: plan generation,
-task generation, test writing, and implementation — chained end-to-end without
-stopping for human review between stages.
+task generation, test writing, implementation, and documentation — chained
+end-to-end without stopping for human review between stages.
 
 All orchestration logic lives in `.claude/agents/ch_plan_to_implement_auto.py`. This
 skill is a thin invocation wrapper — do not re-implement the logic here.
@@ -44,7 +44,7 @@ Wait for the script to complete and relay its output to the user.
 
 ## What the script does
 
-Runs four stages in sequence. Each stage must pass before the next begins.
+Runs five stages in sequence. Each stage must pass before the next begins.
 
 **Stage 1 — Plan** (`ch_1_plan_auto.py`):
 - Generates `plan.md` via the plan agent
@@ -67,6 +67,11 @@ Runs four stages in sequence. Each stage must pass before the next begins.
 - Runs CI checks (typecheck, unit tests, e2e) after both gates pass
 - On PASS: triggers auto-commit via the git extension
 
+**Stage 5 — Docs** (`ch_5_docs_auto.py`):
+- Merges this feature's shipped behaviour into `docs/`, the project's persistent, cumulative documentation set (bootstrapping it if it doesn't exist yet)
+- Runs iterative docs critic review (up to 3 iterations)
+- On PASS: triggers auto-commit via the git extension
+
 ---
 
 ## Resume behaviour
@@ -81,6 +86,7 @@ files each sub-script produces:
 | Tasks | `specs/<feature>/ch-2-tasks-critic-result-*.json` |
 | Test | `specs/<feature>/ch-3-test-quality-review-result-*.json` |
 | Implement | `specs/<feature>/ch-4-implement-code-quality-review-result-*.json` |
+| Docs | `specs/<feature>/ch-5-docs-critic-result-*.json` |
 
 ---
 
@@ -95,6 +101,7 @@ and logs which escalation file to review:
 | Tasks | `specs/<feature>/ch-2-tasks-critic-escalation.md` |
 | Test | `specs/<feature>/ch-3-test-critic-escalation.md` |
 | Implement | `specs/<feature>/ch-4-implement-critic-escalation.md` |
+| Docs | `specs/<feature>/ch-5-docs-critic-escalation.md` |
 
 Fix the issues described in the escalation file, then re-run this skill to
 resume from the failed stage.
@@ -107,7 +114,7 @@ Both workflows gate purely on the artifacts above — there are no approval
 marker files or git hooks in either. The only difference is that the
 human-in-the-loop workflow runs one stage at a time, via the individual
 `/ch-N-*-auto` skills, so you can review the artifact between stages,
-while this skill runs all four stages in sequence unattended.
+while this skill runs all five stages in sequence unattended.
 
 ---
 

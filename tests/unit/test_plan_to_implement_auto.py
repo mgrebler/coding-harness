@@ -17,7 +17,7 @@ class TestCheckStageResult(unittest.TestCase):
         with patch.object(ptia, "log") as mock_log:
             ptia._check_stage_result(0, 1, "plan", "ch-1-plan-critic-escalation.md")
 
-        mock_log.assert_called_once_with("Stage 1/4 (plan): PASSED.")
+        mock_log.assert_called_once_with("Stage 1/5 (plan): PASSED.")
 
     def test_generic_failure_logs_escalation_hint_and_exits_1(self):
         with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
@@ -25,7 +25,7 @@ class TestCheckStageResult(unittest.TestCase):
 
         self.assertEqual(cm.exception.code, 1)
         mock_log.assert_called_once_with(
-            "Stage 2/4 (tasks): FAILED. Review ch-2-tasks-critic-escalation.md and re-run."
+            "Stage 2/5 (tasks): FAILED. Review ch-2-tasks-critic-escalation.md and re-run."
         )
 
     def test_usage_limit_exit_code_logs_paused_and_exits_with_that_code(self):
@@ -38,6 +38,15 @@ class TestCheckStageResult(unittest.TestCase):
         mock_log.assert_called_once()
         self.assertIn("PAUSED", mock_log.call_args[0][0])
         self.assertIn("re-run", mock_log.call_args[0][0].lower())
+
+    def test_stage_5_docs_failure_logs_escalation_hint_and_exits_1(self):
+        with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
+            ptia._check_stage_result(1, 5, "docs", "ch-5-docs-critic-escalation.md")
+
+        self.assertEqual(cm.exception.code, 1)
+        mock_log.assert_called_once_with(
+            "Stage 5/5 (docs): FAILED. Review ch-5-docs-critic-escalation.md and re-run."
+        )
 
 
 if __name__ == "__main__":
