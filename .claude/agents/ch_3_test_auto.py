@@ -52,7 +52,11 @@ from agent_common.critic_loop import (
     run_cli,
     run_two_gate_loop,
 )
-from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
+from agent_common.driving_agent import (
+    FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS,
+    NO_RECURSION_NOTICE,
+    driving_agent_options,
+)
 from agent_common.files import read_file, require_spec_files
 from agent_common.followup import record_from_result_file, record_non_blocking_concerns
 from agent_common.preflight_checks import (
@@ -348,6 +352,8 @@ Key rules:
 - Update red-output artifacts in specs/*/test-results/ if the test output changes
 - Commit fixed files: git add <test files> && git commit -m "fix: address test critic violations"
 - Do not stop until every violation in the list is addressed and committed
+
+{FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS}
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )

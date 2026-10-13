@@ -41,7 +41,9 @@ def _setup_tmpdir(docs_fixture_dir: Path) -> Path:
     memory_dir.mkdir(parents=True)
 
     shutil.copy(FIXTURES / "constitution.md", memory_dir / "constitution.md")
-    shutil.copy(FIXTURES / "documentation-principles.md", memory_dir / "documentation-principles.md")
+    shutil.copy(
+        FIXTURES / "documentation-principles.md", memory_dir / "documentation-principles.md"
+    )
     shutil.copy(FIXTURES / "spec.md", spec_dir / "spec.md")
     shutil.copy(FIXTURES / "good" / "plan.md", spec_dir / "plan.md")
     shutil.copy(FIXTURES / "good" / "tasks.md", spec_dir / "tasks.md")

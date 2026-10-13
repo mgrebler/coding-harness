@@ -112,6 +112,17 @@ always_copy() {
 # Strip any existing managed section (delimited by begin/end marker lines)
 # from a file and append a fresh one built from the given body. Creates the
 # file if absent. Idempotent — safe to re-run.
+#
+# A blank line is always inserted right after begin_marker, before body:
+# for a markdown file this keeps the section lint-clean under the common
+# "headings must be surrounded by blank lines" rule (markdownlint MD022,
+# Prettier's markdown formatter, etc) — body's first line is normally a
+# heading immediately following the HTML-comment begin_marker. Without it,
+# a project's own lint/format step inserts that blank line, and the next
+# install.sh run (which replaces the whole section verbatim) silently
+# strips it back out — an infinite fix/break loop across install runs.
+# Harmless for a non-markdown caller (e.g. .gitignore): a blank line there
+# is a no-op comment-adjacent line, not a syntax issue.
 write_managed_section() {
   local file="$1" begin_marker="$2" end_marker="$3" body="$4"
 
@@ -131,8 +142,9 @@ write_managed_section() {
   # Add a single blank line separator only if the file already has content
   [[ -s "$file" ]] && echo >> "$file"
 
-  # Append updated section (no leading blank line — separator is added above)
-  { printf '%s\n' "$begin_marker"; printf '%s\n' "$body"; printf '%s\n' "$end_marker"; } >> "$file"
+  # Append updated section (no leading blank line before begin_marker —
+  # separator is added above; one blank line after begin_marker — see docstring)
+  { printf '%s\n\n' "$begin_marker"; printf '%s\n' "$body"; printf '%s\n' "$end_marker"; } >> "$file"
 }
 
 # Write/replace the coding-harness-managed section in the project's .gitignore.

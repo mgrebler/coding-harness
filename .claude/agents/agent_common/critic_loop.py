@@ -31,7 +31,9 @@ def _blocking_signature_from_violations(violations: list) -> frozenset:
     'no progress', since a critic legitimately re-reporting the same
     WARNING isn't a stuck loop."""
     return frozenset(
-        (v.get("rule"), v.get("location")) for v in violations if v.get("severity") == "BLOCKING"
+        (v.get("rule"), v.get("location"))
+        for v in violations
+        if isinstance(v, dict) and v.get("severity") == "BLOCKING"
     )
 
 
@@ -41,6 +43,7 @@ def _blocking_signature_from_issues(blocking_issues: list) -> frozenset:
     return frozenset(
         (item.get("title") or item.get("rule") or item.get("principle"), item.get("location"))
         for item in blocking_issues
+        if isinstance(item, dict)
     )
 
 
@@ -170,8 +173,16 @@ async def _run_gate_for_iteration(
                 f"{gate.label} FAIL (iteration {iteration}) — {blocking} blocking issue(s), confidence {confidence}/10."
             )
     else:
-        blocking = sum(1 for v in result.get("violations", []) if v.get("severity") == "BLOCKING")
-        warnings = sum(1 for v in result.get("violations", []) if v.get("severity") == "WARNING")
+        blocking = sum(
+            1
+            for v in result.get("violations", [])
+            if isinstance(v, dict) and v.get("severity") == "BLOCKING"
+        )
+        warnings = sum(
+            1
+            for v in result.get("violations", [])
+            if isinstance(v, dict) and v.get("severity") == "WARNING"
+        )
         if status == "PASS":
             log(f"{gate.label} PASS (iteration {iteration}) — {warnings} warning(s).")
         else:
@@ -390,11 +401,24 @@ async def run_single_gate_loop(
 
 
 def finish_stage(
-    log, spec_dir: Path, agent_name: str, commit_event: str, stage: str, ready_message: str
+    log,
+    spec_dir: Path,
+    agent_name: str,
+    commit_event: str,
+    stage: str,
+    ready_message: str,
+    exclude_from_commit: list[str] | None = None,
 ) -> None:
-    """Log ready_message, commit, and mark stage complete. The common tail of every *-auto.py success path."""
+    """Log ready_message, commit, and mark stage complete. The common tail of every *-auto.py success path.
+
+    exclude_from_commit: forwarded to git.run_auto_commit — paths (typically a
+    pre-stage dirty-file baseline) to leave out of this commit. See
+    FOLLOWUP_HARNESS.md Bug 4."""
     log(ready_message)
-    git.run_auto_commit(commit_event, agent_name)
+    if exclude_from_commit:
+        git.run_auto_commit(commit_event, agent_name, exclude=exclude_from_commit)
+    else:
+        git.run_auto_commit(commit_event, agent_name)
     rstate.write_stage_complete(spec_dir, stage)
 
 

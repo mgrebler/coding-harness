@@ -66,9 +66,7 @@ def build_docs_critic_prompt(
         baseline_input = f"--- BASELINE docs/ TREE (before this run's merge) ---\n{baseline_tree}"
 
     if new_tree is None:
-        new_tree_input = (
-            "Candidate: read every file under docs/ (the tree AFTER this run's merge) using Glob/Read."
-        )
+        new_tree_input = "Candidate: read every file under docs/ (the tree AFTER this run's merge) using Glob/Read."
     else:
         new_tree_input = f"--- CANDIDATE docs/ TREE (after this run's merge) ---\n{new_tree}"
 
