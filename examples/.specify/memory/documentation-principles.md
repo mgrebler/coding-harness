@@ -108,7 +108,7 @@ Everything documented must be backed by what's actually implemented — this fea
 
 ### 6. Minimal Necessary Detail
 
-Document what a user or maintainer actually needs to know to use or maintain the product. Avoid restating implementation detail that belongs in code comments or commit history.
+Document what a user or maintainer actually needs to know to use or maintain the product. Avoid restating implementation detail that belongs in the code itself or commit history.
 
 ---
 
