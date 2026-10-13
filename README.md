@@ -153,6 +153,23 @@ Review the changes under `docs/`. Then open a PR. **The merge is always a human 
 
 ---
 
+## Adopting the Docs Stage into an Existing Project
+
+`/ch-5-docs-auto` merges each *new* feature's shipped behaviour into `docs/` — it assumes `docs/`
+already reflects everything built before that feature. A project installing the harness
+mid-project (with existing code and no `docs/` yet) needs a one-time bootstrap first:
+
+```
+/ch-docs-bootstrap
+```
+
+This surveys the current codebase as a whole (not a feature delta — there's no `spec.md`/
+`plan.md`/`tasks.md` to read yet) and writes the initial Diátaxis-structured `docs/` tree. Run it
+once per project; review its output, then `/ch-5-docs-auto` takes over incrementally from the next
+feature onward.
+
+---
+
 ## Fully Automatic Mode
 
 After specifying the feature, run the entire plan → tasks → test → implement → docs pipeline unattended:
