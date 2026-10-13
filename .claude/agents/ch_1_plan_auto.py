@@ -46,7 +46,12 @@ from agent_common.critic_loop import (
     run_two_gate_loop,
 )
 from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
-from agent_common.files import read_file, require_spec_files
+from agent_common.files import (
+    format_directory_tree,
+    read_directory_tree,
+    read_file,
+    require_spec_files,
+)
 from agent_common.resume_state import (
     extend_iterations_if_reviewed,
     find_two_gate_resume_state,
@@ -145,6 +150,7 @@ Key rules:
 def critic_agent_definition(
     constitution: str,
     architecture: str,
+    docs: str,
     spec: str,
     plan: str,
     iteration: int,
@@ -160,11 +166,12 @@ def critic_agent_definition(
         f"- Print one line: [ch-1-plan-critic] iteration {iteration} → PASS or FAIL → path"
     )
     return AgentDefinition(
-        description="Validates plan.md against constitution.md, architecture.md, and spec.md. Returns structured JSON.",
+        description="Validates plan.md against constitution.md, architecture.md, docs/, and spec.md. Returns structured JSON.",
         model=model,
         prompt=build_plan_critic_prompt(
             constitution,
             architecture,
+            docs,
             spec,
             plan,
             iteration,
@@ -213,6 +220,7 @@ def arch_review_agent_definition(
 def plan_reconcile_agent_definition(
     constitution: str,
     architecture: str,
+    docs: str,
     spec: str,
     plan: str,
     iteration: int,
@@ -222,6 +230,7 @@ def plan_reconcile_agent_definition(
     context_block = (
         f"--- CONSTITUTION ---\n{constitution}\n\n"
         f"--- ARCHITECTURE ---\n{architecture}\n\n"
+        f"--- DOCS (current shipped behaviour, per documentation-principles.md) ---\n{docs}\n\n"
         f"--- SPEC ---\n{spec}\n\n"
         f"--- PLAN (current) ---\n{plan}"
     )
@@ -285,6 +294,8 @@ async def run(feature: str):
 
     arch_path = Path(".specify/memory/architecture.md")
     architecture = read_file(arch_path) if arch_path.exists() else "(architecture.md not found)"
+
+    docs = format_directory_tree(read_directory_tree(Path("docs")), "(docs/ not yet created)")
 
     arch_principles_path = Path(".specify/memory/architecture-principles.md")
     arch_principles = (
@@ -404,7 +415,14 @@ async def run(feature: str):
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "plan-critic": critic_agent_definition(
-                        constitution, architecture, spec, plan, iteration, prev_violations, model
+                        constitution,
+                        architecture,
+                        docs,
+                        spec,
+                        plan,
+                        iteration,
+                        prev_violations,
+                        model,
                     )
                 },
                 model=model,
@@ -423,7 +441,14 @@ async def run(feature: str):
                 allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
                 agents={
                     "plan-critic-reconcile": plan_reconcile_agent_definition(
-                        constitution, architecture, spec, plan, iteration, raw_results, model
+                        constitution,
+                        architecture,
+                        docs,
+                        spec,
+                        plan,
+                        iteration,
+                        raw_results,
+                        model,
                     )
                 },
                 model=model,

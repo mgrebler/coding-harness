@@ -17,7 +17,12 @@ Exit codes:
 
 from pathlib import Path
 
-from agent_common.files import read_optional, require_files
+from agent_common.files import (
+    format_directory_tree,
+    read_directory_tree,
+    read_optional,
+    require_files,
+)
 from agent_common.ollama import run_local_critic_cli
 
 CRITIC_RESULT_PREFIX = "ch-1-plan-critic-result"
@@ -26,6 +31,7 @@ CRITIC_RESULT_PREFIX = "ch-1-plan-critic-result"
 def build_plan_critic_prompt(
     constitution: str,
     architecture: str,
+    docs: str,
     spec: str,
     plan: str,
     iteration: int,
@@ -51,6 +57,9 @@ Inputs already loaded for you:
 --- ARCHITECTURE ---
 {architecture}
 
+--- DOCS (current shipped behaviour, per documentation-principles.md) ---
+{docs}
+
 --- SPEC ---
 {spec}
 
@@ -64,6 +73,14 @@ architecture alignment. Read and apply every section in those documents.
 
 For violations derived from the memory documents, use the section as the rule label,
 e.g. "Constitution §2 — Stack Constraints", "Architecture §2 — Backend Layer Separation".
+
+Documentation Consistency [BLOCKING]: DOCS above reflects the product's currently-shipped
+behaviour (it is never aspirational and never lags behind what has shipped — see
+documentation-principles.md's "Currency Over History"). Flag the plan ONLY when its
+technical approach would contradict behaviour documented there for functionality that SPEC
+does NOT declare as being changed by this feature. Do not flag anything SPEC already frames
+as an intentional change — that is an acknowledged delta, not a contradiction. If DOCS is
+"(docs/ not yet created)" or has nothing relevant to this feature, this rule is not_applicable.
 
 Harness process checks (apply in addition to the above):
 
@@ -127,10 +144,11 @@ def main():
 
         constitution = constitution_path.read_text(encoding="utf-8")
         architecture = read_optional(architecture_path, "(architecture.md not found)")
+        docs = format_directory_tree(read_directory_tree(Path("docs")), "(docs/ not yet created)")
         spec = spec_path.read_text(encoding="utf-8")
         plan = plan_path.read_text(encoding="utf-8")
 
-        return build_plan_critic_prompt(constitution, architecture, spec, plan, iteration)
+        return build_plan_critic_prompt(constitution, architecture, docs, spec, plan, iteration)
 
     run_local_critic_cli("plan", CRITIC_RESULT_PREFIX, _build)
 

@@ -298,8 +298,8 @@ The following are out of scope for v1 but the architecture must not make them im
 
 | Agent | Permitted actions |
 |---|---|
-| Specify Agent | Produce `spec.md` from constitution + product context + human intent. No plan or code. |
-| Plan Agent | Read `architecture.md` and `architecture-principles.md`, produce `plan.md`, `research.md`, `data-model.md`, `contracts/`, and proposed `architecture.md` additions from approved `spec.md`. No code. |
+| Specify Agent | Produce `spec.md` from constitution + product context + human intent. When invoked via `/ch-specify` (or `/ch-specify-from-issue`, which delegates through it), also read the existing `docs/` tree (if present) to distinguish new capability from a change to already-documented behaviour (§21). Plain `/speckit-specify` does not perform this read. No plan or code. |
+| Plan Agent | Read `architecture.md` and `architecture-principles.md`, produce `plan.md`, `research.md`, `data-model.md`, `contracts/`, and proposed `architecture.md` additions from approved `spec.md`. `plan.md` is additionally validated against the existing `docs/` tree (if present) for consistency with already-documented behaviour the spec did not flag as changing (§21). No code. |
 | Tasks Agent | Produce `tasks.md` from approved `plan.md` and supporting docs. No code. |
 | Test Agent | Read `test-principles.md`. Write failing test(s) for assigned [TEST] tasks. Confirm red state. Record failing output. No implementation code. No modification of the source directories declared in §5. |
 | Implementation Agent | Read `code-quality-principles.md`. Load red-output artifact from paired [TEST] task. Write implementation to pass failing tests. Refactor under green. No new test files. No adding or modifying test cases. Modifying test setup (mocks, fixtures, helpers, `setup.ts`) is permitted when the implementation requires additional test infrastructure not established during the test phase. No spec, plan, or architecture changes. |
@@ -378,3 +378,14 @@ default), the documentation stage is BLOCKED until ALL of the following are true
 The quality bar for `docs/` is defined in `.specify/memory/documentation-principles.md`. This is the same relationship that `test-principles.md` has to the test gate.
 
 A documentation agent that marks the docs stage complete without all three conditions being met has violated this constitution.
+
+---
+
+## 21. Documentation as Specify/Plan Grounding
+
+In addition to being the docs stage's output, `docs/` also serves as grounding input earlier in the pipeline:
+
+- When invoked via `/ch-specify` (or `/ch-specify-from-issue`, which delegates through it), the Specify Agent reads the existing `docs/` tree (if present) to distinguish genuinely new capability from a change to behaviour already documented there, and frames `spec.md` accordingly. Plain `/speckit-specify` does not perform this read.
+- The Plan Critic additionally validates `plan.md` against `docs/` (if present): it flags a plan whose technical approach conflicts with documented current behaviour for functionality the spec did not declare as changing. It does not flag intentional, spec-acknowledged changes.
+
+This is advisory grounding context, not a gate — there is no automated critic for the specify stage, and the plan critic's docs-consistency check above is additive to its existing rules, not a new standalone gate. `docs/` is not read by the Test or Implementation Agents: mid-feature, `docs/` still reflects pre-feature state by design (§20), so comparing in-flight work against it would produce false-positive contradictions for the very feature being built.

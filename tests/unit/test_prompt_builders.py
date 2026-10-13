@@ -38,6 +38,7 @@ class TestPlanCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
         defaults = {
             "constitution": "CONST",
             "architecture": "ARCH",
+            "docs": "DOCS",
             "spec": "SPEC",
             "plan": "PLAN",
             "iteration": 1,
@@ -51,11 +52,20 @@ class TestPlanCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
     def test_architecture_content_injected(self):
         self.assertIn("MY_ARCH", self._build(architecture="MY_ARCH"))
 
+    def test_docs_content_injected(self):
+        self.assertIn("MY_DOCS", self._build(docs="MY_DOCS"))
+
+    def test_docs_absent_message_passed_through(self):
+        self.assertIn("(docs/ not yet created)", self._build(docs="(docs/ not yet created)"))
+
     def test_plan_content_injected(self):
         self.assertIn("MY_PLAN", self._build(plan="MY_PLAN"))
 
     def test_traceability_rule_present(self):
         self.assertIn("Traceability", self._build())
+
+    def test_documentation_consistency_rule_present(self):
+        self.assertIn("Documentation Consistency", self._build())
 
 
 class TestTasksCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
