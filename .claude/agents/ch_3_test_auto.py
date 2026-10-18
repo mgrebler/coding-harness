@@ -54,6 +54,7 @@ from agent_common.critic_loop import (
 )
 from agent_common.driving_agent import (
     FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS,
+    HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
     NO_RECURSION_NOTICE,
     driving_agent_options,
 )
@@ -179,6 +180,7 @@ Key rules:
 - Test names must describe behaviour, not implementation details
 - No shared mutable state between test cases
 - Do not stop until all [TEST] tasks are marked [x] in tasks.md
+{HUMAN_REVIEW_ATTESTATION_GUARDRAIL}
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )

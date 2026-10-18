@@ -73,6 +73,27 @@ class TestFinishIfAlreadyPassing(unittest.TestCase):
             mock_commit.assert_called_once_with("after_plan", "plan-auto")
             self.assertTrue(resume_state.stage_is_complete(spec_dir, "plan"))
 
+    def test_passing_result_forwards_commit_exclusions(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            (spec_dir / "ch-5-docs-critic-result-1.json").write_text(json.dumps({"status": "PASS"}))
+            with patch.object(git, "run_auto_commit") as mock_commit:
+                critic_loop.finish_if_already_passing(
+                    MagicMock(),
+                    spec_dir,
+                    "docs-auto",
+                    "ch-5-docs-critic-result",
+                    3,
+                    "docs critic",
+                    "Ready.",
+                    "after_docs",
+                    "docs",
+                    exclude_from_commit=["unrelated.txt"],
+                )
+            mock_commit.assert_called_once_with(
+                "after_docs", "docs-auto", exclude=["unrelated.txt"]
+            )
+
 
 class TestRunCli(unittest.TestCase):
     def test_explicit_feature_bypasses_branch_lookup(self):

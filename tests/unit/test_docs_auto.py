@@ -147,5 +147,71 @@ class TestSnapshotBaseline(unittest.TestCase):
             )
 
 
+class TestRunResumeCommitsOwnOutput(unittest.IsolatedAsyncioTestCase):
+    """The reported failure: a PASS was already on disk, the stage logged
+    'Documentation is up to date', and the docs/ merge stayed uncommitted.
+    Resuming must commit the docs/ merge and only exclude unrelated drift."""
+
+    async def test_already_passing_resume_commits_docs_and_excludes_only_drift(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            spec_dir = root / "specs/004-feature"
+            spec_dir.mkdir(parents=True)
+            _write_spec_files(spec_dir)
+            (spec_dir / "ch-4-implement-auto-complete").write_text("", encoding="utf-8")
+            (spec_dir / "ch-5-docs-critic-result-1.json").write_text(
+                json.dumps({"status": "PASS"}), encoding="utf-8"
+            )
+            memory = root / ".specify/memory"
+            memory.mkdir(parents=True)
+            for name in ("constitution.md", "documentation-principles.md"):
+                (memory / name).write_text(name, encoding="utf-8")
+            (root / "docs").mkdir()
+
+            dirty = [
+                "docs/index.md",
+                "docs/reference/",
+                "specs/004-feature/ch-5-docs-auto.log",
+                "src/unrelated.py",
+            ]
+            orig_cwd = Path.cwd()
+            orig_stdout, orig_stderr = sys.stdout, sys.stderr
+            try:
+                os.chdir(root)
+                with (
+                    patch.object(docs_auto.ollama, "is_stage_enabled", return_value=True),
+                    patch.object(docs_auto.git, "dirty_files", return_value=dirty),
+                    patch.object(docs_auto.git, "run_auto_commit") as mock_commit,
+                    patch.object(docs_auto.local_agent_loop, "run_generation") as mock_gen,
+                ):
+                    await docs_auto.run("004-feature")
+            finally:
+                os.chdir(orig_cwd)
+                sys.stdout, sys.stderr = orig_stdout, orig_stderr
+
+            mock_gen.assert_not_called()
+            mock_commit.assert_called_once_with(
+                "after_docs", "ch-5-docs-auto", exclude=["src/unrelated.py"]
+            )
+
+
+class TestIsOwnOutput(unittest.TestCase):
+    """Paths the docs stage itself produces must never be excluded from its
+    commit as pre-existing drift — the docs agent doesn't commit its own work,
+    so a resumed run finds its earlier merge still dirty."""
+
+    def test_docs_and_spec_dir_paths_are_own_output(self):
+        spec_dir = Path("specs/004-feature")
+        for path in ("docs/index.md", "docs/reference/", "specs/004-feature/ch-5-docs-auto.log"):
+            with self.subTest(path=path):
+                self.assertTrue(docs_auto._is_own_output(path, spec_dir))
+
+    def test_unrelated_paths_are_not_own_output(self):
+        spec_dir = Path("specs/004-feature")
+        for path in ("src/app.py", "docsite/index.md", "specs/003-other/spec.md"):
+            with self.subTest(path=path):
+                self.assertFalse(docs_auto._is_own_output(path, spec_dir))
+
+
 if __name__ == "__main__":
     unittest.main()

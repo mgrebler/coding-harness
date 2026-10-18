@@ -435,6 +435,7 @@ def finish_if_already_passing(
     ready_message: str,
     commit_event: str,
     stage: str,
+    exclude_from_commit: list[str] | None = None,
 ) -> bool:
     """
     If a passing result already exists for result_prefix, log it, commit, mark the
@@ -447,7 +448,15 @@ def finish_if_already_passing(
     if passing is None:
         return False
     log(f"Already PASS from {label} iteration {passing}.")
-    finish_stage(log, spec_dir, agent_name, commit_event, stage, ready_message)
+    finish_stage(
+        log,
+        spec_dir,
+        agent_name,
+        commit_event,
+        stage,
+        ready_message,
+        exclude_from_commit=exclude_from_commit,
+    )
     return True
 
 

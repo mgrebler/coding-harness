@@ -82,7 +82,8 @@ Given that feature description, do this:
 
    **Resolution order for `SPECIFY_FEATURE_DIRECTORY`**:
    1. If the user explicitly provided `SPECIFY_FEATURE_DIRECTORY` (e.g., via environment variable, argument, or configuration), use it as-is
-   2. Otherwise, auto-generate it under `specs/`:
+   2. Otherwise, if a `before_specify` hook ran and output a `BRANCH_NAME`, use `specs/<BRANCH_NAME>` — the `ch-*-auto` pipeline scripts locate the feature directory as `specs/<current git branch>`, so a directory named independently of the branch would be invisible to them
+   3. Otherwise, auto-generate it under `specs/`:
       - Check `.specify/init-options.json` for `branch_numbering`
       - If `"timestamp"`: prefix is `YYYYMMDD-HHMMSS` (current timestamp)
       - If `"sequential"` or absent: prefix is `NNN` (next available 3-digit number after scanning existing directories in `specs/`)
@@ -104,7 +105,7 @@ Given that feature description, do this:
 
    **IMPORTANT**:
    - You must only create one feature per `/speckit-specify` invocation
-   - The spec directory name and the git branch name are independent — they may be the same but that is the user's choice
+   - When a `before_specify` hook created the branch, the spec directory name must equal the branch name (resolution step 2 above); otherwise they are independent
    - The spec directory and file are always created by this command, never by the hook
 
 4. Load `.specify/templates/spec-template.md` to understand required sections.

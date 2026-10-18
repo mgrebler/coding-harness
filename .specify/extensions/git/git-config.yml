@@ -51,6 +51,9 @@ auto_commit:
   after_implement:
     enabled: true
     message: "[Spec Kit] Implementation progress"
+  after_test:
+    enabled: true
+    message: "[Spec Kit] Add tests"
   after_checklist:
     enabled: false
     message: "[Spec Kit] Add checklist"
@@ -60,3 +63,6 @@ auto_commit:
   after_taskstoissues:
     enabled: false
     message: "[Spec Kit] Sync tasks to issues"
+  after_docs:
+    enabled: true
+    message: "[Spec Kit] Update documentation"

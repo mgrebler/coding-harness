@@ -45,7 +45,11 @@ from agent_common.critic_loop import (
     run_cli,
     run_two_gate_loop,
 )
-from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
+from agent_common.driving_agent import (
+    HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
+    NO_RECURSION_NOTICE,
+    driving_agent_options,
+)
 from agent_common.files import (
     format_directory_tree,
     read_directory_tree,
@@ -142,6 +146,7 @@ Key rules:
   incomplete.
 - The plan will be evaluated by an Architecture Review agent using the principles above — design accordingly
 - Do not stop until plan.md is written to disk
+{HUMAN_REVIEW_ATTESTATION_GUARDRAIL}
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )
