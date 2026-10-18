@@ -182,6 +182,9 @@ manage_gitignore() {
 .specify/scripts/
 .specify/templates/
 .specify/workflows/
+
+# Python bytecode — written next to the agents whenever a pipeline runs
+__pycache__/
 GITIGNORE
 )
 
