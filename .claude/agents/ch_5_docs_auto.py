@@ -43,7 +43,7 @@ from pathlib import Path
 from ch_5_docs_critic import build_docs_critic_prompt
 from claude_agent_sdk import AgentDefinition, query
 
-from agent_common import critic_reconcile, local_agent_loop, ollama
+from agent_common import critic_reconcile, git, local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
     GateSpec,
@@ -52,7 +52,11 @@ from agent_common.critic_loop import (
     run_cli,
     run_single_gate_loop,
 )
-from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
+from agent_common.driving_agent import (
+    HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
+    NO_RECURSION_NOTICE,
+    driving_agent_options,
+)
 from agent_common.files import read_file, require_spec_files
 from agent_common.resume_state import (
     extend_iterations_if_reviewed,
@@ -92,6 +96,11 @@ def snapshot_baseline(spec_dir: Path) -> None:
         shutil.copytree(DOCS_DIR, baseline_dir)
     else:
         baseline_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _is_own_output(path: str, spec_dir: Path) -> bool:
+    own_roots = (DOCS_DIR.as_posix(), spec_dir.as_posix())
+    return any(path == root or path.startswith(root.rstrip("/") + "/") for root in own_roots)
 
 
 # Subagent definitions
@@ -153,6 +162,8 @@ Process:
 5. Do not stop until every affected file under docs/ has been written to disk.
 
 You do not touch code, specs, plans, or tasks. Your only output is docs/.
+
+{HUMAN_REVIEW_ATTESTATION_GUARDRAIL}
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )
@@ -241,6 +252,12 @@ async def run(feature: str):
 
     preflight(spec_dir, feature)
 
+    # Unlike stages 3/4, the docs agent never commits its own work, so an
+    # interrupted earlier run leaves its docs/ merge dirty — those paths (and
+    # this feature's own spec dir) must stay in this stage's commit rather
+    # than be excluded as pre-existing drift. See FOLLOWUP_HARNESS.md Bug 4.
+    baseline_dirty = [p for p in git.dirty_files() if not _is_own_output(p, spec_dir)]
+
     constitution = read_file(Path(".specify/memory/constitution.md"))
     documentation_principles = read_file(Path(".specify/memory/documentation-principles.md"))
     spec = read_file(spec_dir / "spec.md")
@@ -294,6 +311,7 @@ async def run(feature: str):
         "Documentation is up to date. No further action taken.",
         "after_docs",
         "ch-5-docs",
+        exclude_from_commit=baseline_dirty,
     ):
         return
 
@@ -340,6 +358,7 @@ async def run(feature: str):
             "after_docs",
             "ch-5-docs",
             "Documentation is up to date. No further action taken.",
+            exclude_from_commit=baseline_dirty,
         )
 
     def build_critic_query(iteration: int, prev_violations, model: str | None):

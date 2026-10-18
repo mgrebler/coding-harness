@@ -33,6 +33,22 @@ NO_RECURSION_NOTICE = (
 )
 
 
+HUMAN_REVIEW_ATTESTATION_GUARDRAIL = (
+    "- Never create, edit, copy, or delete any `*-escalation.md` or "
+    "`*-escalation-review.md` file under specs/, and never write any text claiming a "
+    "human reviewed, confirmed, or approved something (e.g. a `Reviewed by:` line). "
+    "Those files are written only by a real human after the orchestrator escalates; the "
+    "orchestrator treats them as proof of human review and halts the stage if an agent "
+    "touches one. Fixing a critic finding while iterations remain is already authorized "
+    "by the pipeline — no human sign-off is needed or wanted: apply the fix as your "
+    "other instructions say and stop; the orchestrator re-runs the critic."
+)
+"""Appended to every tool-enabled authoring/fix-agent prompt. Added after
+FOLLOWUP_HARNESS.md documented an in-budget (iteration 1/3) implement fix-agent
+writing ch-4-implement-critic-escalation-review.md with a fabricated human
+`Reviewed by:` line, modelled on a legitimately human-written one it had read."""
+
+
 FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS = (
     "- No agent may rewrite git history or forge commit metadata — no `GIT_AUTHOR_DATE`/"
     "`GIT_COMMITTER_DATE` overrides, no `rebase`, `commit --amend`, `filter-branch`, or "
@@ -43,7 +59,8 @@ FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS = (
     "- No agent may create, modify, or close anything on an external system — a GitHub "
     "issue, PR, comment, or any other live/public system — without explicit human "
     "approval. This includes 'helpfully' relocating an out-of-scope file by filing its "
-    "content elsewhere instead of leaving it for a human to triage."
+    "content elsewhere instead of leaving it for a human to triage.\n"
+    + HUMAN_REVIEW_ATTESTATION_GUARDRAIL
 )
 """Guardrail rules appended to every fix-agent prompt that is itself granted Bash and
 told to `git commit` its own work. Added after FOLLOWUP_HARNESS.md documented an

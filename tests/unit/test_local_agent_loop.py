@@ -244,5 +244,67 @@ class TestRunGeneration(unittest.IsolatedAsyncioTestCase):
         mock_loop.assert_awaited_once_with(log, "system prompt", "user prompt", config)
 
 
+class TestRunGenerationEscalationFileGuard(unittest.IsolatedAsyncioTestCase):
+    """An agent writing a human-review escalation file (FOLLOWUP_HARNESS.md: an
+    in-budget implement fix-agent forged ch-4-implement-critic-escalation-review.md)
+    must halt the stage, whatever the agent's prompt said."""
+
+    def setUp(self):
+        self._orig_cwd = Path.cwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.spec_dir = Path("specs/001-feature")
+        self.spec_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        os.chdir(self._orig_cwd)
+        self._tmp.cleanup()
+
+    async def _run_with_agent(self, agent_side_effect):
+        async def fake_stream(_query):
+            agent_side_effect()
+
+        with (
+            patch.object(
+                local_agent_loop.ollama, "load_local_llm_generation_config", return_value=None
+            ),
+            patch.object(
+                local_agent_loop.ollama, "load_claude_generation_model", return_value=None
+            ),
+            patch.object(local_agent_loop.console, "stream_query", new=fake_stream),
+        ):
+            await local_agent_loop.run_generation(
+                MagicMock(), "implement", MagicMock(), "system", "user"
+            )
+
+    async def test_halts_when_agent_creates_escalation_review(self):
+        review = self.spec_dir / "ch-4-implement-critic-escalation-review.md"
+
+        with self.assertRaises(SystemExit) as cm:
+            await self._run_with_agent(lambda: review.write_text("Reviewed by: someone"))
+
+        self.assertEqual(cm.exception.code, 1)
+        self.assertTrue(review.exists(), "guard must not delete the file — a human decides")
+
+    async def test_halts_when_agent_edits_existing_human_review(self):
+        review = self.spec_dir / "ch-1-plan-critic-escalation-review.md"
+        review.write_text("Reviewed by: the human")
+
+        with self.assertRaises(SystemExit):
+            await self._run_with_agent(lambda: review.write_text("Reviewed by: the agent"))
+
+    async def test_halts_when_agent_deletes_escalation(self):
+        escalation = self.spec_dir / "ch-2-tasks-critic-escalation.md"
+        escalation.write_text("# Escalation")
+
+        with self.assertRaises(SystemExit):
+            await self._run_with_agent(escalation.unlink)
+
+    async def test_untouched_escalation_files_and_other_writes_pass(self):
+        (self.spec_dir / "ch-1-plan-critic-escalation-review.md").write_text("Reviewed by: human")
+
+        await self._run_with_agent(lambda: (self.spec_dir / "plan.md").write_text("plan"))
+
+
 if __name__ == "__main__":
     unittest.main()

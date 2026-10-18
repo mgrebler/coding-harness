@@ -19,6 +19,7 @@
 #   ALWAYS OVERWRITES (harness-managed — no project customisation):
 #     .claude/agents/, .claude/skills/
 #     .specify/extensions/, .specify/scripts/, .specify/templates/, .specify/workflows/
+#     .specify/extensions.yml
 #
 #   WRITES ONLY IF FILE DOES NOT EXIST (project-initialised — customise after first install):
 #     .specify/memory/constitution.md
@@ -175,8 +176,9 @@ manage_gitignore() {
 .claude/skills/ch-*/
 .claude/skills/speckit-*/
 
-# .specify subdirs — fully harness-owned, no project files expected here
+# .specify subdirs and files — fully harness-owned, no project files expected here
 .specify/extensions/
+.specify/extensions.yml
 .specify/scripts/
 .specify/templates/
 .specify/workflows/
@@ -252,6 +254,7 @@ log "==> Harness-managed files (always overwritten)"
 always_copy ".claude/agents"
 always_copy ".claude/skills"
 always_copy ".specify/extensions"
+always_copy ".specify/extensions.yml"
 always_copy ".specify/scripts"
 always_copy ".specify/templates"
 always_copy ".specify/workflows"

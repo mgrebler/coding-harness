@@ -127,6 +127,12 @@ else
 fi
 
 if [ "$_enabled" != "true" ]; then
+    # A missing key is warned about rather than skipped silently: an event
+    # nobody added here (after_docs, before this check existed) disables that
+    # stage's commit with no visible sign anything was skipped.
+    if ! grep -q "^[[:space:]]*${EVENT_NAME}:" "$_config_file" 2>/dev/null; then
+        echo "[specify] Warning: no auto_commit.${EVENT_NAME} entry in git-config.yml; skipped auto-commit" >&2
+    fi
     exit 0
 fi
 

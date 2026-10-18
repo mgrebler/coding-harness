@@ -616,6 +616,7 @@ speckit/
 │   └── skills/             # Upstream /speckit-* commands plus this harness's /ch-* commands
 ├── .specify/
 │   ├── extensions/         # Git integration scripts
+│   ├── extensions.yml      # Registers the git extension's hooks with the speckit-* skills
 │   ├── memory/             # Generic critic quality bars (architecture, code, test, documentation principles)
 │   ├── scripts/            # Bash helpers
 │   ├── templates/          # Spec/plan/tasks/constitution templates

@@ -38,7 +38,11 @@ from agent_common.critic_loop import (
     run_cli,
     run_single_gate_loop,
 )
-from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
+from agent_common.driving_agent import (
+    HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
+    NO_RECURSION_NOTICE,
+    driving_agent_options,
+)
 from agent_common.files import read_file, require_spec_files
 from agent_common.preflight_checks import task_format_violations
 from agent_common.resume_state import (
@@ -138,6 +142,7 @@ Key rules:
 - Include a Checkpoint at the end of each phase with a concrete runnable verification command
 - Write tasks.md to the correct specs/$FEATURE/ path
 - Do not stop until tasks.md is written to disk
+{HUMAN_REVIEW_ATTESTATION_GUARDRAIL}
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )

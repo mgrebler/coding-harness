@@ -7,7 +7,14 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
-from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
+from agent_common.driving_agent import (
+    FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS,
+    HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
+    NO_RECURSION_NOTICE,
+    driving_agent_options,
+)
+
+AGENTS_DIR = Path(__file__).parent.parent.parent / ".claude/agents"
 
 
 class TestNoRecursionNotice(unittest.TestCase):
@@ -38,6 +45,26 @@ class TestDrivingAgentOptions(unittest.TestCase):
     def test_model_passed_through_when_given(self):
         options = driving_agent_options(allowed_tools=["Read"], agents={}, model="opus")
         self.assertEqual(options.model, "opus")
+
+
+class TestHumanReviewAttestationGuardrail(unittest.TestCase):
+    def test_forbids_escalation_review_files_and_attestations(self):
+        self.assertIn("*-escalation-review.md", HUMAN_REVIEW_ATTESTATION_GUARDRAIL)
+        self.assertIn("Reviewed by:", HUMAN_REVIEW_ATTESTATION_GUARDRAIL)
+
+    def test_included_in_fix_agent_guardrails(self):
+        self.assertIn(
+            HUMAN_REVIEW_ATTESTATION_GUARDRAIL, FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS
+        )
+
+    def test_every_stage_script_injects_it_into_an_agent_prompt(self):
+        for script in sorted(AGENTS_DIR.glob("ch_*_auto.py")):
+            if script.name == "ch_plan_to_implement_auto.py":
+                continue
+            with self.subTest(script=script.name):
+                self.assertIn(
+                    "{HUMAN_REVIEW_ATTESTATION_GUARDRAIL}", script.read_text(encoding="utf-8")
+                )
 
 
 if __name__ == "__main__":

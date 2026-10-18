@@ -45,6 +45,7 @@ from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
 from agent_common.driving_agent import (
     FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS,
+    HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
     NO_RECURSION_NOTICE,
     driving_agent_options,
 )
@@ -194,6 +195,7 @@ Key rules:
 - After each task, run this project's typecheck command as declared in constitution §12 (CI Requirements)
 - The code will be evaluated by a Code Quality Review agent using the principles above — implement accordingly
 - Do not stop until all - [ ] tasks are marked - [x] in tasks.md
+{HUMAN_REVIEW_ATTESTATION_GUARDRAIL}
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )

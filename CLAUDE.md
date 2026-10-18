@@ -51,6 +51,7 @@ No comments that merely restate what the code already says — rely on naming an
 - `.claude/agents/` — Python orchestrators for autonomous pipelines
 - `.claude/skills/` — All `/speckit-*` slash commands
 - `.specify/extensions/` — Git integration module
+- `.specify/extensions.yml` — Hook registration read by every `speckit-*` skill; mirrors `.specify/extensions/git/extension.yml`'s `hooks:` block
 - `.specify/scripts/` — Shared Bash utilities
 - `.specify/templates/` — Markdown templates for specs/plans/tasks
 - `.specify/workflows/` — Workflow registry
@@ -71,7 +72,7 @@ No comments that merely restate what the code already says — rely on naming an
 
 **`.specify/templates/`** — Markdown templates copied to `specs/NNN-feature/` when a feature is created. Agents fill them in; humans review.
 
-**`.specify/extensions/git/`** — Optional module for sequential/timestamp branch numbering and auto-commit hooks. Config: `.specify/extensions/git/git-config.yml`.
+**`.specify/extensions/git/`** — Optional module for sequential/timestamp branch numbering and auto-commit hooks. Config: `.specify/extensions/git/git-config.yml` — every `after_<stage>` event a `ch-*-auto` script commits on (`after_plan`, `after_tasks`, `after_test`, `after_implement`, `after_docs`) needs an `enabled: true` entry there, or that stage's final commit is skipped. Hooks only fire because `.specify/extensions.yml` registers them.
 
 **`.devcontainer/`** — Docker-based dev environment with Node 22, Python 3, Docker-in-Docker, and GitHub CLI. `Dockerfile` here is the source for the published `ghcr.io/mgrebler/coding-harness-base` image (built by `.github/workflows/publish-base-image.yml` on every change) and is also what the repo's own root `docker-compose.yml` builds, so `claude` can be run in a container while developing the harness itself. It intentionally omits project-specific runtime deps (e.g. Playwright) — those belong in each installed project's own `.devcontainer/Dockerfile`, which is a thin `FROM ghcr.io/.../coding-harness-base:latest` template (see `examples/.devcontainer/Dockerfile`).
 
