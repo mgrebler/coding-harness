@@ -55,7 +55,7 @@ from agent_common.driving_agent import (
     FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS,
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
 )
-from agent_common.files import read_file, require_spec_files
+from agent_common.files import CONSTITUTION_PATH, read_file, read_memory, require_spec_files
 from agent_common.preflight_checks import (
     oversized_committed_files,
     unchecked_task_lines,
@@ -358,17 +358,12 @@ async def run(feature: str):
 
     preflight(spec_dir, feature)
 
-    constitution = read_file(Path(".specify/memory/constitution.md"))
+    constitution = read_file(CONSTITUTION_PATH)
     spec = read_file(spec_dir / "spec.md")
     plan = read_file(spec_dir / "plan.md")
     tasks = read_file(spec_dir / "tasks.md")
 
-    test_principles_path = Path(".specify/memory/test-principles.md")
-    test_principles = (
-        read_file(test_principles_path)
-        if test_principles_path.exists()
-        else "(test-principles.md not found)"
-    )
+    test_principles = read_memory("test-principles")
 
     budget = apply_escalation_review(
         spec_dir, "ch-3-test-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log

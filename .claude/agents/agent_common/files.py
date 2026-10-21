@@ -21,6 +21,22 @@ def read_optional(path: Path, fallback: str) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else fallback
 
 
+MEMORY_DIR = Path(".specify/memory")
+CONSTITUTION_PATH = MEMORY_DIR / "constitution.md"
+
+
+def read_memory(name: str) -> str:
+    """An optional .specify/memory/<name>.md document, or a placeholder saying
+    it wasn't found."""
+    return read_optional(MEMORY_DIR / f"{name}.md", f"({name}.md not found)")
+
+
+def read_required(owner: str, *paths: Path) -> list[str]:
+    """The contents of paths, exiting via require_files if any is missing."""
+    require_files(owner, *paths)
+    return [read_file(p) for p in paths]
+
+
 def require_files(name: str, *paths: Path) -> None:
     """Exit(1) with a standard error message if any of paths is missing. Used by standalone critic scripts."""
     for p in paths:

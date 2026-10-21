@@ -129,3 +129,23 @@ class TestReadPlanBundle(unittest.TestCase):
             self.assertTrue(bundle.startswith("PLAN"))
             self.assertIn("--- data-model.md (sibling plan artifact) ---\nCaseOutcome", bundle)
             self.assertNotIn("research.md", bundle)
+
+
+class TestReadMemoryAndRequired(unittest.TestCase):
+    def test_missing_memory_doc_reads_as_placeholder(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = Path.cwd()
+            os.chdir(d)
+            try:
+                self.assertEqual(files.read_memory("architecture"), "(architecture.md not found)")
+            finally:
+                os.chdir(orig)
+
+    def test_read_required_returns_contents_in_order_and_exits_when_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            a, b = Path(d) / "a.md", Path(d) / "b.md"
+            a.write_text("A")
+            b.write_text("B")
+            self.assertEqual(files.read_required("x", a, b), ["A", "B"])
+            with self.assertRaises(SystemExit):
+                files.read_required("x", a, Path(d) / "missing.md")

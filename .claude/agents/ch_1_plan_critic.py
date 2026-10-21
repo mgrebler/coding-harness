@@ -18,11 +18,12 @@ Exit codes:
 from pathlib import Path
 
 from agent_common.files import (
+    CONSTITUTION_PATH,
     format_directory_tree,
     read_directory_tree,
-    read_optional,
+    read_memory,
     read_plan_bundle,
-    require_files,
+    read_required,
 )
 from agent_common.ollama import run_local_critic_cli
 
@@ -136,17 +137,11 @@ Rules:
 
 def main():
     def _build(spec_dir: Path, iteration: int) -> str:
-        constitution_path = Path(".specify/memory/constitution.md")
-        architecture_path = Path(".specify/memory/architecture.md")
-        spec_path = spec_dir / "spec.md"
-        plan_path = spec_dir / "plan.md"
-
-        require_files("ch-1-plan-critic", constitution_path, spec_path, plan_path)
-
-        constitution = constitution_path.read_text(encoding="utf-8")
-        architecture = read_optional(architecture_path, "(architecture.md not found)")
+        constitution, spec, _ = read_required(
+            "ch-1-plan-critic", CONSTITUTION_PATH, spec_dir / "spec.md", spec_dir / "plan.md"
+        )
+        architecture = read_memory("architecture")
         docs = format_directory_tree(read_directory_tree(Path("docs")), "(docs/ not yet created)")
-        spec = spec_path.read_text(encoding="utf-8")
         plan = read_plan_bundle(spec_dir)
 
         return build_plan_critic_prompt(constitution, architecture, docs, spec, plan, iteration)

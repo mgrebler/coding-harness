@@ -56,7 +56,7 @@ from agent_common.critic_loop import (
 from agent_common.driving_agent import (
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
 )
-from agent_common.files import read_file, require_spec_files
+from agent_common.files import CONSTITUTION_PATH, MEMORY_DIR, read_file, require_spec_files
 from agent_common.resume_state import (
     apply_escalation_review,
     load_prior_violations,
@@ -190,8 +190,8 @@ async def run(feature: str):
     # than be excluded as pre-existing drift. See FOLLOWUP_HARNESS.md Bug 4.
     baseline_dirty = [p for p in git.dirty_files() if not _is_own_output(p, spec_dir)]
 
-    constitution = read_file(Path(".specify/memory/constitution.md"))
-    documentation_principles = read_file(Path(".specify/memory/documentation-principles.md"))
+    constitution = read_file(CONSTITUTION_PATH)
+    documentation_principles = read_file(MEMORY_DIR / "documentation-principles.md")
     spec = read_file(spec_dir / "spec.md")
     plan = read_file(spec_dir / "plan.md")
     tasks = read_file(spec_dir / "tasks.md")

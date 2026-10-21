@@ -19,7 +19,7 @@ Exit codes:
 from pathlib import Path
 
 from agent_common.critic_reconcile import CONFIDENCE_STATUS_RULE
-from agent_common.files import read_changed_files, read_optional, require_files
+from agent_common.files import CONSTITUTION_PATH, read_changed_files, read_memory, read_required
 from agent_common.git import get_changed_files
 from agent_common.ollama import run_local_critic_cli
 from agent_common.project_conventions import looks_like_test_file, resolve_test_dirs
@@ -143,22 +143,15 @@ def main():
         """reduction 1 drops plan.md, 2 also drops spec.md — the review judges
         the test files against test-principles.md and tasks.md, which stay — and
         3 shows test files that already existed on main as their diff."""
-        constitution_path = Path(".specify/memory/constitution.md")
-        test_principles_path = Path(".specify/memory/test-principles.md")
-        spec_path = spec_dir / "spec.md"
-        plan_path = spec_dir / "plan.md"
-        tasks_path = spec_dir / "tasks.md"
-
-        require_files(
-            "ch-3-test-quality-review", constitution_path, spec_path, plan_path, tasks_path
+        constitution, spec, plan, tasks = read_required(
+            "ch-3-test-quality-review",
+            CONSTITUTION_PATH,
+            *(spec_dir / name for name in ("spec.md", "plan.md", "tasks.md")),
         )
-
-        constitution = constitution_path.read_text(encoding="utf-8")
-        test_principles = read_optional(test_principles_path, "(test-principles.md not found)")
+        test_principles = read_memory("test-principles")
         omitted = "(omitted to fit the model's context budget)"
-        spec = spec_path.read_text(encoding="utf-8") if reduction < 2 else omitted
-        plan = plan_path.read_text(encoding="utf-8") if reduction < 1 else omitted
-        tasks = tasks_path.read_text(encoding="utf-8")
+        spec = spec if reduction < 2 else omitted
+        plan = plan if reduction < 1 else omitted
 
         changed_files = get_changed_files()
         changed_test_files = read_changed_files(

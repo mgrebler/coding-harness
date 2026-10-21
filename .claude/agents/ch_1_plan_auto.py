@@ -50,9 +50,11 @@ from agent_common.driving_agent import (
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
 )
 from agent_common.files import (
+    CONSTITUTION_PATH,
     format_directory_tree,
     read_directory_tree,
     read_file,
+    read_memory,
     require_spec_files,
 )
 from agent_common.resume_state import (
@@ -163,20 +165,14 @@ async def run(feature: str):
 
     force_regen = preflight(spec_dir, feature)
 
-    constitution = read_file(Path(".specify/memory/constitution.md"))
+    constitution = read_file(CONSTITUTION_PATH)
     spec = read_file(spec_dir / "spec.md")
 
-    arch_path = Path(".specify/memory/architecture.md")
-    architecture = read_file(arch_path) if arch_path.exists() else "(architecture.md not found)"
+    architecture = read_memory("architecture")
 
     docs = format_directory_tree(read_directory_tree(Path("docs")), "(docs/ not yet created)")
 
-    arch_principles_path = Path(".specify/memory/architecture-principles.md")
-    arch_principles = (
-        read_file(arch_principles_path)
-        if arch_principles_path.exists()
-        else "(architecture-principles.md not found)"
-    )
+    arch_principles = read_memory("architecture-principles")
 
     budget = apply_escalation_review(
         spec_dir, "ch-1-plan-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log

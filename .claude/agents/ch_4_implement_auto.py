@@ -47,7 +47,7 @@ from agent_common.driving_agent import (
     FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS,
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
 )
-from agent_common.files import read_file, require_spec_files
+from agent_common.files import CONSTITUTION_PATH, read_file, read_memory, require_spec_files
 from agent_common.followup import record_non_blocking_concerns
 from agent_common.preflight_checks import oversized_committed_files, unchecked_task_lines
 from agent_common.project_conventions import is_slow_check, resolve_ci_commands
@@ -587,17 +587,12 @@ async def run(feature: str):
     # something else) and leave the latter out. See FOLLOWUP_HARNESS.md Bug 4.
     baseline_dirty = git.dirty_files()
 
-    constitution = read_file(Path(".specify/memory/constitution.md"))
+    constitution = read_file(CONSTITUTION_PATH)
     spec = read_file(spec_dir / "spec.md")
     plan = read_file(spec_dir / "plan.md")
     tasks = read_file(spec_dir / "tasks.md")
 
-    quality_principles_path = Path(".specify/memory/code-quality-principles.md")
-    quality_principles = (
-        read_file(quality_principles_path)
-        if quality_principles_path.exists()
-        else "(code-quality-principles.md not found)"
-    )
+    quality_principles = read_memory("code-quality-principles")
 
     budget = apply_escalation_review(
         spec_dir, "ch-4-implement-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log

@@ -17,7 +17,7 @@ Exit codes:
 import re
 from pathlib import Path
 
-from agent_common.files import read_changed_files, read_optional, require_files
+from agent_common.files import CONSTITUTION_PATH, read_changed_files, read_memory, read_required
 from agent_common.git import get_changed_files
 from agent_common.ollama import run_local_critic_cli
 from agent_common.project_conventions import looks_like_test_file, resolve_test_dirs
@@ -248,25 +248,17 @@ def main():
         test files that already existed on main as their diff. Changed test
         content itself is never dropped."""
         feature = spec_dir.name
-        constitution_path = Path(".specify/memory/constitution.md")
-        architecture_path = Path(".specify/memory/architecture.md")
-        test_principles_path = Path(".specify/memory/test-principles.md")
-        spec_path = spec_dir / "spec.md"
-        plan_path = spec_dir / "plan.md"
-        tasks_path = spec_dir / "tasks.md"
-
-        require_files("ch-3-test-critic", constitution_path, spec_path, plan_path, tasks_path)
-
-        constitution = constitution_path.read_text(encoding="utf-8")
+        constitution, spec, plan, tasks = read_required(
+            "ch-3-test-critic",
+            CONSTITUTION_PATH,
+            *(spec_dir / name for name in ("spec.md", "plan.md", "tasks.md")),
+        )
         architecture = (
-            read_optional(architecture_path, "(architecture.md not found)")
+            read_memory("architecture")
             if reduction < 3
             else "(omitted to fit the model's context budget)"
         )
-        test_principles = read_optional(test_principles_path, "(test-principles.md not found)")
-        spec = spec_path.read_text(encoding="utf-8")
-        plan = plan_path.read_text(encoding="utf-8")
-        tasks = tasks_path.read_text(encoding="utf-8")
+        test_principles = read_memory("test-principles")
 
         changed_files = get_changed_files()
         changed_test_files = read_changed_files(

@@ -17,7 +17,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
-CONSTITUTION_PATH = Path(".specify/memory/constitution.md")
+from agent_common.files import CONSTITUTION_PATH
+
 README_PATH = Path("README.md")
 
 _LOG_PREFIX = "[project-conventions]"

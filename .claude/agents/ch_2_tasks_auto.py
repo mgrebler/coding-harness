@@ -42,7 +42,7 @@ from agent_common.critic_loop import (
 from agent_common.driving_agent import (
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
 )
-from agent_common.files import read_file, require_spec_files
+from agent_common.files import CONSTITUTION_PATH, read_file, require_spec_files
 from agent_common.preflight_checks import pending_human_approvals, task_format_violations
 from agent_common.resume_state import (
     apply_escalation_review,
@@ -226,7 +226,7 @@ async def run(feature: str):
 
     force_regen = preflight(spec_dir, feature)
 
-    constitution = read_file(Path(".specify/memory/constitution.md"))
+    constitution = read_file(CONSTITUTION_PATH)
     spec = read_file(spec_dir / "spec.md")
     plan = read_file(spec_dir / "plan.md")
 
