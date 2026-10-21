@@ -70,9 +70,6 @@ DOCS_DIR = Path("docs")
 log = make_logger(AGENT_NAME)
 
 
-# Pre-flight checks
-
-
 def preflight(spec_dir: Path, feature: str) -> None:
     require_spec_files(log, spec_dir, "spec.md", "plan.md", "tasks.md")
     if not stage_is_complete(spec_dir, "ch-4-implement"):
@@ -99,9 +96,6 @@ def snapshot_baseline(spec_dir: Path) -> None:
 def _is_own_output(path: str, spec_dir: Path) -> bool:
     own_roots = (DOCS_DIR.as_posix(), spec_dir.as_posix())
     return any(path == root or path.startswith(root.rstrip("/") + "/") for root in own_roots)
-
-
-# Subagent definitions
 
 
 def docs_agent_definition(
@@ -167,9 +161,6 @@ You do not touch code, specs, plans, or tasks. Your only output is docs/.
     )
 
 
-# Main orchestration loop
-
-
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -200,7 +191,6 @@ async def run(feature: str):
         spec_dir, "ch-5-docs-critic-escalation-review.md", RESULT_PREFIX, 3, log
     )
 
-    # --- Step 1: Snapshot the pre-merge docs/ tree, then merge this feature in ---
     snapshot_baseline(spec_dir)
 
     if not list(spec_dir.glob(f"{RESULT_PREFIX}-*.json")):
@@ -220,7 +210,6 @@ async def run(feature: str):
             log("ERROR: docs agent did not produce docs/. Aborting.")
             sys.exit(1)
 
-    # --- Resume guard: exit if a previous run already achieved PASS ---
     if finish_if_already_passing(
         log,
         spec_dir,
@@ -234,7 +223,6 @@ async def run(feature: str):
     ):
         return
 
-    # --- Resume state: load violations from last FAIL so revision runs before next critic ---
     iteration = next_iteration(spec_dir, RESULT_PREFIX)
     violations = load_prior_violations(spec_dir, RESULT_PREFIX, iteration)
 
@@ -268,7 +256,6 @@ async def run(feature: str):
             exclude_from_commit=baseline_dirty,
         )
 
-    # --- Step 2: Critic loop ---
     await run_single_gate_loop(
         log,
         spec_dir,
@@ -328,8 +315,6 @@ async def run(feature: str):
         },
     )
 
-
-# Entry point
 
 if __name__ == "__main__":
     run_cli(AGENT_NAME, "Docs auto-orchestrator", run)

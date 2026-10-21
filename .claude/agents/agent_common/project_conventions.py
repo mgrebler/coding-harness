@@ -27,7 +27,6 @@ _LOG_PREFIX = "[project-conventions]"
 # bucket checks into a fixed set of categories.
 _SLOW_KEYWORDS = ("e2e", "end-to-end", "end to end", "playwright", "integration", "browser")
 
-# Heading/label keywords that mark a README fenced code block as CI-relevant.
 _README_CI_KEYWORDS = (
     "typecheck",
     "type check",

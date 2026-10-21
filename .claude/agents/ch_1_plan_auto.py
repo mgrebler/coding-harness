@@ -70,9 +70,6 @@ ARCH_RESULT_PREFIX = "ch-1-plan-architecture-review-result"
 log = make_logger(AGENT_NAME)
 
 
-# Pre-flight checks
-
-
 def preflight(spec_dir: Path, feature: str) -> bool:
     """
     Returns True if plan.md should be regenerated from scratch.
@@ -80,9 +77,6 @@ def preflight(spec_dir: Path, feature: str) -> bool:
     """
     require_spec_files(log, spec_dir, "spec.md")
     return confirm_regenerate(log, AGENT_NAME, spec_dir, "plan.md", CRITIC_RESULT_PREFIX)
-
-
-# Subagent definitions
 
 
 def plan_agent_definition(
@@ -135,9 +129,6 @@ Key rules:
     )
 
 
-# Main orchestration loop
-
-
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -158,7 +149,6 @@ async def run(feature: str):
         spec_dir, "ch-1-plan-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
     )
 
-    # --- Step 1: Generate plan.md if needed ---
     if not (spec_dir / "plan.md").exists() or force_regen:
         log("Running plan agent...")
         user_prompt = (
@@ -176,7 +166,6 @@ async def run(feature: str):
             log("ERROR: plan agent did not produce plan.md. Aborting.")
             sys.exit(1)
 
-    # --- Resume guard: done if architecture review already passed ---
     if finish_if_already_passing(
         log,
         spec_dir,
@@ -189,8 +178,6 @@ async def run(feature: str):
     ):
         return
 
-    # --- Resume state: determine where we left off ---
-    # Use result files as idempotency markers; carry forward violations from any incomplete gate.
     iteration = next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
     resume_state = find_two_gate_resume_state(
         spec_dir, CRITIC_RESULT_PREFIX, ARCH_RESULT_PREFIX, iteration
@@ -225,7 +212,6 @@ async def run(feature: str):
             "Plan is ready for human review. No further action taken.",
         )
 
-    # --- Step 2: Two-gate loop (critic → architecture review) ---
     await run_two_gate_loop(
         log,
         spec_dir,
@@ -321,8 +307,6 @@ async def run(feature: str):
         },
     )
 
-
-# Entry point
 
 if __name__ == "__main__":
     run_cli(AGENT_NAME, "Plan auto-orchestrator", run)

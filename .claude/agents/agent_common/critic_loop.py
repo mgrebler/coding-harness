@@ -411,8 +411,6 @@ async def run_two_gate_loop(
 
     while iteration <= max_iterations:
         path1 = spec_dir / f"{gate1.result_prefix}-{iteration}.json"
-
-        # --- Gate 1 ---
         prev_violations1 = violations1
         if not path1.exists():
             if violations1 or violations2:
@@ -449,9 +447,7 @@ async def run_two_gate_loop(
             iteration += 1
             continue
 
-        stuck_sig1 = None  # gate1 passed — reset
-
-        # --- Gate 2 ---
+        stuck_sig1 = None
         status2, result2 = await _run_gate_for_iteration(
             log, spec_dir, feature, iteration, gate2, violations2, "confidence"
         )

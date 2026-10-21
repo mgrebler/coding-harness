@@ -17,7 +17,6 @@ def write_file(path: Path, content: str):
 
 
 def read_optional(path: Path, fallback: str) -> str:
-    """Read path as UTF-8 text if it exists, else return fallback."""
     return path.read_text(encoding="utf-8") if path.exists() else fallback
 
 

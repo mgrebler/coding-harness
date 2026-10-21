@@ -41,7 +41,7 @@ class TestStreamQuery(unittest.IsolatedAsyncioTestCase):
             AssistantMessage(content=[TextBlock("hello")], model="claude"),
             _result_message(result="done", is_error=False),
         ]
-        await console.stream_query(_fake_query(messages))  # no exception raised
+        await console.stream_query(_fake_query(messages))
 
     async def test_session_limit_result_raises_session_limit_error(self):
         limit_text = "You've hit your session limit · resets 3:20am (UTC)"

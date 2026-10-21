@@ -98,9 +98,6 @@ STAGES = (
 TOTAL_STAGES = len(STAGES)
 
 
-# Helpers
-
-
 def _run_stage(spec_dir: Path, feature: str, stage: Stage) -> None:
     label = f"Stage {stage.number}/{TOTAL_STAGES} ({stage.name})"
     skip_reason = _stage_skip_reason(stage.number, stage.name) if stage.toggleable else None
@@ -170,9 +167,6 @@ def _stage_skip_reason(stage_num: int, stage_key: str) -> str | None:
     )
 
 
-# Main
-
-
 def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -195,8 +189,6 @@ def run(feature: str):
 
     log("Pipeline complete. All stages passed.")
 
-
-# Entry point
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Full plan-to-implement pipeline orchestrator")

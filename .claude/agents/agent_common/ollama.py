@@ -23,7 +23,7 @@ _FULL_GPU_OFFLOAD = 999  # sentinel > any real model's layer count; llama.cpp cl
 _ALLOWED_URL_SCHEMES = ("http://", "https://")
 _DEFAULT_PREDICT_RESERVE = 1024  # ctx headroom for generated tokens when num_predict is unset
 _tokenize_unavailable: set[str] = set()  # ollama_urls where /api/tokenize 404'd this process
-_CRITIC_IDLE_TIMEOUT_S = 900  # kill a critic subprocess that produces no output for 15min
+_CRITIC_IDLE_TIMEOUT_S = 900
 _CONFIG_PATH = Path(".specify/pipeline.json")
 
 

@@ -74,9 +74,6 @@ TEST_QUALITY_RESULT_PREFIX = "ch-3-test-quality-review-result"
 log = make_logger(AGENT_NAME)
 
 
-# Pre-flight checks
-
-
 def preflight(spec_dir: Path, feature: str):
     require_spec_files(log, spec_dir, "spec.md", "plan.md", "tasks.md")
 
@@ -89,9 +86,6 @@ def preflight(spec_dir: Path, feature: str):
 
     if test_tasks_done:
         confirm_review_existing(log, AGENT_NAME, spec_dir, CRITIC_RESULT_PREFIX, "All [TEST] tasks")
-
-
-# Subagent definitions
 
 
 def test_agent_definition(
@@ -214,9 +208,6 @@ Key rules:
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )
-
-
-# Main orchestration loop
 
 
 async def _run_red_state_gate(
@@ -354,15 +345,12 @@ async def run(feature: str):
         spec_dir, "ch-3-test-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
     )
 
-    # --- Step 1: Run test agent if unchecked [TEST] tasks remain ---
     tasks = await _run_test_agent_if_needed(
         feature, spec_dir, tasks, constitution, spec, plan, test_principles
     )
 
-    # --- Step 1b: Deterministic §TQ2 red-state validity gate before the critic loop ---
     await _run_red_state_gate(feature, spec_dir, constitution, spec, plan, tasks, test_principles)
 
-    # --- Resume guard: done if test quality review already passed ---
     if finish_if_already_passing(
         log,
         spec_dir,
@@ -375,8 +363,6 @@ async def run(feature: str):
     ):
         return
 
-    # --- Resume state: determine where we left off ---
-    # Use result files as idempotency markers; carry forward violations from any incomplete gate.
     iteration = next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
     resume_state = find_two_gate_resume_state(
         spec_dir, CRITIC_RESULT_PREFIX, TEST_QUALITY_RESULT_PREFIX, iteration
@@ -428,7 +414,6 @@ async def run(feature: str):
             "Test phase complete. Implementation may now begin.",
         )
 
-    # --- Step 2: Two-gate loop (test critic → test quality review) ---
     await run_two_gate_loop(
         log,
         spec_dir,
@@ -525,8 +510,6 @@ async def run(feature: str):
         },
     )
 
-
-# Entry point
 
 if __name__ == "__main__":
     run_cli(AGENT_NAME, "Test phase auto-orchestrator", run)

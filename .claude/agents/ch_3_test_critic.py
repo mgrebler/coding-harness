@@ -39,7 +39,6 @@ _ASSERTION_KEYWORDS = (
 
 
 def _extract_assertions(content: str) -> str:
-    """Return a numbered list of assertion lines with line numbers."""
     lines = content.splitlines()
     hits = []
     for i, line in enumerate(lines, 1):

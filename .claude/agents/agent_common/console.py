@@ -66,8 +66,6 @@ def _is_session_limit_result(message: ResultMessage) -> bool:
 
 
 class _Tee:
-    """Write to multiple file-like objects simultaneously."""
-
     def __init__(self, *files: IO):
         self._files = files
 
@@ -159,7 +157,6 @@ def stream_subprocess(cmd: list[str], prefix: str = "", idle_timeout: float | No
 
 
 def make_logger(agent_name: str):
-    """Return a log function prefixed with the agent name."""
 
     def log(msg: str):
         _safe_print(f"[{agent_name}] {msg}")

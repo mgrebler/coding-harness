@@ -72,9 +72,6 @@ QUALITY_RESULT_PREFIX = "ch-4-implement-code-quality-review-result"
 log = make_logger(AGENT_NAME)
 
 
-# Pre-flight checks
-
-
 def preflight(spec_dir: Path, feature: str):
     require_spec_files(log, spec_dir, "spec.md", "plan.md", "tasks.md")
 
@@ -101,9 +98,6 @@ def preflight(spec_dir: Path, feature: str):
         confirm_review_existing(
             log, AGENT_NAME, spec_dir, CRITIC_RESULT_PREFIX, "All tasks in tasks.md"
         )
-
-
-# Subagent definitions
 
 
 def impl_agent_definition(
@@ -293,9 +287,6 @@ Key rules:
     )
 
 
-# CI check
-
-
 def _build_ci_commands(*, include_slow: bool) -> list[tuple[str, list[str]]]:
     """Every CI check the project declared (constitution §12 / README.md), in its
     own words — not forced into a fixed typecheck/lint/unit/e2e taxonomy. The quick
@@ -342,9 +333,6 @@ def _run_commands(commands: list[tuple[str, list[str]]]) -> tuple[bool, str]:
     return all_passed, "\n\n".join(failures)
 
 
-# Commit hygiene
-
-
 def _check_commit_hygiene() -> None:
     """Hard-fail if this branch has committed a file over the size
     threshold — cheap to catch mechanically (specs/027 committed a 4.5GB
@@ -361,9 +349,6 @@ def _check_commit_hygiene() -> None:
         "before this stage can be marked complete."
     )
     sys.exit(1)
-
-
-# Main orchestration loop
 
 
 async def _run_implementation_agent(
@@ -437,7 +422,6 @@ async def _run_implementation_agent(
 async def _run_ci_fix_agent(
     feature: str, constitution: str, spec: str, plan: str, tasks: str, failure_summary: str
 ) -> None:
-    """Run the CI fix agent once for the given failure summary."""
     user_prompt = f"Fix CI failures for feature {feature}. Failures:\n{failure_summary}"
     await local_agent_loop.run_agent(
         log,
@@ -590,7 +574,6 @@ async def run(feature: str):
         spec_dir, "ch-4-implement-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
     )
 
-    # --- Step 1: Run implementation if unchecked tasks remain ---
     tasks = await _run_implementation_agent(
         feature,
         spec_dir,
@@ -602,13 +585,11 @@ async def run(feature: str):
         test_stage_enabled=ollama.is_stage_enabled("test"),
     )
 
-    # --- Step 1b: Quick CI check before the critic loop ---
     # Skipped once a critic iteration has passed: e2e is deferred until both
     # review gates pass, to avoid its ~3 min cost on every iteration.
     if not find_passing_iteration(spec_dir, CRITIC_RESULT_PREFIX):
         await _ci_gate(feature, spec_dir, constitution, spec, plan, include_slow=False)
 
-    # --- Resume guard: done if quality review already passed AND full CI is clean ---
     passing_quality = find_passing_iteration(spec_dir, QUALITY_RESULT_PREFIX)
     if passing_quality is not None:
         log(f"Already PASS from quality review iteration {passing_quality}.")
@@ -623,14 +604,11 @@ async def run(feature: str):
         )
         return
 
-    # --- Resume state: determine where we left off ---
-    # Use result files as idempotency markers; carry forward violations from any incomplete gate.
     iteration = next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
     resume_state = find_two_gate_resume_state(
         spec_dir, CRITIC_RESULT_PREFIX, QUALITY_RESULT_PREFIX, iteration
     )
 
-    # --- Step 2: Two-gate loop (implement critic → code quality review) ---
     await run_two_gate_loop(
         log,
         spec_dir,
@@ -731,8 +709,6 @@ async def run(feature: str):
         },
     )
 
-
-# Entry point
 
 if __name__ == "__main__":
     run_cli(AGENT_NAME, "Implementation auto-orchestrator", run)

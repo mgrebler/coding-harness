@@ -56,9 +56,6 @@ RESULT_PREFIX = "ch-2-tasks-critic-result"
 log = make_logger(AGENT_NAME)
 
 
-# Pre-flight checks
-
-
 def preflight(spec_dir: Path, feature: str) -> bool:
     """
     Returns True if tasks.md should be regenerated from scratch.
@@ -78,9 +75,6 @@ def preflight(spec_dir: Path, feature: str) -> bool:
         sys.exit(HUMAN_ACTION_EXIT_CODE)
 
     return confirm_regenerate(log, AGENT_NAME, spec_dir, "tasks.md", RESULT_PREFIX)
-
-
-# Subagent definitions
 
 
 def tasks_agent_definition(
@@ -197,9 +191,6 @@ async def _run_format_gate(
         )
 
 
-# Main orchestration loop
-
-
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -220,7 +211,6 @@ async def run(feature: str):
         spec_dir, "ch-2-tasks-critic-escalation-review.md", RESULT_PREFIX, 3, log
     )
 
-    # --- Step 1: Generate tasks.md if needed ---
     if not (spec_dir / "tasks.md").exists() or force_regen:
         log("Running tasks agent...")
         user_prompt = (
@@ -245,12 +235,10 @@ async def run(feature: str):
             log("ERROR: tasks agent did not produce tasks.md. Aborting.")
             sys.exit(1)
 
-    # --- Step 1b: Deterministic §T5 format gate before the critic loop ---
     await _run_format_gate(
         feature, spec_dir, constitution, spec, plan, data_model, test_stage_enabled
     )
 
-    # --- Resume guard: exit if a previous run already achieved PASS ---
     if finish_if_already_passing(
         log,
         spec_dir,
@@ -263,7 +251,6 @@ async def run(feature: str):
     ):
         return
 
-    # --- Resume state: load violations from last FAIL so revision runs before next critic ---
     iteration = next_iteration(spec_dir, RESULT_PREFIX)
     violations = load_prior_violations(spec_dir, RESULT_PREFIX, iteration)
 
@@ -301,7 +288,6 @@ async def run(feature: str):
             "Tasks are ready for human review. No further action taken.",
         )
 
-    # --- Step 2: Critic loop ---
     await run_single_gate_loop(
         log,
         spec_dir,
@@ -372,8 +358,6 @@ async def run(feature: str):
         },
     )
 
-
-# Entry point
 
 if __name__ == "__main__":
     run_cli(AGENT_NAME, "Tasks auto-orchestrator", run)
