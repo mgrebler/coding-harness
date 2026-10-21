@@ -21,6 +21,7 @@ from agent_common.files import (
     format_directory_tree,
     read_directory_tree,
     read_optional,
+    read_plan_bundle,
     require_files,
 )
 from agent_common.ollama import run_local_critic_cli
@@ -146,7 +147,7 @@ def main():
         architecture = read_optional(architecture_path, "(architecture.md not found)")
         docs = format_directory_tree(read_directory_tree(Path("docs")), "(docs/ not yet created)")
         spec = spec_path.read_text(encoding="utf-8")
-        plan = plan_path.read_text(encoding="utf-8")
+        plan = read_plan_bundle(spec_dir)
 
         return build_plan_critic_prompt(constitution, architecture, docs, spec, plan, iteration)
 

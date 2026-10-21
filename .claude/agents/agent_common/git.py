@@ -81,6 +81,24 @@ def _ref_exists(ref: str) -> bool:
     )
 
 
+def branch_diff(path: str) -> str | None:
+    """This branch's diff for one file against main, or None if the file is new
+    on this branch (its full content is then the change)."""
+    base_ref = resolve_base_ref()
+    exists_at_base = (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{base_ref}:{path}"], capture_output=True
+        ).returncode
+        == 0
+    )
+    if not exists_at_base:
+        return None
+    result = subprocess.run(
+        ["git", "diff", f"{base_ref}...HEAD", "--", path], capture_output=True, text=True
+    )
+    return result.stdout
+
+
 def get_changed_files() -> list[str]:
     """Return list of files changed on this branch relative to main."""
     base_ref = resolve_base_ref()

@@ -95,6 +95,37 @@ if __name__ == "__main__":
 
 
 class TestReadChangedFiles(unittest.TestCase):
+    def test_diff_only_shows_existing_files_as_their_diff(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as d:
+            orig = Path.cwd()
+            os.chdir(d)
+            try:
+                Path("tests").mkdir()
+                Path("tests/old.test.ts").write_text("BIG OLD FILE")
+                Path("tests/new.test.ts").write_text("NEW FILE")
+                diffs = {"tests/old.test.ts": "@@ -1 +1 @@\n-a\n+b", "tests/new.test.ts": None}
+                with patch.object(files.git, "branch_diff", side_effect=diffs.get):
+                    out = files.read_changed_files(list(diffs), ("tests/",), diff_only=True)
+            finally:
+                os.chdir(orig)
+        self.assertIn("--- tests/old.test.ts (diff against main) ---\n@@", out)
+        self.assertNotIn("BIG OLD FILE", out)
+        self.assertIn("--- tests/new.test.ts ---\nNEW FILE", out)
+
     def test_no_match_raises_instead_of_returning_a_placeholder(self):
         with self.assertRaises(files.NoChangedFilesError):
             files.read_changed_files(["src/app.ts"], ("tests/",))
+
+
+class TestReadPlanBundle(unittest.TestCase):
+    def test_appends_existing_sibling_artifacts(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            (spec_dir / "plan.md").write_text("PLAN")
+            (spec_dir / "data-model.md").write_text("CaseOutcome")
+            bundle = files.read_plan_bundle(spec_dir)
+            self.assertTrue(bundle.startswith("PLAN"))
+            self.assertIn("--- data-model.md (sibling plan artifact) ---\nCaseOutcome", bundle)
+            self.assertNotIn("research.md", bundle)

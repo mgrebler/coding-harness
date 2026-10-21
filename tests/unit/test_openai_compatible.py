@@ -104,6 +104,19 @@ class TestStreamChatResponse(unittest.TestCase):
 
         self.assertEqual(result, "Hello, world")
 
+    def test_reasoning_content_used_when_content_is_empty(self):
+        lines = [
+            'data: {"choices": [{"delta": {"reasoning_content": "{\\"status\\": "}}]}',
+            'data: {"choices": [{"delta": {"reasoning_content": "\\"PASS\\"}"}}]}',
+            "data: [DONE]",
+        ]
+        with patch.object(
+            openai_compatible.urllib.request, "urlopen", return_value=_sse_response(lines)
+        ):
+            result = openai_compatible._stream_chat_response(MagicMock())
+
+        self.assertEqual(result, '{"status": "PASS"}')
+
     def test_leading_empty_choices_chunk_skipped(self):
         lines = [
             'data: {"choices": []}',
@@ -293,7 +306,9 @@ class TestUrlopenWithRetry(unittest.TestCase):
         self.assertIs(result, fake_resp)
         mock_sleep.assert_called_once()
 
-    def test_raises_after_exhausting_all_retries_on_read_timeout(self):
+    def test_read_timeouts_get_fewer_retries_than_other_transient_errors(self):
+        """specs/005-006: five full-prompt resends after read timeouts cost
+        ~26 minutes per critic."""
         with (
             patch.object(
                 openai_compatible.urllib.request,
@@ -304,7 +319,7 @@ class TestUrlopenWithRetry(unittest.TestCase):
             self.assertRaises(TimeoutError),
         ):
             openai_compatible._urlopen_with_retry(MagicMock())
-        self.assertEqual(mock_sleep.call_count, openai_compatible._MAX_RETRIES)
+        self.assertEqual(mock_sleep.call_count, openai_compatible._MAX_TIMEOUT_RETRIES)
 
     def test_succeeds_after_transient_url_error(self):
         fake_resp = MagicMock()
@@ -322,6 +337,21 @@ class TestUrlopenWithRetry(unittest.TestCase):
 
 
 class TestStreamChatResponseHttpError(unittest.TestCase):
+    def test_context_overflow_raises_distinct_error(self):
+        body = (
+            b'{"error":{"message":"This model\'s maximum context length is 262144 tokens. '
+            b'However, your messages resulted in 454591 tokens."}}'
+        )
+        http_error = urllib.error.HTTPError(
+            url="u", code=400, msg="Bad Request", hdrs=None, fp=io.BytesIO(body)
+        )
+        with (
+            patch.object(openai_compatible.urllib.request, "urlopen", side_effect=http_error),
+            self.assertRaises(openai_compatible.ContextOverflowError) as ctx,
+        ):
+            openai_compatible._stream_chat_response(MagicMock())
+        self.assertIn("454591", str(ctx.exception))
+
     def test_http_error_reraised_with_status_and_body(self):
         """See FOLLOWUP_HARNESS.md Bug 2: an uncaught HTTPError previously
         propagated as a bare 'HTTP Error 400: Bad Request', with the

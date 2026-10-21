@@ -21,11 +21,61 @@ class GateSchemaError(Exception):
     """A gate result file is missing key(s) required for its summary_style."""
 
 
-def validate_gate_schema(result: dict, summary_style: str) -> None:
-    """Raise GateSchemaError if result is missing keys required for summary_style."""
+# Claude-written results drifted to these keys (specs/002, 003), which left
+# FOLLOWUP entries reading "(untitled concern) (unspecified severity)".
+_ITEM_KEY_ALIASES = {
+    "title": ("summary", "issue"),
+    "finding": ("detail", "issue", "summary"),
+}
+_FINDING_LISTS = ("violations", "blocking_issues", "non_blocking_concerns")
+
+
+def _normalize_item(item: dict) -> None:
+    for key, aliases in _ITEM_KEY_ALIASES.items():
+        alias = next((a for a in aliases if item.get(a)), None)
+        if not item.get(key) and alias:
+            item[key] = item[alias]
+    if not item.get("location") and item.get("file"):
+        item["location"] = f"{item['file']}:{item['line']}" if item.get("line") else item["file"]
+
+
+def _status_rule_breach(result: dict, summary_style: str) -> str | None:
+    """Why a PASS contradicts its own findings under the documented rule, or None."""
+    if summary_style == "violations":
+        if any(
+            isinstance(v, dict) and v.get("severity") == "BLOCKING" for v in result["violations"]
+        ):
+            return "PASS with BLOCKING violation(s)"
+        return None
+    severities = [i.get("severity") for i in result["blocking_issues"] if isinstance(i, dict)]
+    if "Critical" in severities:
+        return "PASS with a Critical blocking issue"
+    if severities.count("High") > 2:
+        return "PASS with more than 2 High blocking issues"
+    if (result.get("confidence") or 0) < 7:
+        return "PASS with confidence below 7"
+    return None
+
+
+def normalize_result(result: dict, summary_style: str) -> bool:
+    """Validate a gate result in place and make it self-consistent, for local
+    and Claude critics alike. Raises GateSchemaError if required keys are
+    missing. Maps drifted finding keys onto title/finding/location, and turns a
+    PASS that breaks the documented status rule (any BLOCKING violation; any
+    Critical, more than 2 High, or confidence < 7) into FAIL — specs/083 had a
+    critic PASS its own High finding. Returns True if anything changed."""
     missing = sorted(_REQUIRED_KEYS[summary_style] - result.keys())
     if missing:
         raise GateSchemaError(f"missing required key(s) {missing}")
+    before = json.dumps(result, sort_keys=True)
+    for key in _FINDING_LISTS:
+        for item in result.get(key) or []:
+            if isinstance(item, dict):
+                _normalize_item(item)
+    if result.get("status") == "PASS" and (breach := _status_rule_breach(result, summary_style)):
+        result["status"] = "FAIL"
+        result["harness_note"] = f"status changed from PASS to FAIL by the harness: {breach}"
+    return json.dumps(result, sort_keys=True) != before
 
 
 def next_iteration(spec_dir: Path, result_prefix: str) -> int:
@@ -54,16 +104,17 @@ def read_result(
     spec_dir: Path, result_prefix: str, iteration: int, summary_style: str | None = None
 ) -> dict:
     """
-    Read and parse a gate's result file. If summary_style is given, also validate
-    that the result has the keys required for that style, raising GateSchemaError
-    if not — a missing required key is a harness/subagent bug, not a review
-    verdict, and must never be indistinguishable from one. summary_style=None
-    (the default) skips validation, for callers that don't know/need the shape.
+    Read and parse a gate's result file. If summary_style is given, also
+    normalize it (see normalize_result), writing any correction back so every
+    later reader sees the same verdict — a missing required key raises
+    GateSchemaError: it is a harness/subagent bug, not a review verdict, and
+    must never be indistinguishable from one. summary_style=None (the default)
+    skips this, for callers that don't know/need the shape.
     """
     path = spec_dir / f"{result_prefix}-{iteration}.json"
     result = json.loads(path.read_text(encoding="utf-8"))
-    if summary_style is not None:
-        validate_gate_schema(result, summary_style)
+    if summary_style is not None and normalize_result(result, summary_style):
+        path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
 

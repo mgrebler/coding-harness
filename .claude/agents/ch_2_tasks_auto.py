@@ -27,7 +27,7 @@ import json
 import sys
 from pathlib import Path
 
-from ch_2_tasks_critic import build_tasks_critic_prompt
+from ch_2_tasks_critic import build_tasks_critic_prompt, tasks_rules
 from claude_agent_sdk import AgentDefinition, query
 
 from agent_common import critic_reconcile, local_agent_loop, ollama
@@ -219,7 +219,9 @@ def tasks_reconcile_agent_definition(
         f"--- SPEC ---\n{spec}\n\n"
         f"--- PLAN ---\n{plan}\n\n"
         f"--- TASKS (current) ---\n{tasks}\n\n"
-        f"--- §T3 TEST/IMPL PAIRING STATUS ---\n{test_stage_note}"
+        f"--- §T3 TEST/IMPL PAIRING STATUS ---\n{test_stage_note}\n\n"
+        f"--- HARNESS §T RULES (the only valid §T rule labels) ---\n"
+        f"{tasks_rules(test_stage_enabled)}"
     )
     output_instructions = (
         f"- After producing JSON, write it to specs/$FEATURE/ch-2-tasks-critic-result-{iteration}.json using Bash\n"
@@ -489,6 +491,7 @@ async def run(feature: str):
         spec_dir,
         feature,
         budget,
+        revised_artifact=spec_dir / "tasks.md",
         gate=GateSpec(
             RESULT_PREFIX,
             "ch_2_tasks_critic.py",

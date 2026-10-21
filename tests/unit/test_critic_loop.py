@@ -279,6 +279,97 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             for k, v in escalation_kwargs.items():
                 self.assertEqual(kwargs[k], v)
 
+    async def test_off_schema_result_is_moved_aside_and_gate_rerun(self):
+        """specs/006: a schema-invalid result was re-read and aborted on every resume."""
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            (spec_dir / "ch-2-tasks-critic-result-1.json").write_text('{"findings": []}')
+            gate, fake_run_gate, _ = self._make_gate(spec_dir, {1: ("PASS", [])})
+            on_pass = AsyncMock()
+
+            with patch.object(ollama, "run_gate", side_effect=fake_run_gate):
+                await critic_loop.run_single_gate_loop(
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    IterationBudget(3, 3),
+                    gate,
+                    resume_state=(1, None),
+                    run_fix=AsyncMock(),
+                    on_pass=on_pass,
+                    escalation_kwargs={},
+                )
+
+            on_pass.assert_awaited_once()
+            self.assertTrue((spec_dir / "ch-2-tasks-critic-result-1.invalid").exists())
+
+    async def test_pass_records_its_leftover_findings_as_followups(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d) / "001-feat"
+            spec_dir.mkdir()
+            gate, _, _ = self._make_gate(spec_dir, {})
+
+            async def fake_run_gate(*args, **kwargs):
+                _write_result(
+                    spec_dir,
+                    "ch-2-tasks-critic-result",
+                    1,
+                    "PASS",
+                    violations=[],
+                    required_remediations=["Update research.md §12 before tasks"],
+                )
+
+            with patch.object(ollama, "run_gate", side_effect=fake_run_gate):
+                await critic_loop.run_single_gate_loop(
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    IterationBudget(3, 3),
+                    gate,
+                    resume_state=(1, None),
+                    run_fix=AsyncMock(),
+                    on_pass=AsyncMock(),
+                    escalation_kwargs={},
+                )
+
+            followup = (spec_dir / "FOLLOWUP-non-blocking-concerns.md").read_text()
+            self.assertIn("Update research.md §12", followup)
+
+    async def test_revision_that_changes_nothing_is_retried_with_a_guard_violation(self):
+        """specs/005: the reviser printed tasks instead of writing them and the
+        critic burned an iteration confirming tasks.md was unchanged."""
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            tasks = spec_dir / "tasks.md"
+            tasks.write_text("## Phase 1\n- [ ] T001 [IMPL] x\n")
+            viols = [{"rule": "§T1", "severity": "BLOCKING"}]
+            _write_result(spec_dir, "ch-2-tasks-critic-result", 1, "FAIL", violations=viols)
+            gate, fake_run_gate, _ = self._make_gate(spec_dir, {2: ("PASS", [])})
+            calls = []
+
+            async def run_fix(pending_iter, pending):
+                calls.append(pending)
+                if len(calls) == 2:
+                    tasks.write_text("## Phase 1\n- [ ] T001 [IMPL] x — plan §2\n")
+
+            with patch.object(ollama, "run_gate", side_effect=fake_run_gate):
+                await critic_loop.run_single_gate_loop(
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    IterationBudget(3, 3),
+                    gate,
+                    resume_state=(2, viols),
+                    run_fix=run_fix,
+                    on_pass=AsyncMock(),
+                    escalation_kwargs={},
+                    revised_artifact=tasks,
+                )
+
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[1][0]["rule"], "Revision guard")
+            self.assertEqual(calls[1][1:], viols)
+
     async def _resume_after_review(self, budget):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)

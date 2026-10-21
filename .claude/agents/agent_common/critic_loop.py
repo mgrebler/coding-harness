@@ -13,6 +13,8 @@ from typing import NamedTuple
 
 from agent_common import console, files, git, ollama
 from agent_common import resume_state as rstate
+from agent_common.followup import record_pass_followups
+from agent_common.preflight_checks import revision_regressions
 
 # A critic loop that keeps re-running against the exact same BLOCKING findings
 # is not making progress — most often a human decision (a missing constitution
@@ -82,6 +84,34 @@ def _escalate_no_progress(
     )
 
 
+async def _run_fix_guarded(
+    log, fix: Callable[[list], Awaitable], violations: list, artifact: Path | None
+) -> None:
+    """Run a fix/revision agent. When it revises a single document (artifact),
+    check it actually changed it without destroying structure; if not,
+    restore the previous version and retry once with the problem added to the
+    violations, before spending a critic iteration on it. A second bad
+    revision is kept for the critic to judge."""
+    if artifact is None or not artifact.exists():
+        await fix(violations)
+        return
+    before = artifact.read_text(encoding="utf-8")
+    await fix(violations)
+    after = artifact.read_text(encoding="utf-8") if artifact.exists() else ""
+    problems = revision_regressions(before, after)
+    if not problems:
+        return
+    log(f"Revision of {artifact.name} rejected ({'; '.join(problems)}) — retrying once.")
+    artifact.write_text(before, encoding="utf-8")
+    guard = {
+        "rule": "Revision guard",
+        "severity": "BLOCKING",
+        "location": artifact.name,
+        "finding": "Your previous revision was rejected and reverted: " + "; ".join(problems),
+    }
+    await fix([guard, *violations])
+
+
 class GateSpec(NamedTuple):
     """
     Describes one gate of a critic loop (e.g. the plan critic, or the architecture
@@ -134,38 +164,44 @@ async def _run_gate_for_iteration(
     quality-review-style gates) — same convention as run_local_critic_cli.
     """
     path = spec_dir / f"{gate.result_prefix}-{iteration}.json"
-    if not path.exists():
-        log(f"Running {gate.label} (iteration {iteration})...")
-        await ollama.run_gate(
-            log,
-            gate.critic_type,
-            gate.script_name,
-            feature,
-            iteration,
-            gate.label,
-            lambda model: gate.build_query(iteration, prev_violations, model),
-            result_prefix=gate.result_prefix,
-            summary_style=summary_style,
-            build_reconcile_query=gate.build_reconcile_query,
-        )
+    # An off-schema result file is a harness/subagent bug, not a verdict: move
+    # it aside and run the gate once more instead of failing on it forever on
+    # every resume (specs/006).
+    for attempt in (1, 2):
         if not path.exists():
-            log(
-                f"ERROR: {gate.label} did not write result file for iteration {iteration}. Aborting."
+            log(f"Running {gate.label} (iteration {iteration})...")
+            await ollama.run_gate(
+                log,
+                gate.critic_type,
+                gate.script_name,
+                feature,
+                iteration,
+                gate.label,
+                lambda model: gate.build_query(iteration, prev_violations, model),
+                result_prefix=gate.result_prefix,
+                summary_style=summary_style,
+                build_reconcile_query=gate.build_reconcile_query,
             )
-            sys.exit(1)
-    else:
-        log(f"{gate.label} result for iteration {iteration} already exists — reading status.")
-
-    try:
-        result = rstate.read_result(spec_dir, gate.result_prefix, iteration, summary_style)
-    except rstate.GateSchemaError as e:
-        log(
-            f"ERROR: {gate.label} (iteration {iteration}) wrote a result file "
-            f"{e} — path: {path}. This is a harness/subagent bug, not a review verdict; "
-            f"aborting instead of silently treating it as FAIL."
-        )
-        sys.exit(1)
+            if not path.exists():
+                log(
+                    f"ERROR: {gate.label} did not write result file for iteration {iteration}. Aborting."
+                )
+                sys.exit(1)
+        else:
+            log(f"{gate.label} result for iteration {iteration} already exists — reading status.")
+        try:
+            result = rstate.read_result(spec_dir, gate.result_prefix, iteration, summary_style)
+            break
+        except rstate.GateSchemaError as e:
+            invalid = path.with_suffix(".invalid")
+            path.rename(invalid)
+            log(
+                f"ERROR: {gate.label} (iteration {iteration}) result file {e} — moved to {invalid}."
+            )
+            if attempt == 2:
+                sys.exit(1)
     status = result.get("status", "FAIL")
+    record_pass_followups(spec_dir, gate.label.title(), iteration, result)
 
     if summary_style == "confidence":
         confidence = result.get("confidence", 0)
@@ -246,6 +282,7 @@ async def run_two_gate_loop(
     run_revision: Callable[[int, list, str], Awaitable],
     on_both_pass: Callable[[dict], Awaitable],
     escalation_kwargs: dict,
+    revised_artifact: Path | None = None,
 ) -> None:
     """
     Shared driver for a two-gate critic loop: gate1 must PASS before gate2 runs; both
@@ -259,6 +296,8 @@ async def run_two_gate_loop(
     commit/stage-complete/CI-check work here.
     escalation_kwargs: forwarded to write_escalation() (with spec_dir, feature,
     max_iterations, log_fn) if the loop exhausts budget.max_iterations.
+    revised_artifact: the single document run_revision edits (e.g. plan.md), if
+    any — see _run_fix_guarded.
     """
     iteration, violations1, violations2 = resume_state
     max_iterations = budget.max_iterations
@@ -285,7 +324,12 @@ async def run_two_gate_loop(
             if violations1 or violations2:
                 pending_label = gate1.label if violations1 else gate2.label
                 pending_violations = violations1 if violations1 else violations2
-                await run_revision(iteration - 1, pending_violations, pending_label)
+                await _run_fix_guarded(
+                    log,
+                    lambda v, i=iteration - 1, label=pending_label: run_revision(i, v, label),
+                    pending_violations,
+                    revised_artifact,
+                )
             violations1 = None
             violations2 = None
 
@@ -357,6 +401,7 @@ async def run_single_gate_loop(
     run_fix: Callable[[int, list], Awaitable],
     on_pass: Callable[[dict], Awaitable],
     escalation_kwargs: dict,
+    revised_artifact: Path | None = None,
 ) -> None:
     """
     Shared driver for a single-gate critic loop (e.g. the tasks critic, or the test
@@ -397,7 +442,9 @@ async def run_single_gate_loop(
         prev_violations = violations
         if not path.exists():
             if violations:
-                await run_fix(iteration - 1, violations)
+                await _run_fix_guarded(
+                    log, lambda v, i=iteration - 1: run_fix(i, v), violations, revised_artifact
+                )
             violations = None
 
         status, result = await _run_gate_for_iteration(
@@ -478,6 +525,9 @@ def finish_if_already_passing(
     if passing is None:
         return False
     log(f"Already PASS from {label} iteration {passing}.")
+    record_pass_followups(
+        spec_dir, label.title(), passing, rstate.read_result(spec_dir, result_prefix, passing)
+    )
     finish_stage(
         log,
         spec_dir,
@@ -503,6 +553,7 @@ def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitab
     args = parser.parse_args()
 
     feature = args.feature or git.get_feature_from_branch(agent_name)
+    ollama.check_providers(console.make_logger(agent_name))
     try:
         asyncio.run(run_coro(feature))
     except console.SessionLimitError as e:

@@ -54,7 +54,7 @@ from agent_common.console import (
     stream_subprocess,
 )
 from agent_common.git import get_feature_from_branch
-from agent_common.ollama import is_stage_enabled
+from agent_common.ollama import check_providers, is_stage_enabled
 from agent_common.resume_state import (
     find_passing_iteration,
     stage_is_complete,
@@ -145,6 +145,7 @@ def run(feature: str):
         log(f"ERROR: {spec_dir}/spec.md not found. Run /speckit-specify first.")
         sys.exit(1)
 
+    check_providers(log)
     log(f"Pipeline start — feature: {feature}, branch: {branch}")
     log(
         "Stages: ch-1-plan-auto → ch-2-tasks-auto → ch-3-test-auto → "

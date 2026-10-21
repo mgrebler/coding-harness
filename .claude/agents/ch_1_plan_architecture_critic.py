@@ -18,7 +18,8 @@ Exit codes:
 
 from pathlib import Path
 
-from agent_common.files import read_optional, require_files
+from agent_common.critic_reconcile import CONFIDENCE_STATUS_RULE
+from agent_common.files import read_optional, read_plan_bundle, require_files
 from agent_common.ollama import run_local_critic_cli
 
 RESULT_PREFIX = "ch-1-plan-architecture-review-result"
@@ -34,10 +35,7 @@ def build_architecture_review_prompt(
     violations_block: str = "",
     output_instructions: str = "",
 ) -> str:
-    tail = (
-        "- status is FAIL if any blocking_issue exists with severity Critical or High (more than 2 High = FAIL)\n"
-        "- status is PASS if no Critical issues and at most 2 High issues and confidence >= 7"
-    )
+    tail = CONFIDENCE_STATUS_RULE
     if output_instructions:
         tail += f"\n{output_instructions}"
     return f"""You are the Architecture Review Agent for a spec-kit project.
@@ -112,7 +110,7 @@ def main():
             arch_principles_path, "(architecture-principles.md not found)"
         )
         spec = spec_path.read_text(encoding="utf-8")
-        plan = plan_path.read_text(encoding="utf-8")
+        plan = read_plan_bundle(spec_dir)
 
         return build_architecture_review_prompt(
             constitution, architecture, spec, plan, arch_principles, iteration

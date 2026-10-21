@@ -59,7 +59,6 @@ from agent_common.driving_agent import (
     driving_agent_options,
 )
 from agent_common.files import read_file, require_spec_files
-from agent_common.followup import record_from_result_file, record_non_blocking_concerns
 from agent_common.preflight_checks import (
     oversized_committed_files,
     unchecked_task_lines,
@@ -67,7 +66,6 @@ from agent_common.preflight_checks import (
 )
 from agent_common.resume_state import (
     apply_escalation_review,
-    find_passing_iteration,
     find_two_gate_resume_state,
     format_violations_block,
     next_iteration,
@@ -624,14 +622,6 @@ async def run(feature: str):
     await _run_red_state_gate(feature, spec_dir, constitution, spec, plan, tasks, test_principles)
 
     # --- Resume guard: done if test quality review already passed ---
-    passing_quality_iter = find_passing_iteration(spec_dir, TEST_QUALITY_RESULT_PREFIX)
-    if passing_quality_iter is not None:
-        record_from_result_file(
-            spec_dir,
-            feature,
-            "Test Quality Review",
-            spec_dir / f"{TEST_QUALITY_RESULT_PREFIX}-{passing_quality_iter}.json",
-        )
     if finish_if_already_passing(
         log,
         spec_dir,
@@ -690,13 +680,6 @@ async def run(feature: str):
         )
 
     async def on_both_pass(quality_result: dict) -> None:
-        record_non_blocking_concerns(
-            spec_dir,
-            feature,
-            "Test Quality Review",
-            quality_result.get("iteration", 0),
-            quality_result.get("non_blocking_concerns", []),
-        )
         oversized = oversized_committed_files()
         if oversized:
             log("FAIL: oversized file(s) committed on this branch — human review required.")

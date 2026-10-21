@@ -375,7 +375,9 @@ async def run(feature: str):
         user_prompt = (
             f"Revise plan.md for feature {feature}. "
             f"Violations to address: {json.dumps(pending_violations)} "
-            f"Write updated plan.md to specs/{feature}/plan.md."
+            f"Edit specs/{feature}/plan.md in place: keep every existing section and table, "
+            f"and update research.md, data-model.md, quickstart.md, and contracts/ wherever "
+            f"your change affects them."
         )
         await local_agent_loop.run_generation(
             log,
@@ -516,6 +518,7 @@ async def run(feature: str):
         spec_dir,
         feature,
         budget,
+        revised_artifact=spec_dir / "plan.md",
         gate1=GateSpec(
             CRITIC_RESULT_PREFIX,
             "ch_1_plan_critic.py",

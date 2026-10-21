@@ -152,3 +152,25 @@ class TestPendingHumanApprovals(unittest.TestCase):
 
     def test_plan_without_the_section_has_nothing_pending(self):
         self.assertEqual(pc.pending_human_approvals("## Summary\n- a\n"), [])
+
+
+class TestRevisionRegressions(unittest.TestCase):
+    PLAN = "## Summary\nx\n## Constitution Check\n| a |\n## Project Structure\ny\n"
+
+    def test_unchanged_file_is_a_regression(self):
+        self.assertIn("not changed", pc.revision_regressions(self.PLAN, self.PLAN)[0])
+
+    def test_removed_section_is_reported(self):
+        after = self.PLAN.replace("## Constitution Check\n| a |\n", "")
+        problems = pc.revision_regressions(self.PLAN, after)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("## Constitution Check", problems[0])
+
+    def test_collapsed_tasks_are_reported(self):
+        before = "## Phase 1\n" + "".join(f"- [ ] T00{i} [IMPL] x\n" for i in range(1, 7))
+        after = "## Phase 1\n- [ ] T001 Wait for human approval\n"
+        self.assertIn("task count dropped", pc.revision_regressions(before, after)[0])
+
+    def test_genuine_edit_passes(self):
+        after = self.PLAN.replace("y\n", "y — now with contracts/\n")
+        self.assertEqual(pc.revision_regressions(self.PLAN, after), [])

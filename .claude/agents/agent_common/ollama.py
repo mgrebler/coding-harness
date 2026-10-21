@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -146,6 +147,10 @@ def _resolve_entry(raw: dict, override: str | dict | None) -> dict:
     num_predict = entry.get("num_predict") if "num_predict" in entry else raw.get("num_predict")
     if num_predict is not None:
         result["num_predict"] = int(num_predict)
+    # Critic prompt budget (see _build_within_budget); applies to any provider.
+    max_prompt_tokens = entry.get("max_prompt_tokens", raw.get("max_prompt_tokens"))
+    if max_prompt_tokens is not None:
+        result["max_prompt_tokens"] = int(max_prompt_tokens)
     # 0.0 = fully deterministic (greedy) — used for reproducible eval runs.
     temperature = entry.get("temperature") if "temperature" in entry else raw.get("temperature")
     if temperature is not None:
@@ -369,6 +374,73 @@ def _urlopen(url_or_request: str | urllib.request.Request, timeout: float):
     return urllib.request.urlopen(url_or_request, timeout=timeout)  # noqa: S310
 
 
+def _configured_local_entries() -> list[dict]:
+    """Every distinct local/hosted backend pipeline.json can resolve to, across
+    the default, every critics entry (list elements included), and every
+    generation entry."""
+    raw = _load_raw_config()
+    overrides: list = [None]
+    for entry in raw.get("critics", {}).values():
+        overrides.extend(entry if isinstance(entry, list) else [entry])
+    overrides.extend(e for e in raw.get("generation", {}).values() if not isinstance(e, list))
+    unique: dict[tuple, dict] = {}
+    for override in overrides:
+        resolved = _resolve_entry(raw, override)
+        if _is_local_backend(resolved):
+            endpoint = resolved.get("base_url") or resolved.get("ollama_url")
+            unique[(resolved["provider"], endpoint, resolved["model"])] = resolved
+    return list(unique.values())
+
+
+def _provider_problem(config: dict) -> str | None:
+    """Why config's model can't be used right now, or None if it looks usable.
+    A provider that doesn't implement model listing (HTTP 404 on it) can't be
+    verified this way and is given the benefit of the doubt."""
+    model = config["model"]
+    if config["provider"] == "openai-compatible":
+        openai_compatible._load_dotenv()
+        api_key = os.environ.get(config["api_key_env"])
+        if not api_key:
+            return f"{config['api_key_env']} is not set"
+        req = _build_request(
+            f"{config['base_url']}/models", headers={"Authorization": f"Bearer {api_key}"}
+        )
+    else:
+        req = _build_request(f"{config['ollama_url']}/api/tags")
+    try:
+        with _urlopen(req, timeout=15) as resp:
+            listing = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return None if e.code == 404 else f"model listing failed: HTTP {e.code} {e.reason}"
+    except (OSError, ValueError) as e:
+        return f"provider unreachable: {e}"
+    if config["provider"] == "openai-compatible":
+        available = {m.get("id") for m in listing.get("data", [])}
+    else:
+        available = {m.get("name") for m in listing.get("models", [])}
+    if model in available or f"{model}:latest" in available:
+        return None
+    return "model is not offered by the provider (removed, renamed, or end-of-life?)"
+
+
+def check_providers(log) -> None:
+    """Fail fast, before any generation, if a configured hosted/local model is
+    unusable. specs/001 generated a whole plan before its critics hit a missing
+    NVIDIA_API_KEY, then an end-of-life (410) and a missing (404) model — four
+    runs lost; specs/084 lost three more to a 404."""
+    problems = [
+        f"  {c['model']} ({c['provider']}): {problem}"
+        for c in _configured_local_entries()
+        if (problem := _provider_problem(c))
+    ]
+    if problems:
+        log("ERROR: .specify/pipeline.json names model(s) that can't be used:")
+        for line in problems:
+            log(line)
+        log("Fix the key/model in pipeline.json (or switch that entry to Claude) and re-run.")
+        sys.exit(1)
+
+
 def _fmt_bytes(b: int) -> str:
     if b >= 1024**3:
         return f"{b / 1024**3:.1f} GB"
@@ -389,6 +461,12 @@ def _get_ps_entry(ollama_url: str, model: str) -> dict | None:
         if name == model or name.startswith(model + ":"):
             return entry
     return None
+
+
+def char_token_estimate(text: str) -> int:
+    """Tokenizer-free token estimate, biased high: overestimating wastes a
+    little context; underestimating gets the prompt truncated or rejected."""
+    return math.ceil(len(text) / 3.3)
 
 
 def _estimate_prompt_tokens(ollama_url: str, model: str, prompt: str) -> int:
@@ -426,7 +504,7 @@ def _estimate_prompt_tokens(ollama_url: str, model: str, prompt: str) -> int:
         except Exception:  # noqa: S110 — best-effort probe, heuristic fallback below covers it
             pass  # transient failure on a reachable endpoint — retry next call
 
-    return math.ceil(len(prompt) / 3.3)
+    return char_token_estimate(prompt)
 
 
 def estimate_num_ctx(
@@ -903,85 +981,81 @@ def _log_cli_result(
             )
 
 
-def _call_llm_with_truncation_retry(
+class _BadCriticOutputError(Exception):
+    """A critic response that might succeed on a second call — truncated,
+    empty, unparseable, or schema-invalid — carrying the raw text to persist
+    if the retry fails too."""
+
+    def __init__(self, reason: str, message: str, raw: str):
+        super().__init__(message)
+        self.reason = reason
+        self.raw = raw
+
+
+def _parse_critic_response(raw: str, summary_style: str) -> dict:
+    cleaned = strip_fences(raw)
+    if not cleaned:
+        raise _BadCriticOutputError("empty", "LLM returned an empty response", raw)
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        raise _BadCriticOutputError(
+            "unparseable", f"could not parse LLM response as JSON: {e}: {cleaned[:500]}", raw
+        ) from e
+    try:
+        resume_state.normalize_result(result, summary_style)
+    except resume_state.GateSchemaError as e:
+        raise _BadCriticOutputError(
+            "schema-invalid", f"LLM response {e}: {cleaned[:500]}", raw
+        ) from e
+    return result
+
+
+def _call_and_parse_critic(
     label: str,
     prompt: str,
     config: dict,
     progress_fn,
-    spec_dir: Path,
-    result_prefix: str,
-    critic_id: str | None,
-    iteration: int,
-) -> str:
-    """Call the configured LLM, retrying once if the provider truncated the
-    response (finish_reason=length) — a transient token-budget miss, not a
-    model/critic malfunction. Persists the raw partial response and exits if
-    truncation recurs on the retry. See FOLLOWUP_HARNESS.md Bug 1."""
-    try:
-        return _call_configured_llm(prompt, config, progress_fn=progress_fn)
-    except openai_compatible.TruncatedResponseError as e:
-        print(f"[{label}] WARNING: {e} — retrying once...", flush=True)
-        try:
-            return _call_configured_llm(prompt, config, progress_fn=progress_fn)
-        except openai_compatible.TruncatedResponseError as e2:
-            print(f"[{label}] ERROR: response truncated again after retry: {e2}", flush=True)
-            failure_path = _persist_raw_failure(
-                spec_dir, result_prefix, critic_id, iteration, e2.partial_content, "truncated"
-            )
-            print(f"[{label}] Partial (truncated) raw response saved to {failure_path}", flush=True)
-            sys.exit(1)
-        except Exception as e2:
-            print(f"[{label}] ERROR: local LLM call failed on retry: {e2}", flush=True)
-            sys.exit(1)
-    except Exception as e:
-        print(f"[{label}] ERROR: local LLM call failed: {e}", flush=True)
-        sys.exit(1)
-
-
-def _parse_and_validate_critic_response(
-    label: str,
-    raw: str,
     summary_style: str,
     spec_dir: Path,
     result_prefix: str,
     critic_id: str | None,
     iteration: int,
 ) -> dict:
-    """Parse a critic's raw response as JSON and validate it against
-    summary_style's required schema, persisting the raw response and exiting
-    on either failure instead of losing it to a bare truncated stdout print.
-    See FOLLOWUP_HARNESS.md Bug 1."""
-    cleaned = strip_fences(raw)
-
-    try:
-        result = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        print(f"[{label}] ERROR: could not parse LLM response as JSON: {e}", flush=True)
-        print(f"[{label}] Raw response (first 500 chars): {cleaned[:500]}", flush=True)
-        failure_path = _persist_raw_failure(
-            spec_dir, result_prefix, critic_id, iteration, raw, "unparseable"
-        )
-        print(f"[{label}] Full raw response saved to {failure_path}", flush=True)
-        sys.exit(1)
-
-    try:
-        resume_state.validate_gate_schema(result, summary_style)
-    except resume_state.GateSchemaError as e:
-        print(f"[{label}] ERROR: LLM response {e}: {cleaned[:500]}", flush=True)
-        failure_path = _persist_raw_failure(
-            spec_dir, result_prefix, critic_id, iteration, raw, "schema-invalid"
-        )
-        print(f"[{label}] Full raw response saved to {failure_path}", flush=True)
-        sys.exit(1)
-
-    return result
+    """Call the configured LLM and parse its verdict, retrying once when the
+    output itself was bad (truncated, empty, unparseable, schema-invalid) — a
+    transient miss, not a model malfunction (hosted models returned 0-byte or
+    `{}` bodies in specs/002-005 and 084). Transport errors were already retried
+    by the transport. Persists the raw response and exits if the retry fails too."""
+    for attempt in (1, 2):
+        try:
+            try:
+                raw = _call_configured_llm(prompt, config, progress_fn=progress_fn)
+            except openai_compatible.TruncatedResponseError as e:
+                raise _BadCriticOutputError("truncated", str(e), e.partial_content) from e
+            return _parse_critic_response(raw, summary_style)
+        except _BadCriticOutputError as e:
+            if attempt == 1:
+                print(f"[{label}] WARNING: {e} — retrying once...", flush=True)
+                continue
+            print(f"[{label}] ERROR: {e}", flush=True)
+            failure_path = _persist_raw_failure(
+                spec_dir, result_prefix, critic_id, iteration, e.raw, e.reason
+            )
+            print(f"[{label}] Full raw response saved to {failure_path}", flush=True)
+            sys.exit(1)
+        except Exception as e:
+            print(f"[{label}] ERROR: local LLM call failed: {e}", flush=True)
+            sys.exit(1)
+    raise AssertionError("unreachable")
 
 
 def run_local_critic_cli(
     critic_type: str,
     result_prefix: str,
-    build_prompt: Callable[[Path, int], str],
+    build_prompt: Callable[..., str],
     summary_style: str = "violations",
+    max_reduction: int = 0,
 ) -> None:
     """
     Shared CLI driver for a standalone local-LLM critic script (ch_1_plan_critic.py,
@@ -1005,6 +1079,11 @@ def run_local_critic_cli(
     Absent, this function behaves exactly as it did before multi-critic support
     existed — orchestrator.run_gate only passes --critic-id when >1 critic is
     configured for critic_type.
+
+    max_reduction: when > 0, build_prompt also takes a reduction level
+    (0..max_reduction), each dropping more non-essential context; the first
+    level whose prompt fits the critic's token budget is sent (see
+    _build_within_budget).
 
     Exit codes: 0 success, 1 runtime error, 2 local LLM not configured.
     """
@@ -1035,7 +1114,9 @@ def run_local_critic_cli(
     )
 
     try:
-        prompt = build_prompt(spec_dir, iteration)
+        prompt = _build_within_budget(
+            label, build_prompt, spec_dir, iteration, config, max_reduction
+        )
     except files.NoChangedFilesError as e:
         print(f"[{label}] ERROR: nothing to review: {e}", flush=True)
         sys.exit(1)
@@ -1050,11 +1131,16 @@ def run_local_critic_cli(
         else:
             print(f"[{label}]   ... {token_count} tokens ({elapsed_s:.0f}s elapsed)", flush=True)
 
-    raw = _call_llm_with_truncation_retry(
-        label, prompt, config, _progress, spec_dir, result_prefix, args.critic_id, iteration
-    )
-    result = _parse_and_validate_critic_response(
-        label, raw, summary_style, spec_dir, result_prefix, args.critic_id, iteration
+    result = _call_and_parse_critic(
+        label,
+        prompt,
+        config,
+        _progress,
+        summary_style,
+        spec_dir,
+        result_prefix,
+        args.critic_id,
+        iteration,
     )
     result["iteration"] = iteration
 
@@ -1066,6 +1152,51 @@ def run_local_critic_cli(
     files.write_file(result_path, json.dumps(result, indent=2))
 
     _log_cli_result(label, iteration, result, result_path, summary_style)
+
+
+_DEFAULT_PROMPT_BUDGET_TOKENS = 100_000
+
+
+def _build_within_budget(
+    label: str,
+    build_prompt: Callable[..., str],
+    spec_dir: Path,
+    iteration: int,
+    config: dict,
+    max_reduction: int,
+) -> str:
+    """Build the critic prompt at the lowest reduction level that fits the
+    critic's budget — max_prompt_tokens, else num_ctx/max_ctx, else 100k.
+    specs/084's test critic sent 454k tokens to a 262k-token model; checking
+    before sending is what lets the critic degrade instead of failing."""
+    budget = (
+        config.get("max_prompt_tokens")
+        or config.get("num_ctx")
+        or config.get("max_ctx")
+        or _DEFAULT_PROMPT_BUDGET_TOKENS
+    )
+    for level in range(max_reduction + 1):
+        prompt = (
+            build_prompt(spec_dir, iteration, level)
+            if max_reduction
+            else build_prompt(spec_dir, iteration)
+        )
+        estimate = char_token_estimate(prompt)
+        if estimate <= budget:
+            if level:
+                print(
+                    f"[{label}] prompt reduced to level {level}/{max_reduction} "
+                    f"(~{estimate} tokens) to fit the {budget}-token budget",
+                    flush=True,
+                )
+            return prompt
+    print(
+        f"[{label}] WARNING: prompt is ~{estimate} tokens even fully reduced — over the "
+        f"{budget}-token budget; set max_prompt_tokens for this critic, or use a "
+        "larger-context model",
+        flush=True,
+    )
+    return prompt
 
 
 def _persist_raw_failure(
@@ -1149,13 +1280,9 @@ def _run_one_critic(
             log(f"ERROR: critic '{config['id']}' timed out for {label} iteration {iteration}: {e}")
             raise CriticSubprocessError(str(e)) from e
         if returncode != 0:
-            msg = f"critic '{config['id']}' failed for {label} iteration {iteration}. Aborting."
-            log(f"ERROR: {msg}")
-            raise CriticSubprocessError(msg)
+            raise CriticSubprocessError(f"exit code {returncode} for iteration {iteration}")
         if not raw_path.exists():
-            msg = f"critic '{config['id']}' did not write {raw_path}. Aborting."
-            log(f"ERROR: {msg}")
-            raise CriticSubprocessError(msg)
+            raise CriticSubprocessError(f"did not write {raw_path}")
     return {
         "id": config["id"],
         "model": config["model"],
@@ -1174,13 +1301,11 @@ async def _gather_raw_critic_results(
     mode: str,
 ) -> list[dict]:
     """Run every critic in configs (sequentially, or concurrently via
-    asyncio.to_thread when mode == 'parallel') and return their raw results.
+    asyncio.to_thread when mode == 'parallel') and return the raw results of
+    those that succeeded; failures are logged and dropped.
 
     Parallel mode uses return_exceptions=True so one critic's CriticSubprocessError
-    can't strand an already-completed sibling critic's result: failures are logged
-    and dropped, and the gate proceeds with whichever critics succeeded (aborting
-    only if none did). Sequential mode is unaffected by the threading race this
-    guards against, so it keeps its existing fail-fast-on-first-failure behavior.
+    can't strand an already-completed sibling critic's result.
     """
     if mode == "parallel":
         outcomes = await asyncio.gather(
@@ -1200,23 +1325,22 @@ async def _gather_raw_critic_results(
             ),
             return_exceptions=True,
         )
-        survivors = []
-        for config, outcome in zip(configs, outcomes, strict=True):
-            if isinstance(outcome, BaseException):
-                log(f"  {label} critic '{config['id']}' failed: {outcome}")
-            else:
-                survivors.append(outcome)
-        if not survivors:
-            log(
-                f"ERROR: all {len(configs)} critics failed for {label} iteration "
-                f"{iteration}. Aborting."
-            )
-            sys.exit(1)
-        return survivors
-    return [
-        _run_one_critic(log, label, script, feature, iteration, raw_dir, config)
-        for config in configs
-    ]
+    else:
+        outcomes = []
+        for config in configs:
+            try:
+                outcomes.append(
+                    _run_one_critic(log, label, script, feature, iteration, raw_dir, config)
+                )
+            except CriticSubprocessError as e:
+                outcomes.append(e)
+    survivors = []
+    for config, outcome in zip(configs, outcomes, strict=True):
+        if isinstance(outcome, BaseException):
+            log(f"  {label} critic '{config['id']}' failed (continuing without it): {outcome}")
+        else:
+            survivors.append(outcome)
+    return survivors
 
 
 async def _run_multi_critic_gate(
@@ -1230,13 +1354,15 @@ async def _run_multi_critic_gate(
     result_prefix: str | None,
     summary_style: str,
     build_reconcile_query: Callable[[int, list[dict], str | None], object] | None,
-) -> None:
+) -> bool:
     """The local-critic branch of run_gate: fan out to every configured critic
     (passing --critic-id, so list- and dict-shaped config resolve identically),
     then either adopt a lone critic's verdict as-is, synthesize a trivial PASS
     (all critics clean), or hand the combined raw findings to
     build_reconcile_query for the main harness (a Claude subagent, never a
-    local LLM) to adjudicate into the canonical result."""
+    local LLM) to adjudicate into the canonical result. Returns False if every
+    critic failed, so run_gate falls back to the Claude critic instead of
+    aborting the stage (which happened six times across specs/001, 002, 084)."""
     if result_prefix is None:
         log(f"ERROR: run_gate was not given a result_prefix for {label}. Aborting.")
         sys.exit(1)
@@ -1250,11 +1376,14 @@ async def _run_multi_critic_gate(
     raw_results = await _gather_raw_critic_results(
         log, label, script, feature, iteration, raw_dir, configs, mode
     )
+    if not raw_results:
+        log(f"ALL {len(configs)} LOCAL CRITIC(S) FAILED for {label} — falling back to Claude.")
+        return False
 
     canonical_path = spec_dir / f"{result_prefix}-{iteration}.json"
     if len(configs) == 1:
         files.write_file(canonical_path, json.dumps(raw_results[0]["result"], indent=2))
-        return
+        return True
 
     # A trivial pass requires every configured critic to have actually run —
     # a crashed critic must never be silently counted as agreement with the
@@ -1266,7 +1395,7 @@ async def _run_multi_critic_gate(
             f"All {len(raw_results)}/{len(configs)} critics returned a clean PASS for {label} "
             "— skipping reconciliation."
         )
-        return
+        return True
 
     if len(raw_results) < len(configs):
         log(
@@ -1287,6 +1416,7 @@ async def _run_multi_critic_gate(
     if not canonical_path.exists():
         log(f"ERROR: reconciliation did not write {canonical_path}. Aborting.")
         sys.exit(1)
+    return True
 
 
 async def run_gate(
@@ -1323,19 +1453,18 @@ async def run_gate(
     configs = load_local_llm_configs(critic_type)
     script = Path(__file__).parent.parent / script_name
 
-    if configs:
-        await _run_multi_critic_gate(
-            log,
-            critic_type,
-            script,
-            feature,
-            iteration,
-            label,
-            configs,
-            result_prefix,
-            summary_style,
-            build_reconcile_query,
-        )
+    if configs and await _run_multi_critic_gate(
+        log,
+        critic_type,
+        script,
+        feature,
+        iteration,
+        label,
+        configs,
+        result_prefix,
+        summary_style,
+        build_reconcile_query,
+    ):
         return
 
     claude_model = load_claude_model(critic_type)

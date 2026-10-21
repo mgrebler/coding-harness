@@ -671,13 +671,6 @@ async def _finish_with_full_ci(
 ) -> None:
     """Record the passing quality review's follow-ups, run full CI, and finish
     the stage — the shared tail of a fresh both-gates PASS and a resumed one."""
-    record_non_blocking_concerns(
-        spec_dir,
-        feature,
-        "Code Quality Review",
-        quality_result.get("iteration", 0),
-        quality_result.get("non_blocking_concerns", []),
-    )
     outcome = await _ci_gate(feature, spec_dir, constitution, spec, plan, include_slow=True)
     _check_commit_hygiene()
     finish_stage(

@@ -189,6 +189,35 @@ def task_format_violations(tasks: str) -> list[str]:
     return violations
 
 
+# --- Revision regressions (plan.md / tasks.md) --------------------------
+
+_HEADING_RE = re.compile(r"^#{2,3} .+$", re.MULTILINE)
+_TASK_LINE_RE = re.compile(r"^[-*]\s+\[[ xX]\]\s*T\d+\b", re.MULTILINE)
+
+
+def revision_regressions(before: str, after: str) -> list[str]:
+    """What a revision of plan.md/tasks.md destroyed rather than fixed: no
+    change at all (specs/005's reviser printed tasks instead of writing them),
+    removed sections (specs/082's plan revision dropped the Constitution Check
+    table), or collapsed tasks (specs/001 and 004 rewrote tasks.md without its
+    phases or [TEST]/[IMPL] tasks)."""
+    if after == before:
+        return ["the file was not changed — write the revised file to disk"]
+    problems = [
+        f"removed section `{heading}` — keep every existing section"
+        for heading in _HEADING_RE.findall(before)
+        if heading not in after
+    ]
+    tasks_before = len(_TASK_LINE_RE.findall(before))
+    tasks_after = len(_TASK_LINE_RE.findall(after))
+    if tasks_after < tasks_before / 2:
+        problems.append(
+            f"task count dropped from {tasks_before} to {tasks_after} — revise tasks in place, "
+            "do not replace them"
+        )
+    return problems
+
+
 # --- Pending human approvals (plan.md) ----------------------------------
 
 _PENDING_APPROVALS_RE = re.compile(

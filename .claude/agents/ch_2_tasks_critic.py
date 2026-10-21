@@ -28,6 +28,28 @@ CRITIC_RESULT_PREFIX = "ch-2-tasks-critic-result"
 # critic's contextual analysis and the hard gate never drift out of sync.
 
 
+# The §T numbers and titles match skills/ch-2-tasks-critic/SKILL.md's
+# checklist (enforced by a unit test): specs/084's reconciler discarded seven
+# genuine §T5 findings as a "fabricated rule" when the two numbered §T5
+# differently.
+def tasks_rules(test_stage_enabled: bool = True) -> str:
+    """The harness's §T process rules, shared by the tasks critic and its reconciler."""
+    t3_rule = (
+        """§T3 [TEST]/[IMPL] Pairing [BLOCKING]: apply Constitution §5 ("Non-deliverable tasks") and §6 ("Pairing scope") exactly as written — do not apply a stricter or looser pairing rule than what those sections state. In particular:
+  - A task with no testable deliverable (orientation, read-and-confirm) needs NO [TEST]/[IMPL] tag at all — do not flag it either for lacking a tag or, in a later iteration, for having no tag to remove. If a prior iteration's violation list (see violations_block above) already asked for a tag to be added or removed on a given task ID, do not flip that request in the other direction this iteration — re-read Constitution §5 first.
+  - A [TEST] task's description may explicitly name more than one [IMPL] task it covers (documented N:1 e2e/integration pairing per §6) — this is NOT an orphan [IMPL] task and must not be flagged, provided the linkage is stated in tasks.md.
+  - An [IMPL] task with genuinely no [TEST] task anywhere in tasks.md, and not covered by a documented N:1 [TEST] task, IS a violation — quote the missing linkage."""
+        if test_stage_enabled
+        else """§T3 [TEST]/[IMPL] Pairing [BLOCKING]: N/A for this project — the test stage is disabled (.specify/pipeline.json stages.test.enabled=false). Every task must be tagged [IMPL] only. Flag as BLOCKING any task tagged [TEST], and any task whose description implies it requires a paired test task."""
+    )
+    return f"""§T1 Plan Traceability [BLOCKING]: every phase in tasks.md maps to a named section or deliverable in plan.md
+§T2 Spec Coverage [BLOCKING]: every user story in spec.md has a corresponding phase in tasks.md
+{t3_rule}
+§T5 Task Format [BLOCKING]: every task entry must use the machine-readable format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (or `- [x] TXXX ...` for a completed task) — a markdown checkbox (`- [ ]` / `- [x]` / `- [X]`) immediately followed by a bare, unbracketed task ID (`T001`, not `[T001]`), per `.specify/templates/tasks-template.md`. This checkbox is not cosmetic: `ch_3_test_auto.py` and `ch_4_implement_auto.py` scan for the literal substring `- [ ]` to detect which tasks still need work, so a task line missing the checkbox (e.g. `- [T001] [IMPL] ...` with the ID merely bracketed instead) is silently treated as already complete and skipped forever. Tasks written as numbered lists (1. 2. 3.), plain bullet points, bracketed-ID-without-checkbox (`- [T001] ...`), or free-form prose without `[TEST]`/`[IMPL]` labels ALL violate §T5. So does an unchecked task an agent cannot complete inside the repo (waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist) that lacks a `[MANUAL]` tag — ch_4_implement_auto.py only skips tasks tagged `[MANUAL]`.
+§T7 Dependency Validity [BLOCKING]: all dep references resolve to real task IDs within tasks.md; no cycles; [P] tasks have no unresolved deps
+§T10 Phase Checkpoints [WARNING — never BLOCKING]: a checkpoint line is missing or not runnable — severity MUST be WARNING; if a checkpoint is present in any form at or after the phase tasks do NOT include this rule in violations at all"""
+
+
 def build_tasks_critic_prompt(
     constitution: str,
     spec: str,
@@ -39,14 +61,6 @@ def build_tasks_critic_prompt(
     task_format_analysis: str = "",
     test_stage_enabled: bool = True,
 ) -> str:
-    t3_rule = (
-        """§T3 Test/Impl Pairing [BLOCKING]: apply Constitution §5 ("Non-deliverable tasks") and §6 ("Pairing scope") exactly as written — do not apply a stricter or looser pairing rule than what those sections state. In particular:
-  - A task with no testable deliverable (orientation, read-and-confirm) needs NO [TEST]/[IMPL] tag at all — do not flag it either for lacking a tag or, in a later iteration, for having no tag to remove. If a prior iteration's violation list (see violations_block above) already asked for a tag to be added or removed on a given task ID, do not flip that request in the other direction this iteration — re-read Constitution §5 first.
-  - A [TEST] task's description may explicitly name more than one [IMPL] task it covers (documented N:1 e2e/integration pairing per §6) — this is NOT an orphan [IMPL] task and must not be flagged, provided the linkage is stated in tasks.md.
-  - An [IMPL] task with genuinely no [TEST] task anywhere in tasks.md, and not covered by a documented N:1 [TEST] task, IS a violation — quote the missing linkage."""
-        if test_stage_enabled
-        else """§T3 Test/Impl Pairing [BLOCKING]: N/A for this project — the test stage is disabled (.specify/pipeline.json stages.test.enabled=false). Every task must be tagged [IMPL] only. Flag as BLOCKING any task tagged [TEST], and any task whose description implies it requires a paired test task."""
-    )
     tail = (
         "- status is FAIL if any violation is BLOCKING\n"
         "- status is PASS only if zero BLOCKING violations"
@@ -88,12 +102,7 @@ e.g. "Constitution §5 — TDD", "Constitution §2 — Stack Constraints".
 
 Harness process checks (apply in addition to the above):
 
-§T1 Plan Traceability [BLOCKING]: every phase in tasks.md maps to a named section or deliverable in plan.md
-§T2 Spec Coverage [BLOCKING]: every user story in spec.md has a corresponding phase in tasks.md
-{t3_rule}
-§T5 Task Format [BLOCKING]: every task entry must use the machine-readable format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (or `- [x] TXXX ...` for a completed task) — a markdown checkbox (`- [ ]` / `- [x]` / `- [X]`) immediately followed by a bare, unbracketed task ID (`T001`, not `[T001]`), per `.specify/templates/tasks-template.md`. This checkbox is not cosmetic: `ch_3_test_auto.py` and `ch_4_implement_auto.py` scan for the literal substring `- [ ]` to detect which tasks still need work, so a task line missing the checkbox (e.g. `- [T001] [IMPL] ...` with the ID merely bracketed instead) is silently treated as already complete and skipped forever. Tasks written as numbered lists (1. 2. 3.), plain bullet points, bracketed-ID-without-checkbox (`- [T001] ...`), or free-form prose without `[TEST]`/`[IMPL]` labels ALL violate §T5.
-§T7 Dependency Validity [BLOCKING]: all dep references resolve to real task IDs within tasks.md; no cycles; [P] tasks have no unresolved deps
-§T10 Phase Checkpoints [WARNING — never BLOCKING]: a checkpoint line is missing or not runnable — severity MUST be WARNING; if a checkpoint is present in any form at or after the phase tasks do NOT include this rule in violations at all
+{tasks_rules(test_stage_enabled)}
 
 Evidence standard — before reporting any violation you MUST:
 - Quote the specific task ID, phase heading, or line that constitutes the violation

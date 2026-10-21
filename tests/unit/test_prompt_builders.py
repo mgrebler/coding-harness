@@ -1,5 +1,6 @@
 """Unit tests for critic prompt builder functions. No LLM calls — verifies prompt wiring."""
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
 from ch_1_plan_architecture_critic import build_architecture_review_prompt
 from ch_1_plan_critic import build_plan_critic_prompt
-from ch_2_tasks_critic import build_tasks_critic_prompt
+from ch_2_tasks_critic import build_tasks_critic_prompt, tasks_rules
 from ch_3_test_critic import build_test_critic_prompt
 from ch_3_test_quality_critic import build_test_quality_review_prompt
 from ch_4_implement_critic import build_implement_critic_prompt
@@ -101,6 +102,24 @@ class TestTasksCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):
         self.assertIn("N/A for this project", prompt)
         self.assertIn("pipeline.json", prompt)
         self.assertNotIn("apply Constitution", prompt)
+
+
+class TestTasksRuleCatalogParity(unittest.TestCase):
+    """specs/084: the local critic's §T5 (Task Format) and the skill's §T5
+    (Schema Migration) disagreed, so the reconciler threw out real findings."""
+
+    def test_every_harness_rule_matches_the_skill_checklist(self):
+        skill = (
+            Path(__file__).parent.parent.parent / ".claude/skills/ch-2-tasks-critic/SKILL.md"
+        ).read_text(encoding="utf-8")
+        skill_rules = dict(re.findall(r"^### (§T\d+) — (.+?) \[", skill, re.MULTILINE))
+        for test_stage_enabled in (True, False):
+            harness_rules = re.findall(
+                r"^(§T\d+) (.+?) \[", tasks_rules(test_stage_enabled), re.MULTILINE
+            )
+            self.assertTrue(harness_rules)
+            for number, title in harness_rules:
+                self.assertEqual(skill_rules.get(number), title, number)
 
 
 class TestTestCriticPrompt(PromptBuilderCommonTests, unittest.TestCase):

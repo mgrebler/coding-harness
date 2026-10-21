@@ -18,6 +18,7 @@ Exit codes:
 
 from pathlib import Path
 
+from agent_common.critic_reconcile import CONFIDENCE_STATUS_RULE
 from agent_common.files import read_changed_files, read_optional, require_files
 from agent_common.git import get_changed_files
 from agent_common.ollama import run_local_critic_cli
@@ -57,10 +58,7 @@ def build_test_quality_review_prompt(
     else:
         review_process = f"--- CHANGED TEST FILES (changed files relative to base branch, test paths only) ---\n{changed_files_section}"
 
-    tail = (
-        "- status is FAIL if any blocking_issue exists with severity Critical or High (more than 2 High = FAIL)\n"
-        "- status is PASS if no Critical issues and at most 2 High issues and confidence >= 7"
-    )
+    tail = CONFIDENCE_STATUS_RULE
     if output_instructions:
         tail += f"\n{output_instructions}"
 
@@ -141,7 +139,10 @@ Rules:
 
 
 def main():
-    def _build(spec_dir: Path, iteration: int) -> str:
+    def _build(spec_dir: Path, iteration: int, reduction: int = 0) -> str:
+        """reduction 1 drops plan.md, 2 also drops spec.md — the review judges
+        the test files against test-principles.md and tasks.md, which stay — and
+        3 shows test files that already existed on main as their diff."""
         constitution_path = Path(".specify/memory/constitution.md")
         test_principles_path = Path(".specify/memory/test-principles.md")
         spec_path = spec_dir / "spec.md"
@@ -154,13 +155,17 @@ def main():
 
         constitution = constitution_path.read_text(encoding="utf-8")
         test_principles = read_optional(test_principles_path, "(test-principles.md not found)")
-        spec = spec_path.read_text(encoding="utf-8")
-        plan = plan_path.read_text(encoding="utf-8")
+        omitted = "(omitted to fit the model's context budget)"
+        spec = spec_path.read_text(encoding="utf-8") if reduction < 2 else omitted
+        plan = plan_path.read_text(encoding="utf-8") if reduction < 1 else omitted
         tasks = tasks_path.read_text(encoding="utf-8")
 
         changed_files = get_changed_files()
         changed_test_files = read_changed_files(
-            changed_files, resolve_test_dirs(), extra_match=looks_like_test_file
+            changed_files,
+            resolve_test_dirs(),
+            extra_match=looks_like_test_file,
+            diff_only=reduction >= 3,
         )
 
         return build_test_quality_review_prompt(
@@ -178,6 +183,7 @@ def main():
         RESULT_PREFIX,
         _build,
         summary_style="confidence",
+        max_reduction=3,
     )
 
 
