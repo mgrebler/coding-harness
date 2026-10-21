@@ -138,3 +138,31 @@ class TestExtensionHooksAreRegistered(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInstalledGitignore(unittest.TestCase):
+    """specs/005's stages each logged .claude/agents/__pycache__/*.pyc as dirty
+    paths to leave out of their commit: the installed .gitignore section only
+    ignored the ch_*.py sources, not the bytecode Python writes beside them."""
+
+    def test_harness_bytecode_is_ignored_and_tracked_copies_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d)
+            git = ["git", "-C", d, "-c", "user.email=t@t", "-c", "user.name=t"]
+            subprocess.run([*git, "init", "-q"], check=True)
+            pyc = target / ".claude/agents/__pycache__/ch_2_tasks_critic.cpython-311.pyc"
+            pyc.parent.mkdir(parents=True)
+            pyc.write_bytes(b"\0")
+            subprocess.run([*git, "add", "-A"], check=True)
+            subprocess.run([*git, "commit", "-qm", "init"], check=True)
+
+            result = subprocess.run(
+                ["bash", str(REPO / "install.sh"), d],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                check=True,
+            )
+
+            self.assertIn(".claude/agents/__pycache__/", (target / ".gitignore").read_text())
+            self.assertIn("git rm -r --cached .claude/agents/__pycache__", result.stdout)
