@@ -263,9 +263,6 @@ async def _run_format_gate(
             f"Deterministic §T5 format check found {len(violations)} violation(s) "
             f"(attempt {attempt}/{max_attempts}) — kicking back to tasks agent before critic loop..."
         )
-        tasks_agent = tasks_agent_definition(
-            constitution, spec, plan, data_model, test_stage_enabled=test_stage_enabled
-        )
         user_prompt = (
             f"Reformat specs/{feature}/tasks.md to comply with the machine-readable task "
             f"format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (see .specify/templates/"
@@ -273,28 +270,19 @@ async def _run_format_gate(
             f"out-of-repo action. Fix ONLY the lines below — do not change task content, order, "
             f"or numbering beyond what's needed to fix the format:\n\n" + "\n".join(violations)
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "tasks",
-            claude_fallback=lambda model, user_prompt=user_prompt: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "tasks-agent": tasks_agent_definition(
-                            constitution,
-                            spec,
-                            plan,
-                            data_model,
-                            model=model,
-                            test_stage_enabled=test_stage_enabled,
-                        )
-                    },
-                    model=model,
-                ),
+            "tasks-agent",
+            lambda model: tasks_agent_definition(
+                constitution,
+                spec,
+                plan,
+                data_model,
+                model=model,
+                test_stage_enabled=test_stage_enabled,
             ),
-            system_prompt=tasks_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
     remaining = task_format_violations(read_file(spec_dir / "tasks.md"))
@@ -331,34 +319,22 @@ async def run(feature: str):
     # --- Step 1: Generate tasks.md if needed ---
     if not (spec_dir / "tasks.md").exists() or force_regen:
         log("Running tasks agent...")
-        tasks_agent = tasks_agent_definition(
-            constitution, spec, plan, data_model, test_stage_enabled=test_stage_enabled
-        )
         user_prompt = (
             f"Generate tasks.md for feature {feature}. Write it to specs/{feature}/tasks.md."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "tasks",
-            claude_fallback=lambda model: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "tasks-agent": tasks_agent_definition(
-                            constitution,
-                            spec,
-                            plan,
-                            data_model,
-                            model=model,
-                            test_stage_enabled=test_stage_enabled,
-                        )
-                    },
-                    model=model,
-                ),
+            "tasks-agent",
+            lambda model: tasks_agent_definition(
+                constitution,
+                spec,
+                plan,
+                data_model,
+                model=model,
+                test_stage_enabled=test_stage_enabled,
             ),
-            system_prompt=tasks_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
         if not (spec_dir / "tasks.md").exists():
@@ -391,36 +367,24 @@ async def run(feature: str):
         log(
             f"Running revision agent to address {len(pending_violations)} violation(s) from iteration {pending_iter}..."
         )
-        tasks_agent = tasks_agent_definition(
-            constitution, spec, plan, data_model, test_stage_enabled=test_stage_enabled
-        )
         user_prompt = (
             f"Revise tasks.md for feature {feature} to fix critic violations. "
             f"Violations to address: {json.dumps(pending_violations)} "
             f"Write updated tasks.md to specs/{feature}/tasks.md."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "tasks",
-            claude_fallback=lambda model: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "tasks-agent": tasks_agent_definition(
-                            constitution,
-                            spec,
-                            plan,
-                            data_model,
-                            model=model,
-                            test_stage_enabled=test_stage_enabled,
-                        )
-                    },
-                    model=model,
-                ),
+            "tasks-agent",
+            lambda model: tasks_agent_definition(
+                constitution,
+                spec,
+                plan,
+                data_model,
+                model=model,
+                test_stage_enabled=test_stage_enabled,
             ),
-            system_prompt=tasks_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
     async def on_pass(result: dict) -> None:

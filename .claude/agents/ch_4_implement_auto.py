@@ -528,14 +528,6 @@ async def _run_implementation_agent(
     max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         log(f"Running implementation agent (attempt {attempt}/{max_attempts})...")
-        impl_agent = impl_agent_definition(
-            constitution,
-            spec,
-            plan,
-            tasks,
-            quality_principles,
-            test_stage_enabled=test_stage_enabled,
-        )
         tdd_instruction = (
             "Follow TDD order: write failing tests first, commit, then implement, commit."
             if test_stage_enabled
@@ -547,29 +539,20 @@ async def _run_implementation_agent(
             f"{tdd_instruction} "
             f"Mark each non-[MANUAL] task - [x] in tasks.md after completing it."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "implement",
-            claude_fallback=lambda model, user_prompt=user_prompt, tasks=tasks: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "impl-agent": impl_agent_definition(
-                            constitution,
-                            spec,
-                            plan,
-                            tasks,
-                            quality_principles,
-                            model=model,
-                            test_stage_enabled=test_stage_enabled,
-                        )
-                    },
-                    model=model,
-                ),
+            "impl-agent",
+            lambda model, tasks=tasks: impl_agent_definition(
+                constitution,
+                spec,
+                plan,
+                tasks,
+                quality_principles,
+                model=model,
+                test_stage_enabled=test_stage_enabled,
             ),
-            system_prompt=impl_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
         tasks = read_file(spec_dir / "tasks.md")
@@ -592,25 +575,15 @@ async def _run_ci_fix_agent(
     feature: str, constitution: str, spec: str, plan: str, tasks: str, failure_summary: str
 ) -> None:
     """Run the CI fix agent once for the given failure summary."""
-    ci_fix_agent = ci_fix_agent_definition(constitution, spec, plan, tasks, failure_summary)
     user_prompt = f"Fix CI failures for feature {feature}. Failures:\n{failure_summary}"
-    await local_agent_loop.run_generation(
+    await local_agent_loop.run_agent(
         log,
         "implement",
-        claude_fallback=lambda model: query(
-            prompt=user_prompt + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "ci-fix-agent": ci_fix_agent_definition(
-                        constitution, spec, plan, tasks, failure_summary, model=model
-                    )
-                },
-                model=model,
-            ),
+        "ci-fix-agent",
+        lambda model: ci_fix_agent_definition(
+            constitution, spec, plan, tasks, failure_summary, model=model
         ),
-        system_prompt=ci_fix_agent.prompt,
-        user_prompt=user_prompt,
+        user_prompt,
     )
 
 
@@ -698,27 +671,17 @@ async def _run_revision(
     log(
         f"Running fix agent for {pending_label} violations from iteration {pending_iter} ({len(pending_violations)} issue(s))..."
     )
-    fix_agent = fix_agent_definition(constitution, spec, plan, tasks_content, pending_violations)
     user_prompt = (
         f"Fix violations for feature {feature}. Violations: {json.dumps(pending_violations)}"
     )
-    await local_agent_loop.run_generation(
+    await local_agent_loop.run_agent(
         log,
         "implement",
-        claude_fallback=lambda model: query(
-            prompt=user_prompt + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "fix-agent": fix_agent_definition(
-                        constitution, spec, plan, tasks_content, pending_violations, model=model
-                    )
-                },
-                model=model,
-            ),
+        "fix-agent",
+        lambda model: fix_agent_definition(
+            constitution, spec, plan, tasks_content, pending_violations, model=model
         ),
-        system_prompt=fix_agent.prompt,
-        user_prompt=user_prompt,
+        user_prompt,
     )
 
 

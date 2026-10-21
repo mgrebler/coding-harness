@@ -320,27 +320,15 @@ async def run(feature: str):
     # --- Step 1: Generate plan.md if needed ---
     if not (spec_dir / "plan.md").exists() or force_regen:
         log("Running plan agent...")
-        plan_agent = plan_agent_definition(constitution, spec, arch_principles)
         user_prompt = (
             f"Generate plan.md for feature {feature}. Write it to specs/{feature}/plan.md."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "plan",
-            claude_fallback=lambda model: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "plan-agent": plan_agent_definition(
-                            constitution, spec, arch_principles, model=model
-                        )
-                    },
-                    model=model,
-                ),
-            ),
-            system_prompt=plan_agent.prompt,
-            user_prompt=user_prompt,
+            "plan-agent",
+            lambda model: plan_agent_definition(constitution, spec, arch_principles, model=model),
+            user_prompt,
         )
 
         if not (spec_dir / "plan.md").exists():
@@ -371,7 +359,6 @@ async def run(feature: str):
         log(
             f"Running plan revision for {pending_label} violations from iteration {pending_iter}..."
         )
-        plan_agent = plan_agent_definition(constitution, spec, arch_principles)
         user_prompt = (
             f"Revise plan.md for feature {feature}. "
             f"Violations to address: {json.dumps(pending_violations)} "
@@ -379,23 +366,12 @@ async def run(feature: str):
             f"and update research.md, data-model.md, quickstart.md, and contracts/ wherever "
             f"your change affects them."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "plan",
-            claude_fallback=lambda model: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "plan-agent": plan_agent_definition(
-                            constitution, spec, arch_principles, model=model
-                        )
-                    },
-                    model=model,
-                ),
-            ),
-            system_prompt=plan_agent.prompt,
-            user_prompt=user_prompt,
+            "plan-agent",
+            lambda model: plan_agent_definition(constitution, spec, arch_principles, model=model),
+            user_prompt,
         )
 
     async def on_both_pass(arch_result: dict) -> None:

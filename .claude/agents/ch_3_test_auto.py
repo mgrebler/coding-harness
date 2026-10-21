@@ -476,9 +476,6 @@ async def _run_red_state_gate(
             f"Deterministic §TQ2 red-state check found {len(issues)} invalid artifact(s) "
             f"(attempt {attempt}/{max_attempts}) — kicking back to test agent before critic loop..."
         )
-        test_agent = test_agent_definition(
-            constitution, spec, plan, tasks, test_principles, feature
-        )
         user_prompt = (
             f"The following red-state artifacts for feature {feature} do not prove a "
             f"genuine test failure — most likely the test environment (database, dev "
@@ -489,23 +486,14 @@ async def _run_red_state_gate(
             f"capture to the same specs/{feature}/test-results/<TASKID>-red.txt path. Do not "
             f"write implementation code."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "test",
-            claude_fallback=lambda model, user_prompt=user_prompt: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "test-agent": test_agent_definition(
-                            constitution, spec, plan, tasks, test_principles, feature, model=model
-                        )
-                    },
-                    model=model,
-                ),
+            "test-agent",
+            lambda model: test_agent_definition(
+                constitution, spec, plan, tasks, test_principles, feature, model=model
             ),
-            system_prompt=test_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
     remaining = validate_red_state_artifacts(spec_dir / "test-results")
@@ -538,32 +526,20 @@ async def _run_test_agent_if_needed(
     max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         log(f"Running test agent (attempt {attempt}/{max_attempts})...")
-        test_agent = test_agent_definition(
-            constitution, spec, plan, tasks, test_principles, feature
-        )
         user_prompt = (
             f"Write failing tests for all unchecked [TEST] tasks in specs/{feature}/tasks.md. "
             f"No implementation code. Confirm each test fails for the expected reason. "
             f"Save failing output to specs/{feature}/test-results/<TASKID>-red.txt. "
             f"Mark each [TEST] task [x] in tasks.md after completing it."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "test",
-            claude_fallback=lambda model, user_prompt=user_prompt, tasks=tasks: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "test-agent": test_agent_definition(
-                            constitution, spec, plan, tasks, test_principles, feature, model=model
-                        )
-                    },
-                    model=model,
-                ),
+            "test-agent",
+            lambda model, tasks=tasks: test_agent_definition(
+                constitution, spec, plan, tasks, test_principles, feature, model=model
             ),
-            system_prompt=test_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
         tasks = read_file(spec_dir / "tasks.md")
@@ -647,36 +623,24 @@ async def run(feature: str):
             f"Running fix agent for {pending_label} violations from iteration {pending_iter} "
             f"({len(pending_violations)} issue(s))..."
         )
-        test_fix_agent = test_fix_agent_definition(
-            constitution, spec, plan, tasks_content, test_principles, pending_violations
-        )
         user_prompt = (
             f"Fix {pending_label} violations for feature {feature}. "
             f"Violations: {json.dumps(pending_violations)}"
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "test",
-            claude_fallback=lambda model: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "test-fix-agent": test_fix_agent_definition(
-                            constitution,
-                            spec,
-                            plan,
-                            tasks_content,
-                            test_principles,
-                            pending_violations,
-                            model=model,
-                        )
-                    },
-                    model=model,
-                ),
+            "test-fix-agent",
+            lambda model: test_fix_agent_definition(
+                constitution,
+                spec,
+                plan,
+                tasks_content,
+                test_principles,
+                pending_violations,
+                model=model,
             ),
-            system_prompt=test_fix_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
     async def on_both_pass(quality_result: dict) -> None:

@@ -274,27 +274,15 @@ async def run(feature: str):
 
     if not list(spec_dir.glob(f"{RESULT_PREFIX}-*.json")):
         log("Running docs agent...")
-        docs_agent = docs_agent_definition(
-            constitution, documentation_principles, spec, plan, tasks
-        )
         user_prompt = f"Merge feature {feature}'s shipped behaviour into docs/."
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "docs",
-            claude_fallback=lambda model: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "docs-agent": docs_agent_definition(
-                            constitution, documentation_principles, spec, plan, tasks, model=model
-                        )
-                    },
-                    model=model,
-                ),
+            "docs-agent",
+            lambda model: docs_agent_definition(
+                constitution, documentation_principles, spec, plan, tasks, model=model
             ),
-            system_prompt=docs_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
         if not DOCS_DIR.exists():
@@ -323,31 +311,19 @@ async def run(feature: str):
         log(
             f"Running revision agent to address {len(pending_violations)} violation(s) from iteration {pending_iter}..."
         )
-        docs_agent = docs_agent_definition(
-            constitution, documentation_principles, spec, plan, tasks
-        )
         user_prompt = (
             f"Revise docs/ for feature {feature} to fix critic violations. "
             f"Violations to address: {json.dumps(pending_violations)} "
             f"Fix ONLY the files needed to resolve those violations."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "docs",
-            claude_fallback=lambda model: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "docs-agent": docs_agent_definition(
-                            constitution, documentation_principles, spec, plan, tasks, model=model
-                        )
-                    },
-                    model=model,
-                ),
+            "docs-agent",
+            lambda model: docs_agent_definition(
+                constitution, documentation_principles, spec, plan, tasks, model=model
             ),
-            system_prompt=docs_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
     async def on_pass(result: dict) -> None:

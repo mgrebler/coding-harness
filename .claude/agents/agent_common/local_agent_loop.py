@@ -24,7 +24,12 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from claude_agent_sdk import AgentDefinition, query
+
 from agent_common import console, local_tools, ollama
+from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
+
+AUTHORING_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 
 _DEFAULT_MAX_TURNS = 40
 
@@ -199,6 +204,32 @@ async def run_generation(
         log(f"Using local LLM ({config['model']}) for {stage} generation...")
         await run_local_agent_loop(log, system_prompt, user_prompt, config)
     _halt_if_protected_files_touched(log, protected_before)
+
+
+async def run_agent(
+    log,
+    stage: str,
+    agent_name: str,
+    make_agent: Callable[[str | None], AgentDefinition],
+    user_prompt: str,
+) -> None:
+    """Run one authoring/fix agent for `stage` via run_generation: the local
+    model gets make_agent(None).prompt as its system prompt; the Claude path
+    drives agent_name, built by make_agent(model), as a subagent."""
+    await run_generation(
+        log,
+        stage,
+        claude_fallback=lambda model: query(
+            prompt=user_prompt + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
+                allowed_tools=[*AUTHORING_TOOLS, "Agent"],
+                agents={agent_name: make_agent(model)},
+                model=model,
+            ),
+        ),
+        system_prompt=make_agent(None).prompt,
+        user_prompt=user_prompt,
+    )
 
 
 # Files only a human may write: escalation reviews are proof of human review
