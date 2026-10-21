@@ -158,3 +158,36 @@ class TestRunImplementationAgent(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCiGate(unittest.IsolatedAsyncioTestCase):
+    async def test_no_ci_commands_reports_skipped_not_passed(self):
+        """specs/004, 005: "All CI checks passed" was logged with nothing run."""
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            with (
+                patch.object(impl_auto, "_build_ci_commands", return_value=[]),
+                patch.object(impl_auto, "_run_commands") as run_commands,
+            ):
+                outcome = await impl_auto._ci_gate(
+                    "feat", spec_dir, "c", "s", "p", include_slow=True
+                )
+            run_commands.assert_not_called()
+            self.assertIn("SKIPPED", outcome)
+            followup = (spec_dir / "FOLLOWUP-non-blocking-concerns.md").read_text()
+            self.assertIn("CI was not run", followup)
+
+    async def test_failure_gets_one_fix_attempt_then_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            _write_tasks(spec_dir, "- [x] T001 [IMPL] done\n")
+            with (
+                patch.object(impl_auto, "_build_ci_commands", return_value=[("unit", ["x"])]),
+                patch.object(impl_auto, "_run_commands", side_effect=[(False, "boom"), (True, "")]),
+                patch.object(impl_auto, "_run_ci_fix_agent", new=AsyncMock()) as fix,
+            ):
+                outcome = await impl_auto._ci_gate(
+                    "feat", spec_dir, "c", "s", "p", include_slow=False
+                )
+            fix.assert_awaited_once()
+            self.assertEqual(outcome, "All CI checks passed")

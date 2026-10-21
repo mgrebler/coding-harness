@@ -92,3 +92,9 @@ class TestReadChangedSourceFiles(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReadChangedFiles(unittest.TestCase):
+    def test_no_match_raises_instead_of_returning_a_placeholder(self):
+        with self.assertRaises(files.NoChangedFilesError):
+            files.read_changed_files(["src/app.ts"], ("tests/",))

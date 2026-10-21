@@ -36,6 +36,7 @@ Resume behaviour:
   against a partially-merged intermediate state.
 """
 
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -59,7 +60,7 @@ from agent_common.driving_agent import (
 )
 from agent_common.files import read_file, require_spec_files
 from agent_common.resume_state import (
-    extend_iterations_if_reviewed,
+    apply_escalation_review,
     format_violations_block,
     load_prior_violations,
     next_iteration,
@@ -264,7 +265,7 @@ async def run(feature: str):
     plan = read_file(spec_dir / "plan.md")
     tasks = read_file(spec_dir / "tasks.md")
 
-    max_iterations, _skip_fix_agent = extend_iterations_if_reviewed(
+    budget = apply_escalation_review(
         spec_dir, "ch-5-docs-critic-escalation-review.md", RESULT_PREFIX, 3, log
     )
 
@@ -306,7 +307,6 @@ async def run(feature: str):
         spec_dir,
         AGENT_NAME,
         RESULT_PREFIX,
-        max_iterations,
         "docs critic",
         "Documentation is up to date. No further action taken.",
         "after_docs",
@@ -328,7 +328,7 @@ async def run(feature: str):
         )
         user_prompt = (
             f"Revise docs/ for feature {feature} to fix critic violations. "
-            f"Read specs/{feature}/ch-5-docs-critic-result-{pending_iter}.json for the violation list. "
+            f"Violations to address: {json.dumps(pending_violations)} "
             f"Fix ONLY the files needed to resolve those violations."
         )
         await local_agent_loop.run_generation(
@@ -416,7 +416,7 @@ async def run(feature: str):
         log,
         spec_dir,
         feature,
-        max_iterations,
+        budget,
         gate=GateSpec(
             RESULT_PREFIX,
             "ch_5_docs_critic.py",
@@ -426,7 +426,6 @@ async def run(feature: str):
             build_reconcile_query,
         ),
         resume_state=(iteration, violations),
-        skip_fix_agent=_skip_fix_agent,
         run_fix=run_fix,
         on_pass=on_pass,
         escalation_kwargs={

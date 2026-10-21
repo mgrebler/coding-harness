@@ -188,6 +188,12 @@ Review and edit `specs/NNN-feature/spec.md` if needed, then:
 
 This chains five stages — plan, tasks, test, implement, docs — with built-in critic loops at each stage.
 
+The pipeline stops for you in three situations:
+
+- **Pending governance amendments.** If plan.md lists anything under `## Pending Human Approvals`, the pipeline stops before tasks (exit code 4). Agents may never edit `.specify/memory/`. Apply or reject each amendment yourself, replace the list with `None.`, and re-run.
+- **Escalation.** A stage that runs out of critic iterations writes `specs/NNN-feature/<stage>-escalation.md`. Reply by creating the `-review.md` file it names. Write guidance in it and the fix agent runs next with your review as an authoritative instruction. If you already made the fix yourself, include the line `Resolution: fixed-by-human` and the fix agent is skipped. Each review is used once: it is renamed to `*-consumed-to-<N>.md`.
+- **`[MANUAL]` tasks.** These are left unchecked for you. They cover anything that needs a human or an out-of-repo action, such as approvals, live deploys or manual verification.
+
 ---
 
 ## Quick Reference

@@ -147,10 +147,21 @@ def analyze_task_format(tasks: str) -> str:
 _BRACKETED_ID_NO_CHECKBOX_RE = re.compile(r"^[-*]\s*\[T\d+\]")
 
 
+# Phrasing that only ever describes work an agent can't do. Kept narrow for
+# the same false-positive reason as above; validated against the specs/001,
+# 003, 080, 081, 083 tasks.md files, where every untagged hit was a task that
+# later blocked ch_4_implement_auto's completion gate until a human tagged it.
+_MANUAL_PHRASE_RE = re.compile(
+    r"(?i)\b(manual(ly)?\b|wait(ing)? for (explicit )?(human )?approval|human approval"
+    r"|live[\s`]+(cdk )?deploy|real (aws|dev) account)"
+)
+
+
 def task_format_violations(tasks: str) -> list[str]:
     """Return a flat list of unambiguous, mechanically-detected §T5 format
-    violations — currently just the bracketed-ID-instead-of-checkbox case
-    (`- [T001] ...`) — precise enough to auto-kick-back without LLM
+    violations — the bracketed-ID-instead-of-checkbox case (`- [T001] ...`)
+    and an unchecked, non-[TEST] task described as human/out-of-repo work but
+    missing its [MANUAL] tag — precise enough to auto-kick-back without LLM
     judgment. Deliberately conservative: false negatives here just mean the
     LLM critic catches it on the next iteration as before; false positives
     would waste an iteration reformatting narrative prose that was never
@@ -166,7 +177,35 @@ def task_format_violations(tasks: str) -> list[str]:
                 f"  Line {i}: {stripped[:100]} ← MISSING checkbox (`- [ ]`/`- [x]` must "
                 f"immediately precede the task ID, e.g. `- [ ] T001 ...`, not `- [T001] ...`)"
             )
+        elif (
+            _UNCHECKED_TXXX_RE.match(stripped)
+            and not task_tags(stripped) & {"[MANUAL]", "[TEST]"}
+            and _MANUAL_PHRASE_RE.search(stripped)
+        ):
+            violations.append(
+                f"  Line {i}: {stripped[:100]} ← MISSING [MANUAL] tag (task describes "
+                f"human or out-of-repo work an agent cannot complete)"
+            )
     return violations
+
+
+# --- Pending human approvals (plan.md) ----------------------------------
+
+_PENDING_APPROVALS_RE = re.compile(
+    r"^## Pending Human Approvals\s*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL
+)
+
+
+def pending_human_approvals(plan: str) -> list[str]:
+    """The bullets under plan.md's "## Pending Human Approvals" section —
+    governance amendments only a human may apply. specs/001, 005 and 006 each
+    generated tasks while such amendments were still pending, and the tasks
+    critic then blocked on them every iteration."""
+    m = _PENDING_APPROVALS_RE.search(plan)
+    if not m:
+        return []
+    body = re.sub(r"<!--.*?-->", "", m.group(1), flags=re.DOTALL)
+    return [line.strip() for line in body.splitlines() if line.strip().startswith(("- ", "* "))]
 
 
 # --- Task completion -----------------------------------------------------
@@ -182,13 +221,26 @@ def task_format_violations(tasks: str) -> list[str]:
 # completed test phase as having outstanding [TEST] work.
 _UNCHECKED_TXXX_RE = re.compile(r"^[-*]\s+\[ \]\s*T\d+\b")
 
+# The tag block is the run of bracketed tags right after the task ID
+# (`T005 [IMPL] [P] [US1]`, sometimes bolded as `**[MANUAL]**`). Tags are only
+# matched there: specs/005 had an [IMPL] line whose prose said "no separate
+# [TEST] task", which a substring scan counted as an outstanding [TEST] task.
+_TASK_TAG_BLOCK_RE = re.compile(r"^[-*]\s+\[[ xX]\]\s*T\d+\b((?:\s*\**\[[\w-]+\]\**)*)")
+_TAG_RE = re.compile(r"\[[\w-]+\]")
+
+
+def task_tags(line: str) -> set[str]:
+    """The tags (e.g. {"[TEST]", "[P]", "[US1]"}) in a task line's tag block."""
+    m = _TASK_TAG_BLOCK_RE.match(line.strip())
+    return set(_TAG_RE.findall(m.group(1))) if m else set()
+
 
 def unchecked_task_lines(
     tasks: str, tag: str | None = None, exclude_tag: str | None = None
 ) -> list[str]:
     """Return every unchecked task line (`- [ ] Txxx ...`) in tasks.md,
-    optionally filtered to lines also containing `tag` (e.g. "[TEST]") and/or
-    excluding lines containing `exclude_tag` (e.g. "[MANUAL]"). Centralizes
+    optionally filtered to lines tagged `tag` (e.g. "[TEST]") and/or excluding
+    lines tagged `exclude_tag` (e.g. "[MANUAL]"); see task_tags. Centralizes
     the task-completion scan that ch_3_test_auto.py and ch_4_implement_auto.py
     each used independently to detect outstanding work, so preflight checks
     and post-agent verification can't drift out of sync with each other.
@@ -205,8 +257,8 @@ def unchecked_task_lines(
         line
         for line in tasks.splitlines()
         if _UNCHECKED_TXXX_RE.match(line.strip())
-        and (tag is None or tag in line)
-        and (exclude_tag is None or exclude_tag not in line)
+        and (tag is None or tag in task_tags(line))
+        and (exclude_tag is None or exclude_tag not in task_tags(line))
     ]
 
 

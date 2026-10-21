@@ -50,16 +50,16 @@ from agent_common.driving_agent import (
     driving_agent_options,
 )
 from agent_common.files import read_file, require_spec_files
-from agent_common.followup import record_from_result_file, record_non_blocking_concerns
+from agent_common.followup import record_non_blocking_concerns
 from agent_common.preflight_checks import oversized_committed_files, unchecked_task_lines
 from agent_common.project_conventions import is_slow_check, resolve_ci_commands
 from agent_common.resume_state import (
-    extend_iterations_if_reviewed,
+    apply_escalation_review,
     find_passing_iteration,
     find_two_gate_resume_state,
     format_violations_block,
-    max_existing_iteration,
     next_iteration,
+    read_result,
     stage_is_complete,
 )
 
@@ -80,10 +80,7 @@ def preflight(spec_dir: Path, feature: str):
         if not test_quality_results:
             log("ERROR: Test phase not complete. Run /ch-3-test-auto first.")
             sys.exit(1)
-        max_quality_iteration = max_existing_iteration(spec_dir, "ch-3-test-quality-review-result")
-        passing = find_passing_iteration(
-            spec_dir, "ch-3-test-quality-review-result", max_quality_iteration
-        )
+        passing = find_passing_iteration(spec_dir, "ch-3-test-quality-review-result")
         if passing is None:
             log(
                 "ERROR: No passing test-quality-review result found. Run /ch-3-test-auto to resolve."
@@ -482,18 +479,6 @@ def _run_commands(commands: list[tuple[str, list[str]]]) -> tuple[bool, str]:
     return all_passed, "\n\n".join(failures)
 
 
-def run_quick_ci_checks() -> tuple[bool, str]:
-    """Run all declared CI checks except e2e/integration-shaped ones. Fast gate
-    before the critic loop."""
-    return _run_commands(_build_ci_commands(include_slow=False))
-
-
-def run_full_ci_checks() -> tuple[bool, str]:
-    """Run every declared CI check, including e2e. Slow gate after both review
-    gates pass."""
-    return _run_commands(_build_ci_commands(include_slow=True))
-
-
 # Commit hygiene
 
 
@@ -629,70 +614,71 @@ async def _run_ci_fix_agent(
     )
 
 
-async def _run_quick_ci_gate(
-    feature: str, spec_dir: Path, constitution: str, spec: str, plan: str, max_iterations: int
-) -> None:
-    """Run quick CI checks (typecheck + unit tests) before the critic loop, unless a
-    passing critic iteration already exists. Exits the process if CI still fails
-    after one fix attempt. e2e is deferred until both review gates pass, to avoid
-    its ~3 min cost on every iteration."""
-    if find_passing_iteration(spec_dir, CRITIC_RESULT_PREFIX, max_iterations):
-        return
+async def _ci_gate(
+    feature: str, spec_dir: Path, constitution: str, spec: str, plan: str, include_slow: bool
+) -> str:
+    """Run the project's CI checks (quick: everything but e2e/integration; full:
+    all), giving the CI fix agent one attempt on failure. Exits the process if CI
+    still fails. Returns the outcome line for the stage's ready message — no
+    resolvable CI commands is reported as SKIPPED (and recorded as a follow-up),
+    never as passed: specs/004 and 005 logged "All CI checks passed" with nothing run."""
+    scope = "CI checks" if include_slow else "quick CI checks"
+    commands = _build_ci_commands(include_slow=include_slow)
+    if not commands:
+        log(f"CI SKIPPED — no CI commands resolved for {scope}.")
+        record_non_blocking_concerns(
+            spec_dir,
+            feature,
+            "CI",
+            0,
+            [
+                {
+                    "title": "CI was not run",
+                    "severity": "High",
+                    "location": "constitution.md CI Requirements",
+                    "finding": "No backtick-quoted CI commands were found in constitution.md "
+                    "or README.md, so the implement stage ran no typecheck, lint, or tests.",
+                }
+            ],
+        )
+        return "CI SKIPPED (no CI commands declared)"
 
-    log("Running quick CI checks (typecheck + unit tests) before critic loop...")
-    quick_passed, quick_failure_summary = run_quick_ci_checks()
-    if not quick_passed:
-        log("Quick CI failed — running CI fix agent (one attempt) before entering critic loop...")
+    log(f"Running {scope}...")
+    passed, failure_summary = _run_commands(commands)
+    if not passed:
+        log(f"{scope} failed — running CI fix agent (one attempt)...")
         tasks = read_file(spec_dir / "tasks.md")
-        await _run_ci_fix_agent(feature, constitution, spec, plan, tasks, quick_failure_summary)
+        await _run_ci_fix_agent(feature, constitution, spec, plan, tasks, failure_summary)
 
-        log("Re-running quick CI checks after fix attempt...")
-        quick_passed, quick_failure_summary = run_quick_ci_checks()
-        if not quick_passed:
-            log("FAIL: Quick CI still failing after fix attempt. Human review required.")
-            log(f"Remaining failures:\n{quick_failure_summary}")
+        log(f"Re-running {scope} after fix attempt...")
+        passed, failure_summary = _run_commands(commands)
+        if not passed:
+            log(f"FAIL: {scope} still failing after fix attempt. Human review required.")
+            log(f"Remaining failures:\n{failure_summary}")
             sys.exit(1)
+    log(f"{scope} passed.")
+    return "All CI checks passed"
 
-    log("Quick CI passed — proceeding to critic loop.")
 
-
-async def _finalize_if_quality_already_passed(
-    spec_dir: Path,
+async def _finish_with_full_ci(
     feature: str,
+    spec_dir: Path,
     constitution: str,
     spec: str,
     plan: str,
-    max_iterations: int,
+    quality_result: dict,
     baseline_dirty: list[str],
-) -> bool:
-    """If quality review already passed in a prior iteration, run full CI (with one
-    fix-agent attempt) and finish the stage. Returns True if it finalized the stage,
-    in which case the caller should return immediately."""
-    passing = find_passing_iteration(spec_dir, QUALITY_RESULT_PREFIX, max_iterations)
-    if passing is None:
-        return False
-
-    log(f"Already PASS from quality review iteration {passing}.")
-    record_from_result_file(
+) -> None:
+    """Record the passing quality review's follow-ups, run full CI, and finish
+    the stage — the shared tail of a fresh both-gates PASS and a resumed one."""
+    record_non_blocking_concerns(
         spec_dir,
         feature,
         "Code Quality Review",
-        spec_dir / f"{QUALITY_RESULT_PREFIX}-{passing}.json",
+        quality_result.get("iteration", 0),
+        quality_result.get("non_blocking_concerns", []),
     )
-    log("Running CI checks before finalising...")
-    ci_passed, ci_failure_summary = run_full_ci_checks()
-    if not ci_passed:
-        log("CI checks failed — running CI fix agent (one attempt)...")
-        tasks = read_file(spec_dir / "tasks.md")
-        await _run_ci_fix_agent(feature, constitution, spec, plan, tasks, ci_failure_summary)
-
-        log("Re-running CI checks after fix attempt...")
-        ci_passed, ci_failure_summary = run_full_ci_checks()
-        if not ci_passed:
-            log("FAIL: CI checks still failing after fix attempt. Human review required.")
-            log(f"Remaining failures:\n{ci_failure_summary}")
-            sys.exit(1)
-
+    outcome = await _ci_gate(feature, spec_dir, constitution, spec, plan, include_slow=True)
     _check_commit_hygiene()
     finish_stage(
         log,
@@ -700,10 +686,9 @@ async def _finalize_if_quality_already_passed(
         AGENT_NAME,
         "after_implement",
         "ch-4-implement",
-        "All CI checks passed. Implementation is ready for human review.",
+        f"{outcome}. Implementation is ready for human review.",
         exclude_from_commit=baseline_dirty,
     )
-    return True
 
 
 async def _run_revision(
@@ -753,38 +738,8 @@ async def _on_both_pass(
     quality_result: dict,
     baseline_dirty: list[str],
 ) -> None:
-    record_non_blocking_concerns(
-        spec_dir,
-        feature,
-        "Code Quality Review",
-        quality_result.get("iteration", 0),
-        quality_result.get("non_blocking_concerns", []),
-    )
-    log("Running CI checks before finalising...")
-    ci_passed, ci_failure_summary = run_full_ci_checks()
-    if not ci_passed:
-        log("CI checks failed — running CI fix agent (one attempt)...")
-        tasks_content = read_file(spec_dir / "tasks.md")
-        await _run_ci_fix_agent(
-            feature, constitution, spec, plan, tasks_content, ci_failure_summary
-        )
-
-        log("Re-running CI checks after fix attempt...")
-        ci_passed, ci_failure_summary = run_full_ci_checks()
-        if not ci_passed:
-            log("FAIL: CI checks still failing after fix attempt. Human review required.")
-            log(f"Remaining failures:\n{ci_failure_summary}")
-            sys.exit(1)
-
-    _check_commit_hygiene()
-    finish_stage(
-        log,
-        spec_dir,
-        AGENT_NAME,
-        "after_implement",
-        "ch-4-implement",
-        "All CI checks passed. Implementation is ready for human review.",
-        exclude_from_commit=baseline_dirty,
+    await _finish_with_full_ci(
+        feature, spec_dir, constitution, spec, plan, quality_result, baseline_dirty
     )
 
 
@@ -949,7 +904,7 @@ async def run(feature: str):
         else "(code-quality-principles.md not found)"
     )
 
-    max_iterations, _skip_fix_agent = extend_iterations_if_reviewed(
+    budget = apply_escalation_review(
         spec_dir, "ch-4-implement-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
     )
 
@@ -966,12 +921,24 @@ async def run(feature: str):
     )
 
     # --- Step 1b: Quick CI check before the critic loop ---
-    await _run_quick_ci_gate(feature, spec_dir, constitution, spec, plan, max_iterations)
+    # Skipped once a critic iteration has passed: e2e is deferred until both
+    # review gates pass, to avoid its ~3 min cost on every iteration.
+    if not find_passing_iteration(spec_dir, CRITIC_RESULT_PREFIX):
+        await _ci_gate(feature, spec_dir, constitution, spec, plan, include_slow=False)
 
     # --- Resume guard: done if quality review already passed AND full CI is clean ---
-    if await _finalize_if_quality_already_passed(
-        spec_dir, feature, constitution, spec, plan, max_iterations, baseline_dirty
-    ):
+    passing_quality = find_passing_iteration(spec_dir, QUALITY_RESULT_PREFIX)
+    if passing_quality is not None:
+        log(f"Already PASS from quality review iteration {passing_quality}.")
+        await _finish_with_full_ci(
+            feature,
+            spec_dir,
+            constitution,
+            spec,
+            plan,
+            read_result(spec_dir, QUALITY_RESULT_PREFIX, passing_quality),
+            baseline_dirty,
+        )
         return
 
     # --- Resume state: determine where we left off ---
@@ -986,7 +953,7 @@ async def run(feature: str):
         log,
         spec_dir,
         feature,
-        max_iterations,
+        budget,
         gate1=GateSpec(
             CRITIC_RESULT_PREFIX,
             "ch_4_implement_critic.py",
@@ -1022,7 +989,6 @@ async def run(feature: str):
             ),
         ),
         resume_state=resume_state,
-        skip_fix_agent=_skip_fix_agent,
         run_revision=functools.partial(_run_revision, feature, spec_dir, constitution, spec, plan),
         on_both_pass=functools.partial(
             _on_both_pass,

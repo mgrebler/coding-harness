@@ -77,6 +77,7 @@ def _escalate_no_progress(
         max_iterations=max_iterations,
         log_fn=log,
         summary=no_progress_summary,
+        last_iteration=iteration,
         **kwargs,
     )
 
@@ -204,17 +205,21 @@ def _log_two_gate_resume(
     iteration: int,
     violations1: list | None,
     violations2: list | None,
-    skip_fix_agent: bool,
+    budget: rstate.IterationBudget,
 ) -> tuple[list | None, list | None]:
     """Log the resume situation for run_two_gate_loop and return the
     (violations1, violations2) to actually start the loop with — cleared to
-    (None, None) when an escalation review means they were resolved
-    externally rather than by the revision agent."""
-    if skip_fix_agent and (violations1 or violations2):
-        log(
-            "Escalation review present — skipping revision agent; violations were resolved externally."
-        )
+    (None, None) when the escalation review says the human already fixed them,
+    or with the review's guidance prepended for the revision agent."""
+    if budget.resolved_externally:
+        log("Escalation review says the human made the fix — skipping revision agent.")
         return None, None
+    if budget.human_guidance:
+        log("Escalation review guidance will be passed to the revision agent.")
+        guidance = rstate.human_guidance_violation(budget.human_guidance)
+        if violations2 and not violations1:
+            return None, [guidance, *violations2]
+        return [guidance, *(violations1 or [])], None
     if violations1:
         log(
             f"Resuming after {gate1.label} FAIL at iteration {iteration - 1} — revision will run before {gate1.label} {iteration}."
@@ -234,11 +239,10 @@ async def run_two_gate_loop(
     log,
     spec_dir: Path,
     feature: str,
-    max_iterations: int,
+    budget: rstate.IterationBudget,
     gate1: GateSpec,
     gate2: GateSpec,
     resume_state: tuple[int, list | None, list | None],
-    skip_fix_agent: bool,
     run_revision: Callable[[int, list, str], Awaitable],
     on_both_pass: Callable[[dict], Awaitable],
     escalation_kwargs: dict,
@@ -254,15 +258,23 @@ async def run_two_gate_loop(
     on_both_pass(gate2_result): awaited once gate2 PASSes; callers do their own
     commit/stage-complete/CI-check work here.
     escalation_kwargs: forwarded to write_escalation() (with spec_dir, feature,
-    max_iterations, log_fn) if the loop exhausts max_iterations.
+    max_iterations, log_fn) if the loop exhausts budget.max_iterations.
     """
     iteration, violations1, violations2 = resume_state
+    max_iterations = budget.max_iterations
+    escalation_kwargs = {**escalation_kwargs, "grant_size": budget.grant_size}
     violations1, violations2 = _log_two_gate_resume(
-        log, spec_dir, gate1, gate2, iteration, violations1, violations2, skip_fix_agent
+        log, spec_dir, gate1, gate2, iteration, violations1, violations2, budget
     )
-
-    stuck_sig1 = _blocking_signature_from_violations(violations1) if violations1 else None
-    stuck_sig2 = _blocking_signature_from_issues(violations2) if violations2 else None
+    # A consumed escalation review starts a fresh attempt, so the review-wrapped
+    # violations never count toward "no progress".
+    reviewed = budget.human_guidance or budget.resolved_externally
+    stuck_sig1 = (
+        _blocking_signature_from_violations(violations1) if violations1 and not reviewed else None
+    )
+    stuck_sig2 = (
+        _blocking_signature_from_issues(violations2) if violations2 and not reviewed else None
+    )
 
     while iteration <= max_iterations:
         path1 = spec_dir / f"{gate1.result_prefix}-{iteration}.json"
@@ -314,7 +326,13 @@ async def run_two_gate_loop(
         sig2 = _blocking_signature_from_issues(violations2)
         if sig2 and sig2 == stuck_sig2 and iteration >= _NO_PROGRESS_THRESHOLD:
             _escalate_no_progress(
-                log, spec_dir, feature, iteration, max_iterations, gate2.label, escalation_kwargs
+                log,
+                spec_dir,
+                feature,
+                iteration,
+                max_iterations,
+                gate2.label,
+                escalation_kwargs,
             )
             return
         stuck_sig2 = sig2
@@ -333,10 +351,9 @@ async def run_single_gate_loop(
     log,
     spec_dir: Path,
     feature: str,
-    max_iterations: int,
+    budget: rstate.IterationBudget,
     gate: GateSpec,
     resume_state: tuple[int, list | None],
-    skip_fix_agent: bool,
     run_fix: Callable[[int, list], Awaitable],
     on_pass: Callable[[dict], Awaitable],
     escalation_kwargs: dict,
@@ -355,16 +372,24 @@ async def run_single_gate_loop(
     on_pass(result): awaited once the gate PASSes, before the loop returns.
     """
     iteration, violations = resume_state
-    if skip_fix_agent and violations:
-        log("Escalation review present — skipping fix agent; violations were resolved externally.")
+    max_iterations = budget.max_iterations
+    escalation_kwargs = {**escalation_kwargs, "grant_size": budget.grant_size}
+    stuck_sig = (
+        _blocking_signature_from_violations(violations)
+        if violations and not (budget.human_guidance or budget.resolved_externally)
+        else None
+    )
+    if budget.resolved_externally:
+        log("Escalation review says the human made the fix — skipping fix agent.")
         violations = None
+    elif budget.human_guidance:
+        log("Escalation review guidance will be passed to the fix agent.")
+        violations = [rstate.human_guidance_violation(budget.human_guidance), *(violations or [])]
     elif violations:
         log(
             f"Resuming after FAIL at iteration {iteration - 1} "
             f"({len(violations)} violation(s)) — fix agent will run before {gate.label} {iteration}."
         )
-
-    stuck_sig = _blocking_signature_from_violations(violations) if violations else None
 
     while iteration <= max_iterations:
         path = spec_dir / f"{gate.result_prefix}-{iteration}.json"
@@ -384,7 +409,13 @@ async def run_single_gate_loop(
             sig = _blocking_signature_from_violations(violations)
             if sig and sig == stuck_sig and iteration >= _NO_PROGRESS_THRESHOLD:
                 _escalate_no_progress(
-                    log, spec_dir, feature, iteration, max_iterations, gate.label, escalation_kwargs
+                    log,
+                    spec_dir,
+                    feature,
+                    iteration,
+                    max_iterations,
+                    gate.label,
+                    escalation_kwargs,
                 )
                 return
             stuck_sig = sig
@@ -430,7 +461,6 @@ def finish_if_already_passing(
     spec_dir: Path,
     agent_name: str,
     result_prefix: str,
-    max_iterations: int,
     label: str,
     ready_message: str,
     commit_event: str,
@@ -444,7 +474,7 @@ def finish_if_already_passing(
     ch_1_plan_auto.py, ch_2_tasks_auto.py, and ch_3_test_auto.py (ch_4_implement_auto.py's guard also
     runs CI checks, so it stays bespoke).
     """
-    passing = rstate.find_passing_iteration(spec_dir, result_prefix, max_iterations)
+    passing = rstate.find_passing_iteration(spec_dir, result_prefix)
     if passing is None:
         return False
     log(f"Already PASS from {label} iteration {passing}.")
@@ -496,17 +526,21 @@ def write_escalation(
     summary: str,
     required_action: str,
     log_fn=None,
+    grant_size: int = 3,
+    last_iteration: int | None = None,
 ) -> None:
-    """Write an escalation document and exit non-zero. Called when the critic loop exhausts the iteration limit."""
+    """Write an escalation document and exit non-zero. Called when the critic loop
+    exhausts the iteration limit, or escalates early at last_iteration."""
     _log = log_fn or print
-    _log(f"ESCALATION: {log_description} after {max_iterations} iterations.")
+    ran = last_iteration or max_iterations
+    _log(f"ESCALATION: {log_description} after {ran} iterations.")
     escalation_path = spec_dir / escalation_filename
     history = rstate.build_review_history(spec_dir, review_history_prefixes, max_iterations)
     content = (
         f"# {title}\n\n"
         f"Feature: {feature}\n"
         f"Date: {datetime.now(UTC).isoformat()}\n"
-        f"Status: FAILED after {max_iterations} iterations\n\n"
+        f"Status: FAILED after {ran} iterations\n\n"
         f"## Summary\n\n{summary}\n\n"
         f"## Review History\n\n{history}\n\n"
         f"## Required Action\n\n{required_action}\n"
@@ -514,8 +548,10 @@ def write_escalation(
     review_filename = escalation_filename.replace(".md", "-review.md")
     content += (
         f"\n## Resuming After Review\n\n"
-        f"Once you have addressed the violations (by fixing code, updating the constitution,\n"
-        f"or waiving a violation with justification), create:\n\n"
+        f"Create the file below either with guidance for the fix agent (it will run next\n"
+        f"with your review as an authoritative instruction), or after making the fix\n"
+        f"yourself — in that case include the line `{rstate.FIXED_BY_HUMAN_MARKER}` so\n"
+        f"the fix agent is skipped:\n\n"
         f"    specs/{feature}/{review_filename}\n\n"
         f"Use this template:\n\n"
         f"    # Escalation Review\n"
@@ -523,15 +559,17 @@ def write_escalation(
         f"    Date: YYYY-MM-DD\n"
         f"    Reviewed by: <name>\n"
         f"    \n"
-        f"    ## Action taken\n"
+        f"    ## Action taken / guidance for the fix agent\n"
         f"    \n"
-        f"    <Describe what you changed: code fixes, constitution updates, waived violations, etc.>\n"
+        f"    <What you changed, or what the fix agent should do. Add\n"
+        f"    `{rstate.FIXED_BY_HUMAN_MARKER}` only if no agent fix is needed.>\n"
         f"    \n"
         f"    ## Violations waived\n"
         f"    \n"
         f"    - <rule> — <justification>  (omit section if none)\n\n"
-        f"Re-running the pipeline will detect this file and grant {max_iterations} additional\n"
-        f"iterations automatically — without deleting any existing result files.\n"
+        f"Re-running the pipeline will detect this file and grant {grant_size} additional\n"
+        f"iterations automatically — without deleting any existing result files. The\n"
+        f"file is renamed to *-consumed-to-<N>.md once applied, so it is used only once.\n"
     )
     files.write_file(escalation_path, content)
     _log(f"Human review required → {escalation_path}")

@@ -51,6 +51,12 @@ def read_changed_source_files(changed_files: list[str]) -> str:
     return "\n\n".join(content_parts) if content_parts else "(no changed files found)"
 
 
+class NoChangedFilesError(Exception):
+    """read_changed_files matched nothing — a critic given this input would
+    review an empty diff and PASS it (specs/082: all four test-stage critics
+    passed on "no test files were changed")."""
+
+
 def read_changed_files(
     changed_files: list[str],
     dirs: tuple[str, ...],
@@ -61,7 +67,7 @@ def read_changed_files(
     changed file outside every resolved dir that still looks like a match by
     some other signal (e.g. project_conventions.looks_like_test_file), so a
     directory resolution gap doesn't silently drop it from the result. See
-    FOLLOWUP_HARNESS.md Bug 2."""
+    FOLLOWUP_HARNESS.md Bug 2. Raises NoChangedFilesError if nothing matches."""
     sections = []
     for path_str in changed_files:
         if not any(path_str.startswith(d) for d in dirs) and not (
@@ -76,9 +82,12 @@ def read_changed_files(
             sections.append(f"--- {path_str} ---\n{content}")
         except Exception:
             sections.append(f"--- {path_str} --- (could not read)")
-    return (
-        "\n\n".join(sections) if sections else "(no changed files found in specified directories)"
-    )
+    if not sections:
+        raise NoChangedFilesError(
+            f"no changed files under {', '.join(dirs) or '(no resolved dirs)'} — check the "
+            "'Test file location' bullets in constitution.md"
+        )
+    return "\n\n".join(sections)
 
 
 def read_directory_tree(root: Path) -> dict[str, str]:

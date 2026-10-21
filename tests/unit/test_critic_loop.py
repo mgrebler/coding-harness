@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
 from agent_common import console, critic_loop, git, ollama, resume_state
 from agent_common.critic_loop import GateSpec
+from agent_common.resume_state import IterationBudget
 
 
 class TestFinishStage(unittest.TestCase):
@@ -39,7 +40,6 @@ class TestFinishIfAlreadyPassing(unittest.TestCase):
                     spec_dir,
                     "plan-auto",
                     "ch-1-plan-critic-result",
-                    3,
                     "plan critic",
                     "Ready for review.",
                     "after_plan",
@@ -61,7 +61,6 @@ class TestFinishIfAlreadyPassing(unittest.TestCase):
                     spec_dir,
                     "plan-auto",
                     "ch-1-plan-critic-result",
-                    3,
                     "plan critic",
                     "Ready for review.",
                     "after_plan",
@@ -83,7 +82,6 @@ class TestFinishIfAlreadyPassing(unittest.TestCase):
                     spec_dir,
                     "docs-auto",
                     "ch-5-docs-critic-result",
-                    3,
                     "docs critic",
                     "Ready.",
                     "after_docs",
@@ -185,10 +183,9 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
                     MagicMock(),
                     spec_dir,
                     "feat",
-                    3,
+                    IterationBudget(3, 3),
                     gate,
                     resume_state=(1, None),
-                    skip_fix_agent=False,
                     run_fix=run_fix,
                     on_pass=on_pass,
                     escalation_kwargs={},
@@ -220,10 +217,9 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
                     MagicMock(),
                     spec_dir,
                     "feat",
-                    3,
+                    IterationBudget(3, 3),
                     gate,
                     resume_state=(1, None),
-                    skip_fix_agent=False,
                     run_fix=run_fix,
                     on_pass=on_pass,
                     escalation_kwargs={},
@@ -266,10 +262,9 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
                     MagicMock(),
                     spec_dir,
                     "feat",
-                    3,
+                    IterationBudget(3, 3),
                     gate,
                     resume_state=(1, None),
-                    skip_fix_agent=False,
                     run_fix=run_fix,
                     on_pass=on_pass,
                     escalation_kwargs=escalation_kwargs,
@@ -284,38 +279,44 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             for k, v in escalation_kwargs.items():
                 self.assertEqual(kwargs[k], v)
 
-    async def test_skip_fix_agent_resumes_without_running_fix(self):
+    async def _resume_after_review(self, budget):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
             viols = [{"rule": "§T1", "severity": "BLOCKING"}]
-            # Simulate resuming after an escalation review: iteration 1 already FAILed
-            # (result file exists on disk) and resume_state carries its violations forward,
-            # but skip_fix_agent=True means those violations were resolved externally.
             _write_result(spec_dir, "ch-2-tasks-critic-result", 1, "FAIL", violations=viols)
             gate, fake_run_gate, _ = self._make_gate(spec_dir, {2: ("PASS", [])})
             run_fix = AsyncMock()
-            on_pass = AsyncMock()
 
-            with (
-                patch.object(ollama, "run_gate", side_effect=fake_run_gate),
-                patch.object(critic_loop, "write_escalation") as mock_escalate,
-            ):
+            with patch.object(ollama, "run_gate", side_effect=fake_run_gate):
                 await critic_loop.run_single_gate_loop(
                     MagicMock(),
                     spec_dir,
                     "feat",
-                    6,
+                    budget,
                     gate,
                     resume_state=(2, viols),
-                    skip_fix_agent=True,
                     run_fix=run_fix,
-                    on_pass=on_pass,
+                    on_pass=AsyncMock(),
                     escalation_kwargs={},
                 )
+            return run_fix, viols
 
-            run_fix.assert_not_called()
-            on_pass.assert_awaited_once()
-            mock_escalate.assert_not_called()
+    async def test_review_marked_fixed_by_human_skips_fix_agent(self):
+        run_fix, _ = await self._resume_after_review(
+            IterationBudget(6, 3, resolved_externally=True)
+        )
+        run_fix.assert_not_called()
+
+    async def test_review_guidance_is_passed_to_fix_agent(self):
+        run_fix, viols = await self._resume_after_review(
+            IterationBudget(6, 3, human_guidance="Use window.location, not document.referrer.")
+        )
+        run_fix.assert_awaited_once()
+        pending_iter, pending = run_fix.await_args.args
+        self.assertEqual(pending_iter, 1)
+        self.assertEqual(pending[0]["rule"], "Human escalation review")
+        self.assertIn("window.location", pending[0]["finding"])
+        self.assertEqual(pending[1:], viols)
 
 
 class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
@@ -380,11 +381,10 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
                     MagicMock(),
                     spec_dir,
                     "feat",
-                    3,
+                    IterationBudget(3, 3),
                     gate1,
                     gate2,
                     resume_state=(1, None, None),
-                    skip_fix_agent=False,
                     run_revision=run_revision,
                     on_both_pass=on_both_pass,
                     escalation_kwargs={},
@@ -416,11 +416,10 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
                     MagicMock(),
                     spec_dir,
                     "feat",
-                    3,
+                    IterationBudget(3, 3),
                     gate1,
                     gate2,
                     resume_state=(1, None, None),
-                    skip_fix_agent=False,
                     run_revision=run_revision,
                     on_both_pass=on_both_pass,
                     escalation_kwargs={},
@@ -451,11 +450,10 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
                     MagicMock(),
                     spec_dir,
                     "feat",
-                    3,
+                    IterationBudget(3, 3),
                     gate1,
                     gate2,
                     resume_state=(1, None, None),
-                    skip_fix_agent=False,
                     run_revision=run_revision,
                     on_both_pass=on_both_pass,
                     escalation_kwargs={},
@@ -499,11 +497,10 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
                     MagicMock(),
                     spec_dir,
                     "feat",
-                    3,
+                    IterationBudget(3, 3),
                     gate1,
                     gate2,
                     resume_state=(1, None, None),
-                    skip_fix_agent=False,
                     run_revision=run_revision,
                     on_both_pass=on_both_pass,
                     escalation_kwargs=escalation_kwargs,
@@ -570,11 +567,10 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
                     MagicMock(),
                     spec_dir,
                     "feat",
-                    3,
+                    IterationBudget(3, 3),
                     gate1,
                     gate2,
                     resume_state=(1, None, None),
-                    skip_fix_agent=False,
                     run_revision=run_revision,
                     on_both_pass=on_both_pass,
                     escalation_kwargs={},

@@ -106,6 +106,16 @@ class TestResolveTestDirs(_InTempProject):
         )
         self.assertEqual(pc.resolve_test_dirs(), ("backend/tests/", "frontend/tests/"))
 
+    def test_takes_only_each_bullets_subject_directory(self):
+        """specs/084: "`backend/tests/` mirroring the `src/` structure" added src/."""
+        self._write_constitution(
+            "### Test file location\n\n"
+            "- Backend tests: `backend/tests/` mirroring the `src/` structure.\n"
+            "- Frontend tests: `frontend/tests/` mirroring the `src/` structure.\n\n"
+            "---\n"
+        )
+        self.assertEqual(pc.resolve_test_dirs(), ("backend/tests/", "frontend/tests/"))
+
     def test_ignores_placeholder_paths(self):
         self._write_constitution(
             "### Test file location\n\n- Tests: `[PROJECT: e.g. backend/tests/]`\n\n---\n"

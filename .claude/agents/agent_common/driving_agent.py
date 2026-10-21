@@ -35,11 +35,14 @@ NO_RECURSION_NOTICE = (
 
 HUMAN_REVIEW_ATTESTATION_GUARDRAIL = (
     "- Never create, edit, copy, or delete any `*-escalation.md` or "
-    "`*-escalation-review.md` file under specs/, and never write any text claiming a "
-    "human reviewed, confirmed, or approved something (e.g. a `Reviewed by:` line). "
-    "Those files are written only by a real human after the orchestrator escalates; the "
-    "orchestrator treats them as proof of human review and halts the stage if an agent "
-    "touches one. Fixing a critic finding while iterations remain is already authorized "
+    "`*-escalation-review.md` file under specs/, or any file under `.specify/memory/` "
+    "(constitution, architecture, principles, decision logs), and never write any text "
+    "claiming a human reviewed, confirmed, or approved something (e.g. a `Reviewed by:` "
+    "line or an `Approved by` entry). Those files are written only by a real human; the "
+    "orchestrator treats them as proof of human review or approval and halts the stage if "
+    "an agent touches one. If a finding can only be resolved by a governance amendment, "
+    "leave it unresolved — the orchestrator escalates it to a human. "
+    "Fixing a critic finding while iterations remain is already authorized "
     "by the pipeline — no human sign-off is needed or wanted: apply the fix as your "
     "other instructions say and stop; the orchestrator re-runs the critic."
 )

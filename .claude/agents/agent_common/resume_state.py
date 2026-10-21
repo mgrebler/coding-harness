@@ -1,8 +1,10 @@
 """Critic-loop resume-state and result-file bookkeeping."""
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 # Required top-level keys per summary_style, mirroring the confidence/violations
 # convention shared with critic_loop.py and ollama.py's _log_cli_result. A gate
@@ -68,9 +70,12 @@ def read_result(
 def find_passing_iteration(
     spec_dir: Path,
     result_prefix: str,
-    max_iterations: int = 3,
+    max_iterations: int | None = None,
 ) -> int | None:
-    """Return the first iteration number whose result has status PASS, or None."""
+    """Return the first iteration number whose result has status PASS, or None.
+    max_iterations=None scans every result file on disk."""
+    if max_iterations is None:
+        max_iterations = max_existing_iteration(spec_dir, result_prefix, default=0)
     for i in range(1, max_iterations + 1):
         rp = spec_dir / f"{result_prefix}-{i}.json"
         if rp.exists():
@@ -83,47 +88,97 @@ def find_passing_iteration(
     return None
 
 
-def extend_iterations_if_reviewed(
+class IterationBudget(NamedTuple):
+    """How many critic iterations a stage may run, and what a human escalation
+    review (if one was just consumed) says to do with the first new one.
+
+    grant_size: iterations a future escalation review will add.
+    human_guidance: the review's text, to be handed to the fix agent as an
+        authoritative instruction (None when no fresh review was consumed).
+    resolved_externally: the review declared the human already made the fix
+        (FIXED_BY_HUMAN_MARKER), so the fix agent is skipped for one iteration.
+    """
+
+    max_iterations: int
+    grant_size: int
+    human_guidance: str | None = None
+    resolved_externally: bool = False
+
+
+FIXED_BY_HUMAN_MARKER = "Resolution: fixed-by-human"
+
+# A consumed review is renamed so a later resume (e.g. after a session-limit
+# pause inside the extended range) can't re-apply it as a fresh grant — the
+# ceiling it granted is recorded in the name instead.
+_CONSUMED_RE = re.compile(r"-consumed-to-(\d+)\.md$")
+
+
+def _granted_ceiling(spec_dir: Path, review_filename: str) -> int:
+    stem = review_filename.removesuffix(".md")
+    return max(
+        (
+            int(m.group(1))
+            for p in spec_dir.glob(f"{stem}-consumed-to-*.md")
+            if (m := _CONSUMED_RE.search(p.name))
+        ),
+        default=0,
+    )
+
+
+def apply_escalation_review(
     spec_dir: Path,
     review_filename: str,
     primary_result_prefix: str,
     max_iterations: int,
     log_fn=None,
-) -> tuple[int, bool]:
+) -> IterationBudget:
     """
-    Check for a human escalation review file. If it exists and the primary
-    critic loop has already exhausted its current ceiling, extend the limit by
-    max_iterations more and return (new_max, True). Otherwise return
-    (current_ceiling, False).
+    Resolve a stage's iteration budget, consuming a fresh human escalation
+    review if the loop has exhausted its current ceiling.
 
-    The current ceiling is computed from the highest iteration number actually
-    on disk (max_existing_iteration), not recomputed from the max_iterations
-    argument alone — otherwise a second (or later) escalation-review grant would
-    recompute the same fixed ceiling as the first one, which is a silent no-op
-    whenever real progress already exceeds it.
-
-    The boolean signals that violations were resolved externally — callers
-    should skip the fix agent for the first new iteration.
+    The ceiling is the highest one any previously consumed review granted (or
+    max_iterations if none). A review file present while the loop still has
+    budget left is left in place untouched. Consuming a review extends the
+    ceiling by max_iterations, renames the file to
+    <review>-consumed-to-<ceiling>.md, and returns its text as human_guidance
+    for the fix agent — unless the review contains FIXED_BY_HUMAN_MARKER, in
+    which case the fix agent is skipped instead.
 
     Call this BEFORE the resume guard so find_passing_iteration covers any
     extended iteration range.
     """
+    ceiling = max(max_iterations, _granted_ceiling(spec_dir, review_filename))
     review_path = spec_dir / review_filename
-    if not review_path.exists():
-        return max_iterations, False
-    current_ceiling = max_existing_iteration(
-        spec_dir, primary_result_prefix, default=max_iterations
-    )
-    if next_iteration(spec_dir, primary_result_prefix) <= current_ceiling:
-        return current_ceiling, False
+    if not review_path.exists() or next_iteration(spec_dir, primary_result_prefix) <= ceiling:
+        return IterationBudget(ceiling, max_iterations)
     _log = log_fn or print
-    review_text = review_path.read_text(encoding="utf-8")
-    new_ceiling = current_ceiling + max_iterations
+    review_text = review_path.read_text(encoding="utf-8").strip()
+    new_ceiling = max(ceiling, max_existing_iteration(spec_dir, primary_result_prefix)) + (
+        max_iterations
+    )
+    stem = review_filename.removesuffix(".md")
+    review_path.rename(spec_dir / f"{stem}-consumed-to-{new_ceiling}.md")
     _log(
         f"Human escalation review found ({review_filename}) — extending iteration limit to {new_ceiling}."
     )
-    _log(f"Review:\n{review_text.strip()}")
-    return new_ceiling, True
+    _log(f"Review:\n{review_text}")
+    if FIXED_BY_HUMAN_MARKER in review_text:
+        return IterationBudget(new_ceiling, max_iterations, resolved_externally=True)
+    return IterationBudget(new_ceiling, max_iterations, human_guidance=review_text)
+
+
+def human_guidance_violation(review_text: str) -> dict:
+    """Wrap a human escalation review as a pending violation, so it reaches the
+    fix agent through the same violations list every stage already passes it."""
+    return {
+        "rule": "Human escalation review",
+        "title": "Human escalation review",
+        "severity": "BLOCKING",
+        "location": "escalation review",
+        "finding": review_text,
+        "fix": "Apply the human's guidance above. It is authoritative and overrides any "
+        "conflicting critic finding.",
+    }
 
 
 def load_prior_violations(

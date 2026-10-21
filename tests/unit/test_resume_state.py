@@ -61,6 +61,81 @@ class TestFindPassingIteration(unittest.TestCase):
             )
 
 
+class TestApplyEscalationReview(unittest.TestCase):
+    PREFIX = "ch-4-implement-critic-result"
+    REVIEW = "ch-4-implement-critic-escalation-review.md"
+
+    def _results(self, spec_dir, n):
+        for i in range(1, n + 1):
+            (spec_dir / f"{self.PREFIX}-{i}.json").write_text("{}")
+
+    def _apply(self, spec_dir):
+        return resume_state.apply_escalation_review(
+            spec_dir, self.REVIEW, self.PREFIX, 3, log_fn=lambda _m: None
+        )
+
+    def test_no_review_keeps_base_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            budget = self._apply(Path(d))
+            self.assertEqual(budget, resume_state.IterationBudget(3, 3))
+
+    def test_fresh_review_extends_and_passes_guidance(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            self._results(spec_dir, 3)
+            (spec_dir / self.REVIEW).write_text("Use window.location instead.")
+            budget = self._apply(spec_dir)
+            self.assertEqual(budget.max_iterations, 6)
+            self.assertEqual(budget.human_guidance, "Use window.location instead.")
+            self.assertFalse(budget.resolved_externally)
+            self.assertFalse((spec_dir / self.REVIEW).exists())
+            self.assertTrue((spec_dir / f"{self.REVIEW[:-3]}-consumed-to-6.md").exists())
+
+    def test_fixed_by_human_marker_skips_fix_agent(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            self._results(spec_dir, 3)
+            (spec_dir / self.REVIEW).write_text(
+                f"Committed the fix.\n{resume_state.FIXED_BY_HUMAN_MARKER}"
+            )
+            budget = self._apply(spec_dir)
+            self.assertTrue(budget.resolved_externally)
+            self.assertIsNone(budget.human_guidance)
+
+    def test_consumed_review_is_not_reapplied_on_resume(self):
+        """specs/002: a resume inside the extended range re-granted iterations
+        from an already-used review and skipped a pending fix."""
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            self._results(spec_dir, 3)
+            (spec_dir / self.REVIEW).write_text("guidance")
+            self._apply(spec_dir)
+            self._results(spec_dir, 5)
+            budget = self._apply(spec_dir)
+            self.assertEqual(budget, resume_state.IterationBudget(6, 3))
+
+    def test_second_review_extends_from_granted_ceiling(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            self._results(spec_dir, 3)
+            (spec_dir / self.REVIEW).write_text("first")
+            self._apply(spec_dir)
+            self._results(spec_dir, 6)
+            (spec_dir / self.REVIEW).write_text("second")
+            budget = self._apply(spec_dir)
+            self.assertEqual(budget.max_iterations, 9)
+            self.assertEqual(budget.human_guidance, "second")
+
+    def test_review_while_budget_remains_is_left_in_place(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            self._results(spec_dir, 1)
+            (spec_dir / self.REVIEW).write_text("early")
+            budget = self._apply(spec_dir)
+            self.assertEqual(budget, resume_state.IterationBudget(3, 3))
+            self.assertTrue((spec_dir / self.REVIEW).exists())
+
+
 class TestStageComplete(unittest.TestCase):
     def test_not_complete(self):
         with tempfile.TemporaryDirectory() as d:

@@ -1275,39 +1275,44 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
             )
         claude_fallback.assert_called_once_with("opus")
 
-    async def test_one_config_runs_without_critic_id_flag(self):
-        log = MagicMock()
-        claude_fallback = MagicMock()
-        config = {"id": "default", "model": "qwen3", "provider": "ollama"}
-        with (
-            patch.object(ollama, "load_local_llm_configs", return_value=[config]),
-            patch.object(ollama, "_run_critic_subprocess", return_value=0) as mock_sub,
-            patch.object(ollama.console, "stream_query", new=AsyncMock()) as mock_stream,
-        ):
-            await ollama.run_gate(
-                log, "plan", "script.py", "feat", 1, "plan critic", claude_fallback
-            )
-        mock_sub.assert_called_once()
-        cmd = mock_sub.call_args[0][0]
-        self.assertNotIn("--critic-id", cmd)
-        claude_fallback.assert_not_called()
-        mock_stream.assert_not_awaited()
+    async def test_one_list_shaped_config_runs_with_critic_id_and_adopts_its_verdict(self):
+        """specs/002-006: a one-element critics list ran without --critic-id, so
+        the critic script exited 2 and the gate silently fell back to Claude
+        while logging the local model's name."""
+        config = {"id": "nemotron", "model": "nemotron-3", "provider": "openai-compatible"}
+        verdict = {"status": "FAIL", "violations": [{"rule": "§T1", "severity": "BLOCKING"}]}
+        raw_path = Path("specs/feat/ch-2-tasks-critic-result-raw/nemotron-1.json")
 
-    async def test_one_config_not_configured_falls_back_to_claude(self):
-        log = MagicMock()
-        claude_fallback = MagicMock(return_value="claude-query-obj")
-        config = {"id": "default", "model": "qwen3", "provider": "ollama"}
+        def fake_subprocess(cmd, prefix=""):
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_text(json.dumps(verdict))
+            return 0
+
+        claude_fallback = MagicMock()
+        build_reconcile_query = MagicMock()
         with (
             patch.object(ollama, "load_local_llm_configs", return_value=[config]),
-            patch.object(ollama, "_run_critic_subprocess", return_value=2),
-            patch.object(ollama, "load_claude_model", return_value=None),
-            patch.object(ollama.console, "stream_query", new=AsyncMock()) as mock_stream,
+            patch.object(ollama, "load_critic_execution_mode", return_value="sequential"),
+            patch.object(ollama, "_run_critic_subprocess", side_effect=fake_subprocess) as sub,
         ):
             await ollama.run_gate(
-                log, "plan", "script.py", "feat", 1, "plan critic", claude_fallback
+                MagicMock(),
+                "tasks",
+                "script.py",
+                "feat",
+                1,
+                "tasks critic",
+                claude_fallback,
+                result_prefix="ch-2-tasks-critic-result",
+                build_reconcile_query=build_reconcile_query,
             )
-        claude_fallback.assert_called_once_with(None)
-        mock_stream.assert_awaited_once_with("claude-query-obj")
+
+        cmd = sub.call_args[0][0]
+        self.assertEqual(cmd[cmd.index("--critic-id") + 1], "nemotron")
+        claude_fallback.assert_not_called()
+        build_reconcile_query.assert_not_called()
+        canonical = Path("specs/feat/ch-2-tasks-critic-result-1.json")
+        self.assertEqual(json.loads(canonical.read_text()), verdict)
 
     async def test_multi_critic_all_clean_pass_skips_reconciliation(self):
         log = MagicMock()

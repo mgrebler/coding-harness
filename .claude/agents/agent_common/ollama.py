@@ -1034,7 +1034,11 @@ def run_local_critic_cli(
         else resume_state.next_iteration(spec_dir, result_prefix)
     )
 
-    prompt = build_prompt(spec_dir, iteration)
+    try:
+        prompt = build_prompt(spec_dir, iteration)
+    except files.NoChangedFilesError as e:
+        print(f"[{label}] ERROR: nothing to review: {e}", flush=True)
+        sys.exit(1)
 
     print(
         f"[{label}] Running iteration {iteration} via local LLM ({config['model']})...", flush=True
@@ -1227,29 +1231,31 @@ async def _run_multi_critic_gate(
     summary_style: str,
     build_reconcile_query: Callable[[int, list[dict], str | None], object] | None,
 ) -> None:
-    """The >1-configured-critics branch of run_gate: fan out to every critic,
-    then either synthesize a trivial PASS (all critics clean) or hand the
-    combined raw findings to build_reconcile_query for the main harness (a
-    Claude subagent, never a local LLM) to adjudicate into the canonical
-    result. Split out of run_gate to keep its cyclomatic complexity in check."""
+    """The local-critic branch of run_gate: fan out to every configured critic
+    (passing --critic-id, so list- and dict-shaped config resolve identically),
+    then either adopt a lone critic's verdict as-is, synthesize a trivial PASS
+    (all critics clean), or hand the combined raw findings to
+    build_reconcile_query for the main harness (a Claude subagent, never a
+    local LLM) to adjudicate into the canonical result."""
     if result_prefix is None:
-        log(
-            f"ERROR: {label} has {len(configs)} critics configured but run_gate was not "
-            f"given a result_prefix for multi-critic fan-out. Aborting."
-        )
+        log(f"ERROR: run_gate was not given a result_prefix for {label}. Aborting.")
         sys.exit(1)
 
     spec_dir = Path(f"specs/{feature}")
     raw_dir = spec_dir / f"{result_prefix}-raw"
     mode = load_critic_execution_mode(critic_type)
     ids = ", ".join(f"{c['id']} ({c['model']})" for c in configs)
-    log(f"Using {len(configs)} local LLM critics for {label} ({mode}): {ids}...")
+    log(f"Using {len(configs)} local LLM critic(s) for {label} ({mode}): {ids}...")
 
     raw_results = await _gather_raw_critic_results(
         log, label, script, feature, iteration, raw_dir, configs, mode
     )
 
     canonical_path = spec_dir / f"{result_prefix}-{iteration}.json"
+    if len(configs) == 1:
+        files.write_file(canonical_path, json.dumps(raw_results[0]["result"], indent=2))
+        return
+
     # A trivial pass requires every configured critic to have actually run —
     # a crashed critic must never be silently counted as agreement with the
     # survivor(s). See FOLLOWUP_HARNESS.md Bug 1.
@@ -1301,43 +1307,23 @@ async def run_gate(
     - 0 configured critics: fall back to Claude (claude_fallback) — unchanged
       from before multi-critic support existed, except claude_fallback now
       receives whichever Claude model (if any) is configured for critic_type.
-    - 1 configured critic: try its local-LLM subprocess, falling back to Claude
-      if it isn't configured (exit code 2). Aborts (sys.exit(1)) on any other
-      subprocess failure. Bit-for-bit the same code path as before multi-critic
-      support existed — this is what keeps single-critic behaviour unchanged.
-    - >1 configured critics: see _run_multi_critic_gate.
+    - 1+ configured critics: see _run_multi_critic_gate. A single critic used
+      to take a separate subprocess path without --critic-id, which silently
+      exited 2 and fell back to Claude for a one-element list-shaped entry
+      while the log still named the local model.
 
     claude_fallback: 1-arg callable (the resolved Claude model, or None to
     inherit the invoking session's default) returning the async iterator of
     SDK messages, e.g. `lambda model: query(prompt=..., options=driving_agent_options(..., model=model))`.
     Only invoked when zero critics resolve.
 
-    result_prefix/build_reconcile_query are only required when >1 critic can
-    resolve for critic_type — gates that will only ever have 0-or-1 critics can
-    omit them.
+    result_prefix is required whenever a local critic is configured;
+    build_reconcile_query only when >1 critic can resolve for critic_type.
     """
     configs = load_local_llm_configs(critic_type)
     script = Path(__file__).parent.parent / script_name
 
-    if len(configs) == 1:
-        config = configs[0]
-        log(f"Using local LLM ({config['model']}) for {label}...")
-        try:
-            returncode = _run_critic_subprocess(
-                [sys.executable, str(script), "--feature", feature, "--iteration", str(iteration)],
-            )
-        except TimeoutError as e:
-            log(f"ERROR: local LLM {label} timed out for iteration {iteration}: {e}")
-            sys.exit(1)
-        if returncode == 2:
-            configs = []  # not configured; fall through to Claude below
-        elif returncode != 0:
-            log(f"ERROR: local LLM {label} failed for iteration {iteration}. Aborting.")
-            sys.exit(1)
-        else:
-            return
-
-    elif len(configs) > 1:
+    if configs:
         await _run_multi_critic_gate(
             log,
             critic_type,
@@ -1352,6 +1338,5 @@ async def run_gate(
         )
         return
 
-    if not configs:
-        claude_model = load_claude_model(critic_type)
-        await console.stream_query(claude_fallback(claude_model))
+    claude_model = load_claude_model(critic_type)
+    await console.stream_query(claude_fallback(claude_model))
