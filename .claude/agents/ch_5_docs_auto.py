@@ -42,12 +42,12 @@ import sys
 from pathlib import Path
 
 from ch_5_docs_critic import build_docs_critic_prompt
-from claude_agent_sdk import AgentDefinition, query
+from claude_agent_sdk import AgentDefinition
 
-from agent_common import critic_reconcile, git, local_agent_loop, ollama
+from agent_common import git, local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
-    GateSpec,
+    claude_gate,
     finish_if_already_passing,
     finish_stage,
     run_cli,
@@ -55,13 +55,10 @@ from agent_common.critic_loop import (
 )
 from agent_common.driving_agent import (
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
-    NO_RECURSION_NOTICE,
-    driving_agent_options,
 )
 from agent_common.files import read_file, require_spec_files
 from agent_common.resume_state import (
     apply_escalation_review,
-    format_violations_block,
     load_prior_violations,
     next_iteration,
     stage_is_complete,
@@ -170,72 +167,6 @@ You do not touch code, specs, plans, or tasks. Your only output is docs/.
     )
 
 
-def critic_agent_definition(
-    constitution: str,
-    documentation_principles: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    iteration: int,
-    violations: list | None = None,
-    model: str | None = None,
-) -> AgentDefinition:
-    violations_block = format_violations_block(
-        violations, iteration, "violations (already addressed by the docs agent)"
-    )
-
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-5-docs-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-5-docs-critic] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Validates this run's merge into docs/ against documentation-principles.md and the shipped diff. Returns structured JSON.",
-        model=model,
-        prompt=build_docs_critic_prompt(
-            constitution,
-            documentation_principles,
-            spec,
-            plan,
-            tasks,
-            iteration,
-            violations_block=violations_block,
-            output_instructions=output_instructions,
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def docs_reconcile_agent_definition(
-    constitution: str,
-    documentation_principles: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None = None,
-) -> AgentDefinition:
-    context_block = (
-        f"--- CONSTITUTION ---\n{constitution}\n\n"
-        f"--- DOCUMENTATION PRINCIPLES ---\n{documentation_principles}\n\n"
-        f"--- SPEC ---\n{spec}\n\n"
-        f"--- PLAN ---\n{plan}\n\n"
-        f"--- TASKS ---\n{tasks}"
-    )
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-5-docs-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-5-docs-critic-reconcile] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reconciles findings from multiple independent docs critics into one verified result.",
-        model=model,
-        prompt=critic_reconcile.build_reconcile_prompt(
-            context_block, raw_results, iteration, "violations", output_instructions
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
 # Main orchestration loop
 
 
@@ -337,69 +268,43 @@ async def run(feature: str):
             exclude_from_commit=baseline_dirty,
         )
 
-    def build_critic_query(iteration: int, prev_violations, model: str | None):
-        return query(
-            prompt=(
-                f"Validate this run's merge into docs/ for feature {feature}. "
-                f"Write result to specs/{feature}/ch-5-docs-critic-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "docs-critic": critic_agent_definition(
-                        constitution,
-                        documentation_principles,
-                        spec,
-                        plan,
-                        tasks,
-                        iteration,
-                        prev_violations,
-                        model,
-                    )
-                },
-                model=model,
-            ),
-        )
-
-    def build_reconcile_query(iteration: int, raw_results: list[dict], model: str | None):
-        return query(
-            prompt=(
-                f"Reconcile the raw docs-critic findings for feature {feature} into one "
-                f"verified result. Write result to specs/{feature}/ch-5-docs-critic-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "docs-critic-reconcile": docs_reconcile_agent_definition(
-                        constitution,
-                        documentation_principles,
-                        spec,
-                        plan,
-                        tasks,
-                        iteration,
-                        raw_results,
-                        model,
-                    )
-                },
-                model=model,
-            ),
-        )
-
     # --- Step 2: Critic loop ---
     await run_single_gate_loop(
         log,
         spec_dir,
         feature,
         budget,
-        gate=GateSpec(
-            RESULT_PREFIX,
-            "ch_5_docs_critic.py",
-            "docs",
-            "docs critic",
-            build_critic_query,
-            build_reconcile_query,
+        gate=claude_gate(
+            feature=feature,
+            result_prefix=RESULT_PREFIX,
+            script_name="ch_5_docs_critic.py",
+            critic_type="docs",
+            label="docs critic",
+            summary_style="violations",
+            agent_name="docs-critic",
+            description="Validates this run's merge into docs/ against "
+            "documentation-principles.md and the shipped diff. Returns structured JSON.",
+            task=f"Validate this run's merge into docs/ for feature {feature}.",
+            violations_context="violations (already addressed by the docs agent)",
+            prompt=lambda iteration, violations_block, output_instructions: (
+                build_docs_critic_prompt(
+                    constitution,
+                    documentation_principles,
+                    spec,
+                    plan,
+                    tasks,
+                    iteration,
+                    violations_block=violations_block,
+                    output_instructions=output_instructions,
+                )
+            ),
+            context=lambda: [
+                ("CONSTITUTION", constitution),
+                ("DOCUMENTATION PRINCIPLES", documentation_principles),
+                ("SPEC", spec),
+                ("PLAN", plan),
+                ("TASKS", tasks),
+            ],
         ),
         resume_state=(iteration, violations),
         run_fix=run_fix,

@@ -35,12 +35,12 @@ from pathlib import Path
 
 from ch_1_plan_architecture_critic import build_architecture_review_prompt
 from ch_1_plan_critic import build_plan_critic_prompt
-from claude_agent_sdk import AgentDefinition, query
+from claude_agent_sdk import AgentDefinition
 
-from agent_common import critic_reconcile, local_agent_loop
+from agent_common import local_agent_loop
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
-    GateSpec,
+    claude_gate,
     finish_if_already_passing,
     finish_stage,
     run_cli,
@@ -48,8 +48,6 @@ from agent_common.critic_loop import (
 )
 from agent_common.driving_agent import (
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
-    NO_RECURSION_NOTICE,
-    driving_agent_options,
 )
 from agent_common.files import (
     format_directory_tree,
@@ -60,7 +58,6 @@ from agent_common.files import (
 from agent_common.resume_state import (
     apply_escalation_review,
     find_two_gate_resume_state,
-    format_violations_block,
     next_iteration,
 )
 
@@ -153,138 +150,6 @@ Key rules:
 {HUMAN_REVIEW_ATTESTATION_GUARDRAIL}
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-    )
-
-
-def critic_agent_definition(
-    constitution: str,
-    architecture: str,
-    docs: str,
-    spec: str,
-    plan: str,
-    iteration: int,
-    violations: list | None = None,
-    model: str | None = None,
-) -> AgentDefinition:
-    violations_block = format_violations_block(
-        violations, iteration, "violations (already addressed by the plan agent)"
-    )
-
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-1-plan-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-1-plan-critic] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Validates plan.md against constitution.md, architecture.md, docs/, and spec.md. Returns structured JSON.",
-        model=model,
-        prompt=build_plan_critic_prompt(
-            constitution,
-            architecture,
-            docs,
-            spec,
-            plan,
-            iteration,
-            violations_block=violations_block,
-            output_instructions=output_instructions,
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def arch_review_agent_definition(
-    constitution: str,
-    architecture: str,
-    spec: str,
-    plan: str,
-    arch_principles: str,
-    iteration: int,
-    arch_violations: list | None = None,
-    model: str | None = None,
-) -> AgentDefinition:
-    violations_block = format_violations_block(
-        arch_violations, iteration, "architecture violations (already addressed by the plan agent)"
-    )
-
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-1-plan-architecture-review-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-1-plan-architecture-review] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reviews plan.md for architecture quality, best practices, and operational safety.",
-        model=model,
-        prompt=build_architecture_review_prompt(
-            constitution,
-            architecture,
-            spec,
-            plan,
-            arch_principles,
-            iteration,
-            violations_block=violations_block,
-            output_instructions=output_instructions,
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def plan_reconcile_agent_definition(
-    constitution: str,
-    architecture: str,
-    docs: str,
-    spec: str,
-    plan: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None = None,
-) -> AgentDefinition:
-    context_block = (
-        f"--- CONSTITUTION ---\n{constitution}\n\n"
-        f"--- ARCHITECTURE ---\n{architecture}\n\n"
-        f"--- DOCS (current shipped behaviour, per documentation-principles.md) ---\n{docs}\n\n"
-        f"--- SPEC ---\n{spec}\n\n"
-        f"--- PLAN (current) ---\n{plan}"
-    )
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-1-plan-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-1-plan-critic-reconcile] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reconciles findings from multiple independent plan critics into one verified result.",
-        model=model,
-        prompt=critic_reconcile.build_reconcile_prompt(
-            context_block, raw_results, iteration, "violations", output_instructions
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def arch_review_reconcile_agent_definition(
-    constitution: str,
-    architecture: str,
-    spec: str,
-    plan: str,
-    arch_principles: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None = None,
-) -> AgentDefinition:
-    context_block = (
-        f"--- CONSTITUTION ---\n{constitution}\n\n"
-        f"--- ARCHITECTURE ---\n{architecture}\n\n"
-        f"--- SPEC ---\n{spec}\n\n"
-        f"--- PLAN (current) ---\n{plan}\n\n"
-        f"--- ARCHITECTURE PRINCIPLES ---\n{arch_principles}"
-    )
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-1-plan-architecture-review-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-1-plan-architecture-review-reconcile] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reconciles findings from multiple independent architecture-review critics into one verified result.",
-        model=model,
-        prompt=critic_reconcile.build_reconcile_prompt(
-            context_block, raw_results, iteration, "confidence", output_instructions
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
     )
 
 
@@ -384,110 +249,6 @@ async def run(feature: str):
             "Plan is ready for human review. No further action taken.",
         )
 
-    def build_critic_query(iteration: int, prev_violations, model: str | None):
-        plan = read_file(spec_dir / "plan.md")
-        return query(
-            prompt=(
-                f"Validate plan.md for feature {feature}. "
-                f"Write result to specs/{feature}/ch-1-plan-critic-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "plan-critic": critic_agent_definition(
-                        constitution,
-                        architecture,
-                        docs,
-                        spec,
-                        plan,
-                        iteration,
-                        prev_violations,
-                        model,
-                    )
-                },
-                model=model,
-            ),
-        )
-
-    def build_reconcile_critic_query(iteration: int, raw_results: list[dict], model: str | None):
-        plan = read_file(spec_dir / "plan.md")
-        return query(
-            prompt=(
-                f"Reconcile the raw plan-critic findings for feature {feature} into one "
-                f"verified result. Write result to specs/{feature}/ch-1-plan-critic-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "plan-critic-reconcile": plan_reconcile_agent_definition(
-                        constitution,
-                        architecture,
-                        docs,
-                        spec,
-                        plan,
-                        iteration,
-                        raw_results,
-                        model,
-                    )
-                },
-                model=model,
-            ),
-        )
-
-    def build_reconcile_arch_query(iteration: int, raw_results: list[dict], model: str | None):
-        plan = read_file(spec_dir / "plan.md")
-        return query(
-            prompt=(
-                f"Reconcile the raw architecture-review findings for feature {feature} into one "
-                f"verified result. Write result to specs/{feature}/ch-1-plan-architecture-review-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "architecture-review-reconcile": arch_review_reconcile_agent_definition(
-                        constitution,
-                        architecture,
-                        spec,
-                        plan,
-                        arch_principles,
-                        iteration,
-                        raw_results,
-                        model,
-                    )
-                },
-                model=model,
-            ),
-        )
-
-    def build_arch_query(iteration: int, arch_violations, model: str | None):
-        plan = read_file(spec_dir / "plan.md")
-        return query(
-            prompt=(
-                f"Review plan.md for feature {feature} for architectural quality. "
-                f"Write result to specs/{feature}/ch-1-plan-architecture-review-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "architecture-review": arch_review_agent_definition(
-                        constitution,
-                        architecture,
-                        spec,
-                        plan,
-                        arch_principles,
-                        iteration,
-                        arch_violations,
-                        model,
-                    )
-                },
-                model=model,
-            ),
-        )
-
     # --- Step 2: Two-gate loop (critic → architecture review) ---
     await run_two_gate_loop(
         log,
@@ -495,21 +256,69 @@ async def run(feature: str):
         feature,
         budget,
         revised_artifact=spec_dir / "plan.md",
-        gate1=GateSpec(
-            CRITIC_RESULT_PREFIX,
-            "ch_1_plan_critic.py",
-            "plan",
-            "plan critic",
-            build_critic_query,
-            build_reconcile_critic_query,
+        gate1=claude_gate(
+            feature=feature,
+            result_prefix=CRITIC_RESULT_PREFIX,
+            script_name="ch_1_plan_critic.py",
+            critic_type="plan",
+            label="plan critic",
+            summary_style="violations",
+            agent_name="plan-critic",
+            description="Validates plan.md against constitution.md, architecture.md, docs/, and "
+            "spec.md. Returns structured JSON.",
+            task=f"Validate plan.md for feature {feature}.",
+            violations_context="violations (already addressed by the plan agent)",
+            prompt=lambda iteration, violations_block, output_instructions: (
+                build_plan_critic_prompt(
+                    constitution,
+                    architecture,
+                    docs,
+                    spec,
+                    read_file(spec_dir / "plan.md"),
+                    iteration,
+                    violations_block=violations_block,
+                    output_instructions=output_instructions,
+                )
+            ),
+            context=lambda: [
+                ("CONSTITUTION", constitution),
+                ("ARCHITECTURE", architecture),
+                ("DOCS (current shipped behaviour, per documentation-principles.md)", docs),
+                ("SPEC", spec),
+                ("PLAN (current)", read_file(spec_dir / "plan.md")),
+            ],
         ),
-        gate2=GateSpec(
-            ARCH_RESULT_PREFIX,
-            "ch_1_plan_architecture_critic.py",
-            "plan-architecture-review",
-            "architecture review",
-            build_arch_query,
-            build_reconcile_arch_query,
+        gate2=claude_gate(
+            feature=feature,
+            result_prefix=ARCH_RESULT_PREFIX,
+            script_name="ch_1_plan_architecture_critic.py",
+            critic_type="plan-architecture-review",
+            label="architecture review",
+            summary_style="confidence",
+            agent_name="architecture-review",
+            description="Reviews plan.md for architecture quality, best practices, and "
+            "operational safety.",
+            task=f"Review plan.md for feature {feature} for architectural quality.",
+            violations_context="architecture violations (already addressed by the plan agent)",
+            prompt=lambda iteration, violations_block, output_instructions: (
+                build_architecture_review_prompt(
+                    constitution,
+                    architecture,
+                    spec,
+                    read_file(spec_dir / "plan.md"),
+                    arch_principles,
+                    iteration,
+                    violations_block=violations_block,
+                    output_instructions=output_instructions,
+                )
+            ),
+            context=lambda: [
+                ("CONSTITUTION", constitution),
+                ("ARCHITECTURE", architecture),
+                ("SPEC", spec),
+                ("PLAN (current)", read_file(spec_dir / "plan.md")),
+                ("ARCHITECTURE PRINCIPLES", arch_principles),
+            ],
         ),
         resume_state=resume_state,
         run_revision=run_revision,

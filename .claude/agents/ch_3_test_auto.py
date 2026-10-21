@@ -34,19 +34,18 @@ Resume behaviour:
   - Test agent is re-run only if unchecked [TEST] tasks remain in tasks.md
 """
 
-import functools
 import json
 import sys
 from pathlib import Path
 
 from ch_3_test_critic import build_test_critic_prompt
 from ch_3_test_quality_critic import build_test_quality_review_prompt
-from claude_agent_sdk import AgentDefinition, query
+from claude_agent_sdk import AgentDefinition
 
-from agent_common import critic_reconcile, local_agent_loop, ollama
+from agent_common import local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
-    GateSpec,
+    claude_gate,
     finish_if_already_passing,
     finish_stage,
     run_cli,
@@ -55,8 +54,6 @@ from agent_common.critic_loop import (
 from agent_common.driving_agent import (
     FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS,
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
-    NO_RECURSION_NOTICE,
-    driving_agent_options,
 )
 from agent_common.files import read_file, require_spec_files
 from agent_common.preflight_checks import (
@@ -67,7 +64,6 @@ from agent_common.preflight_checks import (
 from agent_common.resume_state import (
     apply_escalation_review,
     find_two_gate_resume_state,
-    format_violations_block,
     next_iteration,
 )
 
@@ -183,141 +179,6 @@ Key rules:
     )
 
 
-def test_critic_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    test_principles: str,
-    feature: str,
-    iteration: int,
-    violations: list | None = None,
-    model: str | None = None,
-) -> AgentDefinition:
-    violations_block = format_violations_block(violations, iteration)
-
-    output_instructions = (
-        f"- After producing JSON, write it to specs/{feature}/ch-3-test-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-3-test-critic] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Validates test files against test-principles.md, spec.md, and constitution.md.",
-        model=model,
-        prompt=build_test_critic_prompt(
-            constitution,
-            spec,
-            plan,
-            tasks,
-            test_principles,
-            feature,
-            iteration,
-            violations_block=violations_block,
-            output_instructions=output_instructions,
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def test_quality_review_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    test_principles: str,
-    feature: str,
-    iteration: int,
-    quality_violations: list | None = None,
-    model: str | None = None,
-) -> AgentDefinition:
-    violations_block = format_violations_block(
-        quality_violations, iteration, "test quality issues (already addressed by the test agent)"
-    )
-
-    output_instructions = (
-        f"- After producing JSON, write it to specs/{feature}/ch-3-test-quality-review-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-3-test-quality-review] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reviews test files for assertion quality, test naming, and CI readiness.",
-        model=model,
-        prompt=build_test_quality_review_prompt(
-            constitution,
-            spec,
-            plan,
-            tasks,
-            test_principles,
-            iteration,
-            violations_block=violations_block,
-            output_instructions=output_instructions,
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def test_critic_reconcile_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    test_principles: str,
-    feature: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None = None,
-) -> AgentDefinition:
-    context_block = (
-        f"--- CONSTITUTION ---\n{constitution}\n\n"
-        f"--- SPEC ---\n{spec}\n\n"
-        f"--- PLAN ---\n{plan}\n\n"
-        f"--- TASKS ---\n{tasks}\n\n"
-        f"--- TEST PRINCIPLES ---\n{test_principles}"
-    )
-    output_instructions = (
-        f"- After producing JSON, write it to specs/{feature}/ch-3-test-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-3-test-critic-reconcile] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reconciles findings from multiple independent test critics into one verified result.",
-        model=model,
-        prompt=critic_reconcile.build_reconcile_prompt(
-            context_block, raw_results, iteration, "violations", output_instructions
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def test_quality_review_reconcile_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    test_principles: str,
-    feature: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None = None,
-) -> AgentDefinition:
-    context_block = (
-        f"--- CONSTITUTION ---\n{constitution}\n\n"
-        f"--- SPEC ---\n{spec}\n\n"
-        f"--- PLAN ---\n{plan}\n\n"
-        f"--- TASKS ---\n{tasks}\n\n"
-        f"--- TEST PRINCIPLES ---\n{test_principles}"
-    )
-    output_instructions = (
-        f"- After producing JSON, write it to specs/{feature}/ch-3-test-quality-review-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-3-test-quality-review-reconcile] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reconciles findings from multiple independent test-quality-review critics into one verified result.",
-        model=model,
-        prompt=critic_reconcile.build_reconcile_prompt(
-            context_block, raw_results, iteration, "confidence", output_instructions
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
 def test_fix_agent_definition(
     constitution: str,
     spec: str,
@@ -371,82 +232,6 @@ Key rules:
 
 
 # Main orchestration loop
-
-
-def _build_reconcile_critic_query(
-    feature: str,
-    spec_dir: Path,
-    constitution: str,
-    spec: str,
-    plan: str,
-    test_principles: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None,
-):
-    tasks_content = read_file(spec_dir / "tasks.md")
-    return query(
-        prompt=(
-            f"Reconcile the raw test-critic findings for feature {feature} into one "
-            f"verified result. Write result to specs/{feature}/ch-3-test-critic-result-{iteration}.json."
-        )
-        + NO_RECURSION_NOTICE,
-        options=driving_agent_options(
-            allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-            agents={
-                "test-critic-reconcile": test_critic_reconcile_agent_definition(
-                    constitution,
-                    spec,
-                    plan,
-                    tasks_content,
-                    test_principles,
-                    feature,
-                    iteration,
-                    raw_results,
-                    model,
-                )
-            },
-            model=model,
-        ),
-    )
-
-
-def _build_reconcile_quality_query(
-    feature: str,
-    spec_dir: Path,
-    constitution: str,
-    spec: str,
-    plan: str,
-    test_principles: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None,
-):
-    tasks_content = read_file(spec_dir / "tasks.md")
-    return query(
-        prompt=(
-            f"Reconcile the raw test-quality-review findings for feature {feature} into one "
-            f"verified result. Write result to specs/{feature}/ch-3-test-quality-review-result-{iteration}.json."
-        )
-        + NO_RECURSION_NOTICE,
-        options=driving_agent_options(
-            allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-            agents={
-                "test-quality-review-reconcile": test_quality_review_reconcile_agent_definition(
-                    constitution,
-                    spec,
-                    plan,
-                    tasks_content,
-                    test_principles,
-                    feature,
-                    iteration,
-                    raw_results,
-                    model,
-                )
-            },
-            model=model,
-        ),
-    )
 
 
 async def _run_red_state_gate(
@@ -663,98 +448,75 @@ async def run(feature: str):
             "Test phase complete. Implementation may now begin.",
         )
 
-    def build_critic_query(iteration: int, prev_violations, model: str | None):
-        tasks_content = read_file(spec_dir / "tasks.md")
-        return query(
-            prompt=(
-                f"Validate the test files for feature {feature}. "
-                f"Write result to specs/{feature}/ch-3-test-critic-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "test-critic": test_critic_agent_definition(
-                        constitution,
-                        spec,
-                        plan,
-                        tasks_content,
-                        test_principles,
-                        feature,
-                        iteration,
-                        prev_violations,
-                        model,
-                    )
-                },
-                model=model,
-            ),
-        )
-
-    def build_quality_query(iteration: int, quality_violations, model: str | None):
-        tasks_content = read_file(spec_dir / "tasks.md")
-        return query(
-            prompt=(
-                f"Review the test files for feature {feature} for test quality "
-                f"(assertion quality, naming, CI readiness). "
-                f"Write result to specs/{feature}/ch-3-test-quality-review-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "test-quality-review": test_quality_review_agent_definition(
-                        constitution,
-                        spec,
-                        plan,
-                        tasks_content,
-                        test_principles,
-                        feature,
-                        iteration,
-                        quality_violations,
-                        model,
-                    )
-                },
-                model=model,
-            ),
-        )
-
     # --- Step 2: Two-gate loop (test critic → test quality review) ---
     await run_two_gate_loop(
         log,
         spec_dir,
         feature,
         budget,
-        gate1=GateSpec(
-            CRITIC_RESULT_PREFIX,
-            "ch_3_test_critic.py",
-            "test",
-            "test critic",
-            build_critic_query,
-            functools.partial(
-                _build_reconcile_critic_query,
-                feature,
-                spec_dir,
-                constitution,
-                spec,
-                plan,
-                test_principles,
+        gate1=claude_gate(
+            feature=feature,
+            result_prefix=CRITIC_RESULT_PREFIX,
+            script_name="ch_3_test_critic.py",
+            critic_type="test",
+            label="test critic",
+            summary_style="violations",
+            agent_name="test-critic",
+            description="Validates test files against test-principles.md, spec.md, and "
+            "constitution.md.",
+            task=f"Validate the test files for feature {feature}.",
+            prompt=lambda iteration, violations_block, output_instructions: (
+                build_test_critic_prompt(
+                    constitution,
+                    spec,
+                    plan,
+                    read_file(spec_dir / "tasks.md"),
+                    test_principles,
+                    feature,
+                    iteration,
+                    violations_block=violations_block,
+                    output_instructions=output_instructions,
+                )
             ),
+            context=lambda: [
+                ("CONSTITUTION", constitution),
+                ("SPEC", spec),
+                ("PLAN", plan),
+                ("TASKS", read_file(spec_dir / "tasks.md")),
+                ("TEST PRINCIPLES", test_principles),
+            ],
         ),
-        gate2=GateSpec(
-            TEST_QUALITY_RESULT_PREFIX,
-            "ch_3_test_quality_critic.py",
-            "test-quality-review",
-            "test quality review",
-            build_quality_query,
-            functools.partial(
-                _build_reconcile_quality_query,
-                feature,
-                spec_dir,
-                constitution,
-                spec,
-                plan,
-                test_principles,
+        gate2=claude_gate(
+            feature=feature,
+            result_prefix=TEST_QUALITY_RESULT_PREFIX,
+            script_name="ch_3_test_quality_critic.py",
+            critic_type="test-quality-review",
+            label="test quality review",
+            summary_style="confidence",
+            agent_name="test-quality-review",
+            description="Reviews test files for assertion quality, test naming, and CI readiness.",
+            task=f"Review the test files for feature {feature} for test quality "
+            "(assertion quality, naming, CI readiness).",
+            violations_context="test quality issues (already addressed by the test agent)",
+            prompt=lambda iteration, violations_block, output_instructions: (
+                build_test_quality_review_prompt(
+                    constitution,
+                    spec,
+                    plan,
+                    read_file(spec_dir / "tasks.md"),
+                    test_principles,
+                    iteration,
+                    violations_block=violations_block,
+                    output_instructions=output_instructions,
+                )
             ),
+            context=lambda: [
+                ("CONSTITUTION", constitution),
+                ("SPEC", spec),
+                ("PLAN", plan),
+                ("TASKS", read_file(spec_dir / "tasks.md")),
+                ("TEST PRINCIPLES", test_principles),
+            ],
         ),
         resume_state=resume_state,
         run_revision=run_revision,

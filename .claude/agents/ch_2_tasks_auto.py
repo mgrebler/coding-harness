@@ -28,12 +28,12 @@ import sys
 from pathlib import Path
 
 from ch_2_tasks_critic import build_tasks_critic_prompt, tasks_rules
-from claude_agent_sdk import AgentDefinition, query
+from claude_agent_sdk import AgentDefinition
 
-from agent_common import critic_reconcile, local_agent_loop, ollama
+from agent_common import local_agent_loop, ollama
 from agent_common.console import HUMAN_ACTION_EXIT_CODE, make_logger, setup_log_file
 from agent_common.critic_loop import (
-    GateSpec,
+    claude_gate,
     finish_if_already_passing,
     finish_stage,
     run_cli,
@@ -41,14 +41,11 @@ from agent_common.critic_loop import (
 )
 from agent_common.driving_agent import (
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
-    NO_RECURSION_NOTICE,
-    driving_agent_options,
 )
 from agent_common.files import read_file, require_spec_files
 from agent_common.preflight_checks import pending_human_approvals, task_format_violations
 from agent_common.resume_state import (
     apply_escalation_review,
-    format_violations_block,
     load_prior_violations,
     next_iteration,
 )
@@ -160,80 +157,6 @@ Key rules:
 {HUMAN_REVIEW_ATTESTATION_GUARDRAIL}
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-    )
-
-
-def critic_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    iteration: int,
-    violations: list | None = None,
-    model: str | None = None,
-    test_stage_enabled: bool = True,
-) -> AgentDefinition:
-    violations_block = format_violations_block(
-        violations, iteration, "violations (already addressed by the tasks agent)"
-    )
-
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-2-tasks-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-2-tasks-critic] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Validates tasks.md against plan.md, spec.md, and constitution.md. Returns structured JSON.",
-        model=model,
-        prompt=build_tasks_critic_prompt(
-            constitution,
-            spec,
-            plan,
-            tasks,
-            iteration,
-            violations_block=violations_block,
-            output_instructions=output_instructions,
-            test_stage_enabled=test_stage_enabled,
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def tasks_reconcile_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None = None,
-    test_stage_enabled: bool = True,
-) -> AgentDefinition:
-    test_stage_note = (
-        "(test stage enabled for this project)"
-        if test_stage_enabled
-        else "(test stage DISABLED for this project — §T3 findings should flag any [TEST] "
-        "task or test-pairing requirement as BLOCKING, not require one)"
-    )
-    context_block = (
-        f"--- CONSTITUTION ---\n{constitution}\n\n"
-        f"--- SPEC ---\n{spec}\n\n"
-        f"--- PLAN ---\n{plan}\n\n"
-        f"--- TASKS (current) ---\n{tasks}\n\n"
-        f"--- §T3 TEST/IMPL PAIRING STATUS ---\n{test_stage_note}\n\n"
-        f"--- HARNESS §T RULES (the only valid §T rule labels) ---\n"
-        f"{tasks_rules(test_stage_enabled)}"
-    )
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-2-tasks-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-2-tasks-critic-reconcile] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reconciles findings from multiple independent tasks critics into one verified result.",
-        model=model,
-        prompt=critic_reconcile.build_reconcile_prompt(
-            context_block, raw_results, iteration, "violations", output_instructions
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
     )
 
 
@@ -397,58 +320,6 @@ async def run(feature: str):
             "Tasks are ready for human review. No further action taken.",
         )
 
-    def build_critic_query(iteration: int, prev_violations, model: str | None):
-        tasks = read_file(spec_dir / "tasks.md")
-        return query(
-            prompt=(
-                f"Validate tasks.md for feature {feature}. "
-                f"Write result to specs/{feature}/ch-2-tasks-critic-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "tasks-critic": critic_agent_definition(
-                        constitution,
-                        spec,
-                        plan,
-                        tasks,
-                        iteration,
-                        prev_violations,
-                        model,
-                        test_stage_enabled,
-                    )
-                },
-                model=model,
-            ),
-        )
-
-    def build_reconcile_query(iteration: int, raw_results: list[dict], model: str | None):
-        tasks = read_file(spec_dir / "tasks.md")
-        return query(
-            prompt=(
-                f"Reconcile the raw tasks-critic findings for feature {feature} into one "
-                f"verified result. Write result to specs/{feature}/ch-2-tasks-critic-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "tasks-critic-reconcile": tasks_reconcile_agent_definition(
-                        constitution,
-                        spec,
-                        plan,
-                        tasks,
-                        iteration,
-                        raw_results,
-                        model,
-                        test_stage_enabled,
-                    )
-                },
-                model=model,
-            ),
-        )
-
     # --- Step 2: Critic loop ---
     await run_single_gate_loop(
         log,
@@ -456,13 +327,47 @@ async def run(feature: str):
         feature,
         budget,
         revised_artifact=spec_dir / "tasks.md",
-        gate=GateSpec(
-            RESULT_PREFIX,
-            "ch_2_tasks_critic.py",
-            "tasks",
-            "tasks critic",
-            build_critic_query,
-            build_reconcile_query,
+        gate=claude_gate(
+            feature=feature,
+            result_prefix=RESULT_PREFIX,
+            script_name="ch_2_tasks_critic.py",
+            critic_type="tasks",
+            label="tasks critic",
+            summary_style="violations",
+            agent_name="tasks-critic",
+            description="Validates tasks.md against plan.md, spec.md, and constitution.md. "
+            "Returns structured JSON.",
+            task=f"Validate tasks.md for feature {feature}.",
+            violations_context="violations (already addressed by the tasks agent)",
+            prompt=lambda iteration, violations_block, output_instructions: (
+                build_tasks_critic_prompt(
+                    constitution,
+                    spec,
+                    plan,
+                    read_file(spec_dir / "tasks.md"),
+                    iteration,
+                    violations_block=violations_block,
+                    output_instructions=output_instructions,
+                    test_stage_enabled=test_stage_enabled,
+                )
+            ),
+            context=lambda: [
+                ("CONSTITUTION", constitution),
+                ("SPEC", spec),
+                ("PLAN", plan),
+                ("TASKS (current)", read_file(spec_dir / "tasks.md")),
+                (
+                    "§T3 TEST/IMPL PAIRING STATUS",
+                    "(test stage enabled for this project)"
+                    if test_stage_enabled
+                    else "(test stage DISABLED for this project — §T3 findings should flag any "
+                    "[TEST] task or test-pairing requirement as BLOCKING, not require one)",
+                ),
+                (
+                    "HARNESS §T RULES (the only valid §T rule labels)",
+                    tasks_rules(test_stage_enabled),
+                ),
+            ],
         ),
         resume_state=(iteration, violations),
         run_fix=run_fix,

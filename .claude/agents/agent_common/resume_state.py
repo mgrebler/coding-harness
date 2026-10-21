@@ -304,11 +304,12 @@ def find_two_gate_resume_state(
 def format_violations_block(
     violations: list | None,
     iteration: int,
-    context: str = "violations (already addressed by the fix agent)",
+    context: str | None = None,
 ) -> str:
     """Return a formatted violations context block for a critic prompt, or '' if no violations."""
     if not violations:
         return ""
+    context = context or "violations (already addressed by the fix agent)"
     return (
         f"\n\nFor context, the previous iteration ({iteration - 1}) found these "
         f"{context}:\n\n{json.dumps(violations, indent=2)}\n\n"
