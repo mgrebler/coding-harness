@@ -34,6 +34,7 @@ from agent_common import local_agent_loop, ollama
 from agent_common.console import HUMAN_ACTION_EXIT_CODE, make_logger, setup_log_file
 from agent_common.critic_loop import (
     claude_gate,
+    confirm_regenerate,
     finish_if_already_passing,
     finish_stage,
     run_cli,
@@ -76,27 +77,7 @@ def preflight(spec_dir: Path, feature: str) -> bool:
         )
         sys.exit(HUMAN_ACTION_EXIT_CODE)
 
-    existing_tasks = (spec_dir / "tasks.md").exists()
-    existing_results = list(spec_dir.glob(f"{RESULT_PREFIX}-*.json"))
-
-    if existing_tasks and not existing_results:
-        print(
-            f"[{AGENT_NAME}] WARNING: {spec_dir}/tasks.md exists with no critic results.\n"
-            f"  resume — run critic on existing tasks.md (default)\n"
-            f"  regen  — regenerate tasks.md from scratch\n"
-            f"  abort  — exit without changes"
-        )
-        if sys.stdin.isatty():
-            response = input(f"[{AGENT_NAME}] Choice [resume]: ").strip().lower()
-        else:
-            log("Non-interactive mode: defaulting to 'resume'.")
-            response = "resume"
-        if response == "abort":
-            log("Aborted. No changes made.")
-            sys.exit(0)
-        return response == "regen"
-
-    return False
+    return confirm_regenerate(log, AGENT_NAME, spec_dir, "tasks.md", RESULT_PREFIX)
 
 
 # Subagent definitions

@@ -634,6 +634,58 @@ def finish_if_already_passing(
     return True
 
 
+def _ask(log, agent_name: str, question: str, default: str) -> str:
+    """Ask question on a terminal (an empty answer takes default); take default
+    without asking when running unattended."""
+    if not sys.stdin.isatty():
+        log(f"Non-interactive mode: defaulting to '{default}'.")
+        return default
+    return input(f"[{agent_name}] {question} ").strip().lower() or default
+
+
+def confirm_regenerate(
+    log, agent_name: str, spec_dir: Path, artifact: str, result_prefix: str
+) -> bool:
+    """When artifact exists but no critic has reviewed it yet (e.g. an
+    interrupted first run), ask whether to review it as-is (the default),
+    regenerate it, or abort. Returns True to regenerate."""
+    if not (spec_dir / artifact).exists() or any(spec_dir.glob(f"{result_prefix}-*.json")):
+        return False
+    choice = _ask(
+        log,
+        agent_name,
+        f"WARNING: {spec_dir}/{artifact} exists with no critic results.\n"
+        f"  resume — run critic on existing {artifact} (default)\n"
+        f"  regen  — regenerate {artifact} from scratch\n"
+        f"  abort  — exit without changes\n"
+        f"Choice [resume]:",
+        "resume",
+    )
+    if choice == "abort":
+        log("Aborted. No changes made.")
+        sys.exit(0)
+    return choice == "regen"
+
+
+def confirm_review_existing(
+    log, agent_name: str, spec_dir: Path, result_prefix: str, work: str
+) -> None:
+    """When an agent's work already looks complete but no critic has reviewed
+    it, confirm running the critic on it as-is (the default) or abort."""
+    if any(spec_dir.glob(f"{result_prefix}-*.json")):
+        return
+    answer = _ask(
+        log,
+        agent_name,
+        f"WARNING: {work} appear complete but no critic result exists. "
+        f"Run critic on them as-is? (yes/no) [yes]:",
+        "yes",
+    )
+    if answer != "yes":
+        log("Aborted. No changes made.")
+        sys.exit(0)
+
+
 def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitable]) -> None:
     """
     Shared entrypoint for the async *-auto.py orchestrators: parses --feature

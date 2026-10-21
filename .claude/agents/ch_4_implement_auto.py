@@ -42,7 +42,13 @@ from claude_agent_sdk import AgentDefinition
 
 from agent_common import git, local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
-from agent_common.critic_loop import claude_gate, finish_stage, run_cli, run_two_gate_loop
+from agent_common.critic_loop import (
+    claude_gate,
+    confirm_review_existing,
+    finish_stage,
+    run_cli,
+    run_two_gate_loop,
+)
 from agent_common.driving_agent import (
     FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS,
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
@@ -91,24 +97,10 @@ def preflight(spec_dir: Path, feature: str):
 
     tasks_content = (spec_dir / "tasks.md").read_text(encoding="utf-8")
     all_done = not unchecked_task_lines(tasks_content, exclude_tag="[MANUAL]")
-    existing_results = list(spec_dir.glob(f"{CRITIC_RESULT_PREFIX}-*.json"))
-
-    if all_done and not existing_results:
-        if sys.stdin.isatty():
-            response = (
-                input(
-                    f"[{AGENT_NAME}] WARNING: All tasks in tasks.md appear complete but no critic result exists. "
-                    f"Run critic on existing implementation? (yes/no): "
-                )
-                .strip()
-                .lower()
-            )
-        else:
-            log("Non-interactive mode: defaulting to running critic on existing implementation.")
-            response = "yes"
-        if response != "yes":
-            log("Aborted. No changes made.")
-            sys.exit(0)
+    if all_done:
+        confirm_review_existing(
+            log, AGENT_NAME, spec_dir, CRITIC_RESULT_PREFIX, "All tasks in tasks.md"
+        )
 
 
 # Subagent definitions

@@ -721,3 +721,21 @@ class TestClaudeGate(unittest.TestCase):
         self.assertIn("--- PLAN (current) ---\nthe plan", agent.prompt)
         self.assertIn("[ch-1-plan-critic-reconcile] iteration 2", agent.prompt)
         self.assertIn("independent plan critics", agent.description)
+
+
+class TestConfirmReviewExisting(unittest.TestCase):
+    def test_declining_on_a_terminal_aborts_and_unattended_runs_proceed(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            with (
+                patch.object(sys, "stdin", MagicMock(isatty=lambda: True)),
+                patch("builtins.input", return_value="no"),
+                self.assertRaises(SystemExit),
+            ):
+                critic_loop.confirm_review_existing(
+                    MagicMock(), "a", spec_dir, "ch-3-test-critic-result", "All [TEST] tasks"
+                )
+            with patch.object(sys, "stdin", MagicMock(isatty=lambda: False)):
+                critic_loop.confirm_review_existing(
+                    MagicMock(), "a", spec_dir, "ch-3-test-critic-result", "All [TEST] tasks"
+                )

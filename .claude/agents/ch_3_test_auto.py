@@ -46,6 +46,7 @@ from agent_common import local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
     claude_gate,
+    confirm_review_existing,
     finish_if_already_passing,
     finish_stage,
     run_cli,
@@ -86,24 +87,8 @@ def preflight(spec_dir: Path, feature: str):
     if not has_test_tasks:
         log("WARNING: No [TEST] tasks found in tasks.md. Is the task format correct?")
 
-    existing_results = list(spec_dir.glob(f"{CRITIC_RESULT_PREFIX}-*.json"))
-
-    if test_tasks_done and not existing_results:
-        if sys.stdin.isatty():
-            response = (
-                input(
-                    f"[{AGENT_NAME}] WARNING: All [TEST] tasks appear complete but no critic result exists. "
-                    f"Run critic on existing test files? (yes/no): "
-                )
-                .strip()
-                .lower()
-            )
-        else:
-            log("Non-interactive mode: defaulting to running critic on existing test files.")
-            response = "yes"
-        if response != "yes":
-            log("Aborted. No changes made.")
-            sys.exit(0)
+    if test_tasks_done:
+        confirm_review_existing(log, AGENT_NAME, spec_dir, CRITIC_RESULT_PREFIX, "All [TEST] tasks")
 
 
 # Subagent definitions
