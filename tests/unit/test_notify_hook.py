@@ -5,11 +5,13 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-SCRIPT = Path(__file__).parent.parent.parent / ".claude/hooks/notify.py"
+REPO = Path(__file__).parent.parent.parent
+SCRIPT = REPO / ".claude/hooks/notify.py"
 _spec = importlib.util.spec_from_file_location("notify_hook", SCRIPT)
 notify = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(notify)
@@ -54,21 +56,38 @@ class TestPush(unittest.TestCase):
         with patch.dict(os.environ, {"NTFY_TOPIC": "t0p1c", "NTFY_SERVER": ""}):
             request = notify.push_request(PERMISSION)
         self.assertEqual(request.full_url, "https://ntfy.sh/t0p1c")
-        self.assertEqual(request.data, b"Claude needs your permission")
+        self.assertEqual(request.data, b"proj: Claude needs your permission")
         self.assertEqual(request.get_header("Title"), "Claude Code - proj")
 
     def test_pushes_on_stop_by_default_instead_of_idle(self):
         with patch.dict(os.environ, {"NTFY_TOPIC": "t0p1c"}):
             os.environ.pop("CLAUDE_NOTIFY_PUSH_ON_STOP", None)
             self.assertEqual(
-                notify.push_request(STOP).data, b"Claude finished and is waiting for you"
+                notify.push_request(STOP).data, b"proj: Claude finished and is waiting for you"
             )
             self.assertIsNone(notify.push_request(IDLE))
 
     def test_idle_push_stands_in_when_push_on_stop_is_off(self):
         with patch.dict(os.environ, {"NTFY_TOPIC": "t0p1c", "CLAUDE_NOTIFY_PUSH_ON_STOP": "0"}):
             self.assertIsNone(notify.push_request(STOP))
-            self.assertEqual(notify.push_request(IDLE).data, b"Claude is waiting")
+            self.assertEqual(notify.push_request(IDLE).data, b"proj: Claude is waiting")
+
+    def test_names_the_project_after_its_origin_remote(self):
+        with tempfile.TemporaryDirectory() as d:
+            workspace = Path(d) / "workspace"
+            workspace.mkdir()
+            self.assertEqual(notify.project_name(str(workspace)), "workspace")
+            subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+            for url in ("git@github.com:me/jobtracker.git", "https://github.com/me/jobtracker/"):
+                with self.subTest(url=url):
+                    subprocess.run(
+                        ["git", "-C", str(workspace), "remote", "remove", "origin"],
+                        capture_output=True,
+                    )
+                    subprocess.run(
+                        ["git", "-C", str(workspace), "remote", "add", "origin", url], check=True
+                    )
+                    self.assertEqual(notify.project_name(str(workspace)), "jobtracker")
 
     def test_ignores_other_notification_types(self):
         with patch.dict(os.environ, {"NTFY_TOPIC": "t0p1c"}):
@@ -80,6 +99,87 @@ class TestPush(unittest.TestCase):
             patch.object(notify.urllib.request, "urlopen", side_effect=OSError("offline")),
         ):
             notify.push(IDLE)
+
+
+OLD_UNGUARDED = {
+    "type": "command",
+    "command": 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/notify.py" bell',
+}
+PROJECT_HOOK = {"type": "command", "command": "./scripts/lint.sh"}
+
+
+class TestInstall(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.settings = Path(self.tmp.name) / ".claude/settings.json"
+
+    def _hooks(self, event):
+        return json.loads(self.settings.read_text())["hooks"][event]
+
+    def test_repo_settings_are_generated_from_hooks(self):
+        settings = json.loads((REPO / ".claude/settings.json").read_text())
+        self.assertEqual(settings["hooks"], notify.HOOKS)
+
+    def test_creates_settings_when_absent(self):
+        self.assertTrue(notify.install(self.settings).startswith("MERGE"))
+        self.assertEqual(json.loads(self.settings.read_text()), {"hooks": notify.HOOKS})
+
+    def test_keeps_project_settings_and_replaces_older_copies(self):
+        self.settings.parent.mkdir()
+        self.settings.write_text(
+            json.dumps(
+                {
+                    "permissions": {"allow": ["Bash(ls)"]},
+                    "hooks": {
+                        "Stop": [{"hooks": [OLD_UNGUARDED, PROJECT_HOOK]}],
+                        "PostToolUse": [{"matcher": "Edit", "hooks": [PROJECT_HOOK]}],
+                    },
+                }
+            )
+        )
+        notify.install(self.settings)
+        notify.install(self.settings)
+
+        settings = json.loads(self.settings.read_text())
+        self.assertEqual(settings["permissions"], {"allow": ["Bash(ls)"]})
+        self.assertEqual(
+            settings["hooks"]["PostToolUse"], [{"matcher": "Edit", "hooks": [PROJECT_HOOK]}]
+        )
+        self.assertEqual(self._hooks("Stop"), [{"hooks": [PROJECT_HOOK]}, *notify.HOOKS["Stop"]])
+        self.assertTrue(notify.install(self.settings).startswith("UNCHANGED"))
+
+    def test_leaves_invalid_json_untouched(self):
+        self.settings.parent.mkdir()
+        self.settings.write_text("{ // comment\n}")
+        self.assertTrue(notify.install(self.settings).startswith("SKIP"))
+        self.assertEqual(self.settings.read_text(), "{ // comment\n}")
+
+    def test_missing_script_is_a_silent_success(self):
+        """A Stop hook exiting 2 (python3's code for a missing file) would keep
+        Claude going, so a clone that hasn't run install.sh must exit 0."""
+        for handler in notify.HOOKS["Stop"][0]["hooks"]:
+            result = subprocess.run(
+                ["sh", "-c", handler["command"]],
+                env={**os.environ, "CLAUDE_PROJECT_DIR": self.tmp.name},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+
+    def test_install_sh_ships_the_hook(self):
+        target = Path(self.tmp.name)
+        result = subprocess.run(
+            ["bash", str(REPO / "install.sh"), str(target)],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            check=True,
+        )
+        self.assertEqual((target / ".claude/hooks/notify.py").read_text(), SCRIPT.read_text())
+        self.assertIn(".claude/hooks/notify.py", (target / ".gitignore").read_text())
+        self.assertEqual(self._hooks("Notification"), notify.HOOKS["Notification"])
+        self.assertIn("MERGE settings.json: notification hooks", result.stdout)
 
 
 if __name__ == "__main__":

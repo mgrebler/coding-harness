@@ -50,6 +50,7 @@ No comments that merely restate what the code already says — rely on naming an
 **Always overwrites (harness-managed):**
 - `.claude/agents/` — Python orchestrators for autonomous pipelines
 - `.claude/skills/` — All `/speckit-*` slash commands
+- `.claude/hooks/notify.py` — "Claude is waiting" bell/ntfy hook; its `HOOKS` block is merged into the project-owned `.claude/settings.json` on every run, replacing only its own entries
 - `.specify/extensions/` — Git integration module
 - `.specify/extensions.yml` — Hook registration read by every `speckit-*` skill; mirrors `.specify/extensions/git/extension.yml`'s `hooks:` block
 - `.specify/scripts/` — Shared Bash utilities

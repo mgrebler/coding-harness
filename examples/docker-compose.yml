@@ -6,6 +6,8 @@ services:
 
     environment:
       CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN}"
+      NTFY_TOPIC: "${NTFY_TOPIC:-}"
+      NTFY_SERVER: "${NTFY_SERVER:-}"
 
     extra_hosts:
       - "host.docker.internal:host-gateway"

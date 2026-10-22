@@ -633,7 +633,7 @@ ruff format .
 
 ## Notifications When Claude Is Waiting
 
-When you develop this repo with Claude Code, the project hooks in `.claude/settings.json` (via `.claude/hooks/notify.py`) tell you when Claude is waiting on you. Installed projects don't get these hooks yet.
+The hooks in `.claude/settings.json` (via `.claude/hooks/notify.py`) tell you when Claude is waiting on you. They run in this repo and in every installed project. `install.sh` copies `notify.py` as a harness-managed file and merges the hooks into the project's own `.claude/settings.json`. Re-running it replaces only those hook entries, leaving every other setting and hook alone. If the file isn't valid JSON (for example, it has comments), `install.sh` leaves it untouched and says so.
 
 | When | What you get |
 |---|---|
@@ -655,9 +655,9 @@ To set up push:
 
 1. Pick an unguessable topic name, for example `claude-$(openssl rand -hex 8)`. Anyone who knows the name can read and post to it.
 2. Subscribe to it in the ntfy app or at `https://ntfy.sh/<topic>`.
-3. Set `NTFY_TOPIC=<topic>` in your host shell or in this repo's gitignored `.env`. `docker-compose.yml` passes it into the container. Set `NTFY_SERVER` too if you self-host ntfy.
+3. Set `NTFY_TOPIC=<topic>` in your host shell or in the project's gitignored `.env`. `docker-compose.yml` passes it into the container. Set `NTFY_SERVER` too if you self-host ntfy. Projects installed before this feature don't have those lines in their `docker-compose.yml`, so `install.sh` reminds you to add them.
 
-The push contains only the project name and Claude's one-line notification text, such as "Claude needs your permission to use Bash". It never includes code or conversation content. The unattended `ch-*-auto` pipelines run Claude without loading project settings (`setting_sources=[]`), so they never trigger these hooks.
+The push contains only the project name and Claude's one-line notification text, such as "coding-harness: Claude needs your permission to use Bash". The project name comes from the repo's `origin` remote, because every dev container mounts its project at `/workspace` and the folder name can't tell sessions apart. It never includes code or conversation content. The unattended `ch-*-auto` pipelines run Claude without loading project settings (`setting_sources=[]`), so they never trigger these hooks.
 
 ## What This Repo Contains
 
