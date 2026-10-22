@@ -639,7 +639,7 @@ When you develop this repo with Claude Code, the project hooks in `.claude/setti
 |---|---|
 | Claude finishes a turn | terminal bell |
 | Claude needs a permission | terminal bell |
-| A permission prompt has waited about 6s while you weren't typing, or a finished turn has gone unanswered for 60s | push notification via [ntfy](https://ntfy.sh), if configured |
+| Claude finishes a turn, or a permission prompt has waited about 6s while you weren't typing | push notification via [ntfy](https://ntfy.sh), if configured |
 
 **Terminal bell.** It is on by default. Claude Code emits the BEL on its own terminal, so it reaches your host terminal through the container. Enable bells (sound, tab badge, or urgency hint) in your terminal profile to notice it.
 
@@ -649,7 +649,9 @@ To turn the bell off for yourself, set `CLAUDE_NOTIFY_BELL` to `0` without touch
 { "env": { "CLAUDE_NOTIFY_BELL": "0" } }
 ```
 
-**Phone/desktop push** is off until you set a topic:
+**Phone/desktop push** needs a topic, since ntfy has nowhere to send it otherwise. Once `NTFY_TOPIC` is set, every push above is on by default. To only be pushed for permission prompts, plus a finished turn left unanswered for 60s, set `CLAUDE_NOTIFY_PUSH_ON_STOP` to `0` the same way as the bell.
+
+To set up push:
 
 1. Pick an unguessable topic name, for example `claude-$(openssl rand -hex 8)`. Anyone who knows the name can read and post to it.
 2. Subscribe to it in the ntfy app or at `https://ntfy.sh/<topic>`.

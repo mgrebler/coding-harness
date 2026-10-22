@@ -37,19 +37,38 @@ class TestBell(unittest.TestCase):
 
 
 IDLE = {"notification_type": "idle_prompt", "message": "Claude is waiting", "cwd": "/w/proj"}
+PERMISSION = {
+    "notification_type": "permission_prompt",
+    "message": "Claude needs your permission",
+    "cwd": "/w/proj",
+}
+STOP = {"hook_event_name": "Stop", "cwd": "/w/proj"}
 
 
 class TestPush(unittest.TestCase):
     def test_does_nothing_without_a_topic(self):
         with patch.dict(os.environ, {"NTFY_TOPIC": ""}):
+            self.assertIsNone(notify.push_request(STOP))
+
+    def test_builds_ntfy_request_for_permission_prompts(self):
+        with patch.dict(os.environ, {"NTFY_TOPIC": "t0p1c", "NTFY_SERVER": ""}):
+            request = notify.push_request(PERMISSION)
+        self.assertEqual(request.full_url, "https://ntfy.sh/t0p1c")
+        self.assertEqual(request.data, b"Claude needs your permission")
+        self.assertEqual(request.get_header("Title"), "Claude Code - proj")
+
+    def test_pushes_on_stop_by_default_instead_of_idle(self):
+        with patch.dict(os.environ, {"NTFY_TOPIC": "t0p1c"}):
+            os.environ.pop("CLAUDE_NOTIFY_PUSH_ON_STOP", None)
+            self.assertEqual(
+                notify.push_request(STOP).data, b"Claude finished and is waiting for you"
+            )
             self.assertIsNone(notify.push_request(IDLE))
 
-    def test_builds_ntfy_request_for_away_notifications(self):
-        with patch.dict(os.environ, {"NTFY_TOPIC": "t0p1c", "NTFY_SERVER": ""}):
-            request = notify.push_request(IDLE)
-        self.assertEqual(request.full_url, "https://ntfy.sh/t0p1c")
-        self.assertEqual(request.data, b"Claude is waiting")
-        self.assertEqual(request.get_header("Title"), "Claude Code - proj")
+    def test_idle_push_stands_in_when_push_on_stop_is_off(self):
+        with patch.dict(os.environ, {"NTFY_TOPIC": "t0p1c", "CLAUDE_NOTIFY_PUSH_ON_STOP": "0"}):
+            self.assertIsNone(notify.push_request(STOP))
+            self.assertEqual(notify.push_request(IDLE).data, b"Claude is waiting")
 
     def test_ignores_other_notification_types(self):
         with patch.dict(os.environ, {"NTFY_TOPIC": "t0p1c"}):
