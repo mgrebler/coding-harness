@@ -19,7 +19,7 @@ Exit codes:
 from pathlib import Path
 
 from agent_common.critic_reconcile import CONFIDENCE_STATUS_RULE
-from agent_common.files import read_optional, read_plan_bundle, require_files
+from agent_common.files import CONSTITUTION_PATH, read_memory, read_plan_bundle, read_required
 from agent_common.ollama import run_local_critic_cli
 
 RESULT_PREFIX = "ch-1-plan-architecture-review-result"
@@ -96,20 +96,14 @@ Rules:
 
 def main():
     def _build(spec_dir: Path, iteration: int) -> str:
-        constitution_path = Path(".specify/memory/constitution.md")
-        architecture_path = Path(".specify/memory/architecture.md")
-        arch_principles_path = Path(".specify/memory/architecture-principles.md")
-        spec_path = spec_dir / "spec.md"
-        plan_path = spec_dir / "plan.md"
-
-        require_files("ch-1-plan-architecture-review", constitution_path, spec_path, plan_path)
-
-        constitution = constitution_path.read_text(encoding="utf-8")
-        architecture = read_optional(architecture_path, "(architecture.md not found)")
-        arch_principles = read_optional(
-            arch_principles_path, "(architecture-principles.md not found)"
+        constitution, spec, _ = read_required(
+            "ch-1-plan-architecture-review",
+            CONSTITUTION_PATH,
+            spec_dir / "spec.md",
+            spec_dir / "plan.md",
         )
-        spec = spec_path.read_text(encoding="utf-8")
+        architecture = read_memory("architecture")
+        arch_principles = read_memory("architecture-principles")
         plan = read_plan_bundle(spec_dir)
 
         return build_architecture_review_prompt(

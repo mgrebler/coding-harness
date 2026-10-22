@@ -28,8 +28,6 @@ from pathlib import Path
 
 from agent_common.git import resolve_base_ref
 
-# --- Task format (§T5) -------------------------------------------------
-
 # A compliant task line is a markdown checkbox (`- [ ]`, `- [x]`, or `- [X]`)
 # immediately followed by a bare, unbracketed task ID (`T001`, not `[T001]`).
 # This is not cosmetic: ch_3_test_auto.py and ch_4_implement_auto.py scan for
@@ -39,14 +37,8 @@ from agent_common.git import resolve_base_ref
 _CHECKBOX_TXXX_RE = re.compile(r"^[-*]\s+\[[ xX]\]\s*T\d+\b")
 _BARE_TXXX_RE = re.compile(r"\bT\d+\b")
 
-# A task with no testable deliverable (orientation/read-only) is exempt from
-# [TEST]/[IMPL] tagging per Constitution §5 "Non-deliverable tasks" — this
-# check only flags a MISSING [TEST]/[IMPL] tag when the task line itself
-# doesn't look like an orientation task (heuristic: mentions no output file
-# path via " — " or ": " with a path-like segment). This heuristic is
-# deliberately permissive — it exists to catch the mechanical, unambiguous
-# cases (numbered lists, bracketed-ID-without-checkbox); genuinely ambiguous
-# tagging calls are still left to the LLM critic.
+# These classifications only feed the critic's prompt (analyze_task_format), so a
+# task Constitution §5 exempts from [TEST]/[IMPL] tagging is left to its judgement.
 
 
 def _classify_txxx_issues(stripped: str) -> list[str]:
@@ -189,8 +181,6 @@ def task_format_violations(tasks: str) -> list[str]:
     return violations
 
 
-# --- Revision regressions (plan.md / tasks.md) --------------------------
-
 _HEADING_RE = re.compile(r"^#{2,3} .+$", re.MULTILINE)
 _TASK_LINE_RE = re.compile(r"^[-*]\s+\[[ xX]\]\s*T\d+\b", re.MULTILINE)
 
@@ -218,8 +208,6 @@ def revision_regressions(before: str, after: str) -> list[str]:
     return problems
 
 
-# --- Pending human approvals (plan.md) ----------------------------------
-
 _PENDING_APPROVALS_RE = re.compile(
     r"^## Pending Human Approvals\s*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL
 )
@@ -235,9 +223,6 @@ def pending_human_approvals(plan: str) -> list[str]:
         return []
     body = re.sub(r"<!--.*?-->", "", m.group(1), flags=re.DOTALL)
     return [line.strip() for line in body.splitlines() if line.strip().startswith(("- ", "* "))]
-
-
-# --- Task completion -----------------------------------------------------
 
 
 # Anchored on the checkbox + task ID starting the (stripped) line, mirroring
@@ -290,8 +275,6 @@ def unchecked_task_lines(
         and (exclude_tag is None or exclude_tag not in task_tags(line))
     ]
 
-
-# --- Red-state artifact validity (§TQ2) ---------------------------------
 
 # Signatures that mean the test run never reached a real assertion — the
 # test environment failed, not the test. These must never be accepted as a
@@ -370,9 +353,7 @@ def validate_red_state_artifacts(test_results_dir: Path) -> dict[str, str]:
     return issues
 
 
-# --- Commit hygiene -------------------------------------------------------
-
-DEFAULT_MAX_FILE_BYTES = 5 * 1024 * 1024  # 5MB
+DEFAULT_MAX_FILE_BYTES = 5 * 1024 * 1024
 
 
 def oversized_staged_files(max_bytes: int = DEFAULT_MAX_FILE_BYTES) -> list[tuple[str, int]]:

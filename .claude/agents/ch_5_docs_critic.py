@@ -17,10 +17,12 @@ Exit codes:
 from pathlib import Path
 
 from agent_common.files import (
+    CONSTITUTION_PATH,
+    MEMORY_DIR,
     format_directory_tree,
     read_changed_source_files,
     read_directory_tree,
-    require_files,
+    read_required,
 )
 from agent_common.git import get_changed_files
 from agent_common.ollama import run_local_critic_cli
@@ -201,21 +203,12 @@ Rules:
 
 def main():
     def _build(spec_dir: Path, iteration: int) -> str:
-        constitution_path = Path(".specify/memory/constitution.md")
-        principles_path = Path(".specify/memory/documentation-principles.md")
-        spec_path = spec_dir / "spec.md"
-        plan_path = spec_dir / "plan.md"
-        tasks_path = spec_dir / "tasks.md"
-
-        require_files(
-            "ch-5-docs-critic", constitution_path, principles_path, spec_path, plan_path, tasks_path
+        constitution, documentation_principles, spec, plan, tasks = read_required(
+            "ch-5-docs-critic",
+            CONSTITUTION_PATH,
+            MEMORY_DIR / "documentation-principles.md",
+            *(spec_dir / name for name in ("spec.md", "plan.md", "tasks.md")),
         )
-
-        constitution = constitution_path.read_text(encoding="utf-8")
-        documentation_principles = principles_path.read_text(encoding="utf-8")
-        spec = spec_path.read_text(encoding="utf-8")
-        plan = plan_path.read_text(encoding="utf-8")
-        tasks = tasks_path.read_text(encoding="utf-8")
 
         baseline_tree = format_directory_tree(
             read_directory_tree(spec_dir / "ch-5-docs-baseline"),

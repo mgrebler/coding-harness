@@ -11,8 +11,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from agent_common import console, files, git, ollama
+from claude_agent_sdk import AgentDefinition, query
+
+from agent_common import console, critic_reconcile, files, git, ollama
 from agent_common import resume_state as rstate
+from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
 from agent_common.followup import record_pass_followups
 from agent_common.preflight_checks import revision_regressions
 
@@ -137,6 +140,97 @@ class GateSpec(NamedTuple):
     label: str
     build_query: Callable[[int, list | None, str | None], object]
     build_reconcile_query: Callable[[int, list[dict], str | None], object] | None = None
+
+
+CRITIC_TOOLS = ["Read", "Write", "Bash", "Glob", "Grep"]
+
+
+def claude_gate(
+    *,
+    feature: str,
+    result_prefix: str,
+    script_name: str,
+    critic_type: str,
+    label: str,
+    summary_style: str,
+    agent_name: str,
+    description: str,
+    task: str,
+    prompt: Callable[[int, str, str], str],
+    context: Callable[[], list[tuple[str, str]]],
+    violations_context: str | None = None,
+) -> GateSpec:
+    """Build a GateSpec whose Claude critic and Claude reconciler are wired the
+    same way for every gate, so a stage only states what differs:
+
+    agent_name / description: the critic subagent (its reconciler is
+        "<agent_name>-reconcile").
+    task: the driving agent's instruction, e.g. "Validate plan.md for feature X."
+    prompt(iteration, violations_block, output_instructions): the critic prompt,
+        normally the gate's build_*_prompt shared with its local critic script.
+    context(): (heading, text) sections the reconciler re-verifies findings
+        against — read at call time, so revised artifacts are current.
+    violations_context: how format_violations_block describes the previous
+        iteration's findings.
+    """
+    tag = result_prefix.removesuffix("-result")
+    critics = agent_name.removesuffix("-critic")
+
+    def result_path(iteration: int) -> str:
+        return f"specs/{feature}/{result_prefix}-{iteration}.json"
+
+    def output_instructions(iteration: int, suffix: str = "") -> str:
+        return (
+            f"- After producing JSON, write it to {result_path(iteration)} using Bash\n"
+            f"- Print one line: [{tag}{suffix}] iteration {iteration} → PASS or FAIL → path"
+        )
+
+    def drive(user_prompt: str, name: str, agent: AgentDefinition, model: str | None):
+        return query(
+            prompt=user_prompt + NO_RECURSION_NOTICE,
+            options=driving_agent_options(
+                allowed_tools=[*CRITIC_TOOLS, "Agent"], agents={name: agent}, model=model
+            ),
+        )
+
+    def build_query(iteration: int, prev_violations, model: str | None):
+        violations_block = rstate.format_violations_block(
+            prev_violations, iteration, violations_context
+        )
+        agent = AgentDefinition(
+            description=description,
+            model=model,
+            prompt=prompt(iteration, violations_block, output_instructions(iteration)),
+            tools=CRITIC_TOOLS,
+        )
+        return drive(f"{task} Write result to {result_path(iteration)}.", agent_name, agent, model)
+
+    def build_reconcile_query(iteration: int, raw_results: list[dict], model: str | None):
+        context_block = "\n\n".join(f"--- {heading} ---\n{text}" for heading, text in context())
+        agent = AgentDefinition(
+            description=f"Reconciles findings from multiple independent {critics} critics "
+            "into one verified result.",
+            model=model,
+            prompt=critic_reconcile.build_reconcile_prompt(
+                context_block,
+                raw_results,
+                iteration,
+                summary_style,
+                output_instructions(iteration, "-reconcile"),
+            ),
+            tools=CRITIC_TOOLS,
+        )
+        return drive(
+            f"Reconcile the raw {agent_name} findings for feature {feature} into one verified "
+            f"result. Write result to {result_path(iteration)}.",
+            f"{agent_name}-reconcile",
+            agent,
+            model,
+        )
+
+    return GateSpec(
+        result_prefix, script_name, critic_type, label, build_query, build_reconcile_query
+    )
 
 
 async def _run_gate_for_iteration(
@@ -317,8 +411,6 @@ async def run_two_gate_loop(
 
     while iteration <= max_iterations:
         path1 = spec_dir / f"{gate1.result_prefix}-{iteration}.json"
-
-        # --- Gate 1 ---
         prev_violations1 = violations1
         if not path1.exists():
             if violations1 or violations2:
@@ -355,9 +447,7 @@ async def run_two_gate_loop(
             iteration += 1
             continue
 
-        stuck_sig1 = None  # gate1 passed — reset
-
-        # --- Gate 2 ---
+        stuck_sig1 = None
         status2, result2 = await _run_gate_for_iteration(
             log, spec_dir, feature, iteration, gate2, violations2, "confidence"
         )
@@ -538,6 +628,58 @@ def finish_if_already_passing(
         exclude_from_commit=exclude_from_commit,
     )
     return True
+
+
+def _ask(log, agent_name: str, question: str, default: str) -> str:
+    """Ask question on a terminal (an empty answer takes default); take default
+    without asking when running unattended."""
+    if not sys.stdin.isatty():
+        log(f"Non-interactive mode: defaulting to '{default}'.")
+        return default
+    return input(f"[{agent_name}] {question} ").strip().lower() or default
+
+
+def confirm_regenerate(
+    log, agent_name: str, spec_dir: Path, artifact: str, result_prefix: str
+) -> bool:
+    """When artifact exists but no critic has reviewed it yet (e.g. an
+    interrupted first run), ask whether to review it as-is (the default),
+    regenerate it, or abort. Returns True to regenerate."""
+    if not (spec_dir / artifact).exists() or any(spec_dir.glob(f"{result_prefix}-*.json")):
+        return False
+    choice = _ask(
+        log,
+        agent_name,
+        f"WARNING: {spec_dir}/{artifact} exists with no critic results.\n"
+        f"  resume — run critic on existing {artifact} (default)\n"
+        f"  regen  — regenerate {artifact} from scratch\n"
+        f"  abort  — exit without changes\n"
+        f"Choice [resume]:",
+        "resume",
+    )
+    if choice == "abort":
+        log("Aborted. No changes made.")
+        sys.exit(0)
+    return choice == "regen"
+
+
+def confirm_review_existing(
+    log, agent_name: str, spec_dir: Path, result_prefix: str, work: str
+) -> None:
+    """When an agent's work already looks complete but no critic has reviewed
+    it, confirm running the critic on it as-is (the default) or abort."""
+    if any(spec_dir.glob(f"{result_prefix}-*.json")):
+        return
+    answer = _ask(
+        log,
+        agent_name,
+        f"WARNING: {work} appear complete but no critic result exists. "
+        f"Run critic on them as-is? (yes/no) [yes]:",
+        "yes",
+    )
+    if answer != "yes":
+        log("Aborted. No changes made.")
+        sys.exit(0)
 
 
 def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitable]) -> None:

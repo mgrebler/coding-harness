@@ -38,18 +38,22 @@ from pathlib import Path
 
 from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
-from claude_agent_sdk import AgentDefinition, query
+from claude_agent_sdk import AgentDefinition
 
-from agent_common import critic_reconcile, git, local_agent_loop, ollama
+from agent_common import git, local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
-from agent_common.critic_loop import GateSpec, finish_stage, run_cli, run_two_gate_loop
+from agent_common.critic_loop import (
+    claude_gate,
+    confirm_review_existing,
+    finish_stage,
+    run_cli,
+    run_two_gate_loop,
+)
 from agent_common.driving_agent import (
     FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS,
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
-    NO_RECURSION_NOTICE,
-    driving_agent_options,
 )
-from agent_common.files import read_file, require_spec_files
+from agent_common.files import CONSTITUTION_PATH, read_file, read_memory, require_spec_files
 from agent_common.followup import record_non_blocking_concerns
 from agent_common.preflight_checks import oversized_committed_files, unchecked_task_lines
 from agent_common.project_conventions import is_slow_check, resolve_ci_commands
@@ -57,7 +61,6 @@ from agent_common.resume_state import (
     apply_escalation_review,
     find_passing_iteration,
     find_two_gate_resume_state,
-    format_violations_block,
     next_iteration,
     read_result,
     stage_is_complete,
@@ -67,9 +70,6 @@ AGENT_NAME = "ch-4-implement-auto"
 CRITIC_RESULT_PREFIX = "ch-4-implement-critic-result"
 QUALITY_RESULT_PREFIX = "ch-4-implement-code-quality-review-result"
 log = make_logger(AGENT_NAME)
-
-
-# Pre-flight checks
 
 
 def preflight(spec_dir: Path, feature: str):
@@ -94,27 +94,10 @@ def preflight(spec_dir: Path, feature: str):
 
     tasks_content = (spec_dir / "tasks.md").read_text(encoding="utf-8")
     all_done = not unchecked_task_lines(tasks_content, exclude_tag="[MANUAL]")
-    existing_results = list(spec_dir.glob(f"{CRITIC_RESULT_PREFIX}-*.json"))
-
-    if all_done and not existing_results:
-        if sys.stdin.isatty():
-            response = (
-                input(
-                    f"[{AGENT_NAME}] WARNING: All tasks in tasks.md appear complete but no critic result exists. "
-                    f"Run critic on existing implementation? (yes/no): "
-                )
-                .strip()
-                .lower()
-            )
-        else:
-            log("Non-interactive mode: defaulting to running critic on existing implementation.")
-            response = "yes"
-        if response != "yes":
-            log("Aborted. No changes made.")
-            sys.exit(0)
-
-
-# Subagent definitions
+    if all_done:
+        confirm_review_existing(
+            log, AGENT_NAME, spec_dir, CRITIC_RESULT_PREFIX, "All tasks in tasks.md"
+        )
 
 
 def impl_agent_definition(
@@ -195,37 +178,6 @@ Key rules:
 {HUMAN_REVIEW_ATTESTATION_GUARDRAIL}
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-    )
-
-
-def critic_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    iteration: int,
-    violations: list | None = None,
-    model: str | None = None,
-) -> AgentDefinition:
-    violations_block = format_violations_block(violations, iteration)
-
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-4-implement-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-4-implement-critic] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Validates implemented code against tasks.md, plan.md, spec.md, and constitution.md.",
-        model=model,
-        prompt=build_implement_critic_prompt(
-            constitution,
-            spec,
-            plan,
-            tasks,
-            iteration,
-            violations_block=violations_block,
-            output_instructions=output_instructions,
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
     )
 
 
@@ -335,104 +287,6 @@ Key rules:
     )
 
 
-def quality_review_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    quality_principles: str,
-    iteration: int,
-    quality_violations: list | None = None,
-    model: str | None = None,
-) -> AgentDefinition:
-    violations_block = format_violations_block(
-        quality_violations, iteration, "quality violations (already addressed by the fix agent)"
-    )
-
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-4-implement-code-quality-review-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-4-implement-code-quality-review] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reviews implemented code for quality, maintainability, and operational safety.",
-        model=model,
-        prompt=build_quality_review_prompt(
-            constitution,
-            spec,
-            plan,
-            tasks,
-            quality_principles,
-            iteration,
-            violations_block=violations_block,
-            output_instructions=output_instructions,
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def critic_reconcile_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None = None,
-) -> AgentDefinition:
-    context_block = (
-        f"--- CONSTITUTION ---\n{constitution}\n\n"
-        f"--- SPEC ---\n{spec}\n\n"
-        f"--- PLAN ---\n{plan}\n\n"
-        f"--- TASKS ---\n{tasks}"
-    )
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-4-implement-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-4-implement-critic-reconcile] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reconciles findings from multiple independent implement critics into one verified result.",
-        model=model,
-        prompt=critic_reconcile.build_reconcile_prompt(
-            context_block, raw_results, iteration, "violations", output_instructions
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def quality_review_reconcile_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    quality_principles: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None = None,
-) -> AgentDefinition:
-    context_block = (
-        f"--- CONSTITUTION ---\n{constitution}\n\n"
-        f"--- SPEC ---\n{spec}\n\n"
-        f"--- PLAN ---\n{plan}\n\n"
-        f"--- TASKS ---\n{tasks}\n\n"
-        f"--- CODE QUALITY PRINCIPLES ---\n{quality_principles}"
-    )
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-4-implement-code-quality-review-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-4-implement-code-quality-review-reconcile] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reconciles findings from multiple independent code-quality-review critics into one verified result.",
-        model=model,
-        prompt=critic_reconcile.build_reconcile_prompt(
-            context_block, raw_results, iteration, "confidence", output_instructions
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-# CI check
-
-
 def _build_ci_commands(*, include_slow: bool) -> list[tuple[str, list[str]]]:
     """Every CI check the project declared (constitution §12 / README.md), in its
     own words — not forced into a fixed typecheck/lint/unit/e2e taxonomy. The quick
@@ -479,9 +333,6 @@ def _run_commands(commands: list[tuple[str, list[str]]]) -> tuple[bool, str]:
     return all_passed, "\n\n".join(failures)
 
 
-# Commit hygiene
-
-
 def _check_commit_hygiene() -> None:
     """Hard-fail if this branch has committed a file over the size
     threshold — cheap to catch mechanically (specs/027 committed a 4.5GB
@@ -498,9 +349,6 @@ def _check_commit_hygiene() -> None:
         "before this stage can be marked complete."
     )
     sys.exit(1)
-
-
-# Main orchestration loop
 
 
 async def _run_implementation_agent(
@@ -528,14 +376,6 @@ async def _run_implementation_agent(
     max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         log(f"Running implementation agent (attempt {attempt}/{max_attempts})...")
-        impl_agent = impl_agent_definition(
-            constitution,
-            spec,
-            plan,
-            tasks,
-            quality_principles,
-            test_stage_enabled=test_stage_enabled,
-        )
         tdd_instruction = (
             "Follow TDD order: write failing tests first, commit, then implement, commit."
             if test_stage_enabled
@@ -547,29 +387,20 @@ async def _run_implementation_agent(
             f"{tdd_instruction} "
             f"Mark each non-[MANUAL] task - [x] in tasks.md after completing it."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "implement",
-            claude_fallback=lambda model, user_prompt=user_prompt, tasks=tasks: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "impl-agent": impl_agent_definition(
-                            constitution,
-                            spec,
-                            plan,
-                            tasks,
-                            quality_principles,
-                            model=model,
-                            test_stage_enabled=test_stage_enabled,
-                        )
-                    },
-                    model=model,
-                ),
+            "impl-agent",
+            lambda model, tasks=tasks: impl_agent_definition(
+                constitution,
+                spec,
+                plan,
+                tasks,
+                quality_principles,
+                model=model,
+                test_stage_enabled=test_stage_enabled,
             ),
-            system_prompt=impl_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
         tasks = read_file(spec_dir / "tasks.md")
@@ -591,26 +422,15 @@ async def _run_implementation_agent(
 async def _run_ci_fix_agent(
     feature: str, constitution: str, spec: str, plan: str, tasks: str, failure_summary: str
 ) -> None:
-    """Run the CI fix agent once for the given failure summary."""
-    ci_fix_agent = ci_fix_agent_definition(constitution, spec, plan, tasks, failure_summary)
     user_prompt = f"Fix CI failures for feature {feature}. Failures:\n{failure_summary}"
-    await local_agent_loop.run_generation(
+    await local_agent_loop.run_agent(
         log,
         "implement",
-        claude_fallback=lambda model: query(
-            prompt=user_prompt + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "ci-fix-agent": ci_fix_agent_definition(
-                        constitution, spec, plan, tasks, failure_summary, model=model
-                    )
-                },
-                model=model,
-            ),
+        "ci-fix-agent",
+        lambda model: ci_fix_agent_definition(
+            constitution, spec, plan, tasks, failure_summary, model=model
         ),
-        system_prompt=ci_fix_agent.prompt,
-        user_prompt=user_prompt,
+        user_prompt,
     )
 
 
@@ -698,27 +518,17 @@ async def _run_revision(
     log(
         f"Running fix agent for {pending_label} violations from iteration {pending_iter} ({len(pending_violations)} issue(s))..."
     )
-    fix_agent = fix_agent_definition(constitution, spec, plan, tasks_content, pending_violations)
     user_prompt = (
         f"Fix violations for feature {feature}. Violations: {json.dumps(pending_violations)}"
     )
-    await local_agent_loop.run_generation(
+    await local_agent_loop.run_agent(
         log,
         "implement",
-        claude_fallback=lambda model: query(
-            prompt=user_prompt + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "fix-agent": fix_agent_definition(
-                        constitution, spec, plan, tasks_content, pending_violations, model=model
-                    )
-                },
-                model=model,
-            ),
+        "fix-agent",
+        lambda model: fix_agent_definition(
+            constitution, spec, plan, tasks_content, pending_violations, model=model
         ),
-        system_prompt=fix_agent.prompt,
-        user_prompt=user_prompt,
+        user_prompt,
     )
 
 
@@ -733,138 +543,6 @@ async def _on_both_pass(
 ) -> None:
     await _finish_with_full_ci(
         feature, spec_dir, constitution, spec, plan, quality_result, baseline_dirty
-    )
-
-
-def _build_critic_query(
-    feature: str,
-    spec_dir: Path,
-    constitution: str,
-    spec: str,
-    plan: str,
-    iteration: int,
-    prev_violations,
-    model: str | None,
-):
-    tasks_content = read_file(spec_dir / "tasks.md")
-    return query(
-        prompt=(
-            f"Validate the implementation for feature {feature}. "
-            f"Write result to specs/{feature}/ch-4-implement-critic-result-{iteration}.json."
-        )
-        + NO_RECURSION_NOTICE,
-        options=driving_agent_options(
-            allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-            agents={
-                "implement-critic": critic_agent_definition(
-                    constitution, spec, plan, tasks_content, iteration, prev_violations, model
-                )
-            },
-            model=model,
-        ),
-    )
-
-
-def _build_quality_query(
-    feature: str,
-    spec_dir: Path,
-    constitution: str,
-    spec: str,
-    plan: str,
-    quality_principles: str,
-    iteration: int,
-    quality_violations,
-    model: str | None,
-):
-    tasks_content = read_file(spec_dir / "tasks.md")
-    return query(
-        prompt=(
-            f"Review the implementation for feature {feature} for code quality. "
-            f"Write result to specs/{feature}/ch-4-implement-code-quality-review-result-{iteration}.json."
-        )
-        + NO_RECURSION_NOTICE,
-        options=driving_agent_options(
-            allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-            agents={
-                "quality-review": quality_review_agent_definition(
-                    constitution,
-                    spec,
-                    plan,
-                    tasks_content,
-                    quality_principles,
-                    iteration,
-                    quality_violations,
-                    model,
-                )
-            },
-            model=model,
-        ),
-    )
-
-
-def _build_reconcile_critic_query(
-    feature: str,
-    spec_dir: Path,
-    constitution: str,
-    spec: str,
-    plan: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None,
-):
-    tasks_content = read_file(spec_dir / "tasks.md")
-    return query(
-        prompt=(
-            f"Reconcile the raw implement-critic findings for feature {feature} into one "
-            f"verified result. Write result to specs/{feature}/ch-4-implement-critic-result-{iteration}.json."
-        )
-        + NO_RECURSION_NOTICE,
-        options=driving_agent_options(
-            allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-            agents={
-                "implement-critic-reconcile": critic_reconcile_agent_definition(
-                    constitution, spec, plan, tasks_content, iteration, raw_results, model
-                )
-            },
-            model=model,
-        ),
-    )
-
-
-def _build_reconcile_quality_query(
-    feature: str,
-    spec_dir: Path,
-    constitution: str,
-    spec: str,
-    plan: str,
-    quality_principles: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None,
-):
-    tasks_content = read_file(spec_dir / "tasks.md")
-    return query(
-        prompt=(
-            f"Reconcile the raw code-quality-review findings for feature {feature} into one "
-            f"verified result. Write result to specs/{feature}/ch-4-implement-code-quality-review-result-{iteration}.json."
-        )
-        + NO_RECURSION_NOTICE,
-        options=driving_agent_options(
-            allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-            agents={
-                "quality-review-reconcile": quality_review_reconcile_agent_definition(
-                    constitution,
-                    spec,
-                    plan,
-                    tasks_content,
-                    quality_principles,
-                    iteration,
-                    raw_results,
-                    model,
-                )
-            },
-            model=model,
-        ),
     )
 
 
@@ -885,23 +563,17 @@ async def run(feature: str):
     # something else) and leave the latter out. See FOLLOWUP_HARNESS.md Bug 4.
     baseline_dirty = git.dirty_files()
 
-    constitution = read_file(Path(".specify/memory/constitution.md"))
+    constitution = read_file(CONSTITUTION_PATH)
     spec = read_file(spec_dir / "spec.md")
     plan = read_file(spec_dir / "plan.md")
     tasks = read_file(spec_dir / "tasks.md")
 
-    quality_principles_path = Path(".specify/memory/code-quality-principles.md")
-    quality_principles = (
-        read_file(quality_principles_path)
-        if quality_principles_path.exists()
-        else "(code-quality-principles.md not found)"
-    )
+    quality_principles = read_memory("code-quality-principles")
 
     budget = apply_escalation_review(
         spec_dir, "ch-4-implement-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
     )
 
-    # --- Step 1: Run implementation if unchecked tasks remain ---
     tasks = await _run_implementation_agent(
         feature,
         spec_dir,
@@ -913,13 +585,11 @@ async def run(feature: str):
         test_stage_enabled=ollama.is_stage_enabled("test"),
     )
 
-    # --- Step 1b: Quick CI check before the critic loop ---
     # Skipped once a critic iteration has passed: e2e is deferred until both
     # review gates pass, to avoid its ~3 min cost on every iteration.
     if not find_passing_iteration(spec_dir, CRITIC_RESULT_PREFIX):
         await _ci_gate(feature, spec_dir, constitution, spec, plan, include_slow=False)
 
-    # --- Resume guard: done if quality review already passed AND full CI is clean ---
     passing_quality = find_passing_iteration(spec_dir, QUALITY_RESULT_PREFIX)
     if passing_quality is not None:
         log(f"Already PASS from quality review iteration {passing_quality}.")
@@ -934,52 +604,76 @@ async def run(feature: str):
         )
         return
 
-    # --- Resume state: determine where we left off ---
-    # Use result files as idempotency markers; carry forward violations from any incomplete gate.
     iteration = next_iteration(spec_dir, CRITIC_RESULT_PREFIX)
     resume_state = find_two_gate_resume_state(
         spec_dir, CRITIC_RESULT_PREFIX, QUALITY_RESULT_PREFIX, iteration
     )
 
-    # --- Step 2: Two-gate loop (implement critic → code quality review) ---
     await run_two_gate_loop(
         log,
         spec_dir,
         feature,
         budget,
-        gate1=GateSpec(
-            CRITIC_RESULT_PREFIX,
-            "ch_4_implement_critic.py",
-            "implement",
-            "implement critic",
-            functools.partial(_build_critic_query, feature, spec_dir, constitution, spec, plan),
-            functools.partial(
-                _build_reconcile_critic_query, feature, spec_dir, constitution, spec, plan
+        gate1=claude_gate(
+            feature=feature,
+            result_prefix=CRITIC_RESULT_PREFIX,
+            script_name="ch_4_implement_critic.py",
+            critic_type="implement",
+            label="implement critic",
+            summary_style="violations",
+            agent_name="implement-critic",
+            description="Validates implemented code against tasks.md, plan.md, spec.md, and "
+            "constitution.md.",
+            task=f"Validate the implementation for feature {feature}.",
+            prompt=lambda iteration, violations_block, output_instructions: (
+                build_implement_critic_prompt(
+                    constitution,
+                    spec,
+                    plan,
+                    read_file(spec_dir / "tasks.md"),
+                    iteration,
+                    violations_block=violations_block,
+                    output_instructions=output_instructions,
+                )
             ),
+            context=lambda: [
+                ("CONSTITUTION", constitution),
+                ("SPEC", spec),
+                ("PLAN", plan),
+                ("TASKS", read_file(spec_dir / "tasks.md")),
+            ],
         ),
-        gate2=GateSpec(
-            QUALITY_RESULT_PREFIX,
-            "ch_4_implement_quality_critic.py",
-            "implement-quality-review",
-            "code quality review",
-            functools.partial(
-                _build_quality_query,
-                feature,
-                spec_dir,
-                constitution,
-                spec,
-                plan,
-                quality_principles,
+        gate2=claude_gate(
+            feature=feature,
+            result_prefix=QUALITY_RESULT_PREFIX,
+            script_name="ch_4_implement_quality_critic.py",
+            critic_type="implement-quality-review",
+            label="code quality review",
+            summary_style="confidence",
+            agent_name="code-quality-review",
+            description="Reviews implemented code for quality, maintainability, and "
+            "operational safety.",
+            task=f"Review the implementation for feature {feature} for code quality.",
+            violations_context="quality violations (already addressed by the fix agent)",
+            prompt=lambda iteration, violations_block, output_instructions: (
+                build_quality_review_prompt(
+                    constitution,
+                    spec,
+                    plan,
+                    read_file(spec_dir / "tasks.md"),
+                    quality_principles,
+                    iteration,
+                    violations_block=violations_block,
+                    output_instructions=output_instructions,
+                )
             ),
-            functools.partial(
-                _build_reconcile_quality_query,
-                feature,
-                spec_dir,
-                constitution,
-                spec,
-                plan,
-                quality_principles,
-            ),
+            context=lambda: [
+                ("CONSTITUTION", constitution),
+                ("SPEC", spec),
+                ("PLAN", plan),
+                ("TASKS", read_file(spec_dir / "tasks.md")),
+                ("CODE QUALITY PRINCIPLES", quality_principles),
+            ],
         ),
         resume_state=resume_state,
         run_revision=functools.partial(_run_revision, feature, spec_dir, constitution, spec, plan),
@@ -1015,8 +709,6 @@ async def run(feature: str):
         },
     )
 
-
-# Entry point
 
 if __name__ == "__main__":
     run_cli(AGENT_NAME, "Implementation auto-orchestrator", run)

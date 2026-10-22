@@ -165,7 +165,7 @@ class TestFormatViolationsBlock(unittest.TestCase):
         result = resume_state.format_violations_block(violations, 2)
         # § is JSON-encoded as § in the output
         self.assertIn("BLOCKING", result)
-        self.assertIn("previous iteration (1)", result)  # iteration - 1 = 1
+        self.assertIn("previous iteration (1)", result)
 
 
 class TestValidateGateSchema(unittest.TestCase):

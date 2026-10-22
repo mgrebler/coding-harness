@@ -16,7 +16,7 @@ Exit codes:
 
 from pathlib import Path
 
-from agent_common.files import require_files
+from agent_common.files import CONSTITUTION_PATH, read_required
 from agent_common.ollama import is_stage_enabled, run_local_critic_cli
 from agent_common.preflight_checks import analyze_task_format as _analyze_task_format
 
@@ -137,17 +137,11 @@ Rules:
 
 def main():
     def _build(spec_dir: Path, iteration: int) -> str:
-        constitution_path = Path(".specify/memory/constitution.md")
-        spec_path = spec_dir / "spec.md"
-        plan_path = spec_dir / "plan.md"
-        tasks_path = spec_dir / "tasks.md"
-
-        require_files("ch-2-tasks-critic", constitution_path, spec_path, plan_path, tasks_path)
-
-        constitution = constitution_path.read_text(encoding="utf-8")
-        spec = spec_path.read_text(encoding="utf-8")
-        plan = plan_path.read_text(encoding="utf-8")
-        tasks = tasks_path.read_text(encoding="utf-8")
+        constitution, spec, plan, tasks = read_required(
+            "ch-2-tasks-critic",
+            CONSTITUTION_PATH,
+            *(spec_dir / name for name in ("spec.md", "plan.md", "tasks.md")),
+        )
 
         task_format_analysis = _analyze_task_format(tasks)
         return build_tasks_critic_prompt(

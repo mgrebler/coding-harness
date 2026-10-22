@@ -6,7 +6,6 @@ from pathlib import Path
 
 
 def get_feature_from_branch(agent_name: str) -> str:
-    """Derive the feature folder name from the current git branch."""
     result = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, check=True
     )
@@ -100,7 +99,6 @@ def branch_diff(path: str) -> str | None:
 
 
 def get_changed_files() -> list[str]:
-    """Return list of files changed on this branch relative to main."""
     base_ref = resolve_base_ref()
     result = subprocess.run(
         ["git", "diff", f"{base_ref}...HEAD", "--name-only"],

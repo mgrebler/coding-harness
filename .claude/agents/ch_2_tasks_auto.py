@@ -28,12 +28,13 @@ import sys
 from pathlib import Path
 
 from ch_2_tasks_critic import build_tasks_critic_prompt, tasks_rules
-from claude_agent_sdk import AgentDefinition, query
+from claude_agent_sdk import AgentDefinition
 
-from agent_common import critic_reconcile, local_agent_loop, ollama
+from agent_common import local_agent_loop, ollama
 from agent_common.console import HUMAN_ACTION_EXIT_CODE, make_logger, setup_log_file
 from agent_common.critic_loop import (
-    GateSpec,
+    claude_gate,
+    confirm_regenerate,
     finish_if_already_passing,
     finish_stage,
     run_cli,
@@ -41,14 +42,11 @@ from agent_common.critic_loop import (
 )
 from agent_common.driving_agent import (
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
-    NO_RECURSION_NOTICE,
-    driving_agent_options,
 )
-from agent_common.files import read_file, require_spec_files
+from agent_common.files import CONSTITUTION_PATH, read_file, require_spec_files
 from agent_common.preflight_checks import pending_human_approvals, task_format_violations
 from agent_common.resume_state import (
     apply_escalation_review,
-    format_violations_block,
     load_prior_violations,
     next_iteration,
 )
@@ -56,9 +54,6 @@ from agent_common.resume_state import (
 AGENT_NAME = "ch-2-tasks-auto"
 RESULT_PREFIX = "ch-2-tasks-critic-result"
 log = make_logger(AGENT_NAME)
-
-
-# Pre-flight checks
 
 
 def preflight(spec_dir: Path, feature: str) -> bool:
@@ -79,30 +74,7 @@ def preflight(spec_dir: Path, feature: str) -> bool:
         )
         sys.exit(HUMAN_ACTION_EXIT_CODE)
 
-    existing_tasks = (spec_dir / "tasks.md").exists()
-    existing_results = list(spec_dir.glob(f"{RESULT_PREFIX}-*.json"))
-
-    if existing_tasks and not existing_results:
-        print(
-            f"[{AGENT_NAME}] WARNING: {spec_dir}/tasks.md exists with no critic results.\n"
-            f"  resume — run critic on existing tasks.md (default)\n"
-            f"  regen  — regenerate tasks.md from scratch\n"
-            f"  abort  — exit without changes"
-        )
-        if sys.stdin.isatty():
-            response = input(f"[{AGENT_NAME}] Choice [resume]: ").strip().lower()
-        else:
-            log("Non-interactive mode: defaulting to 'resume'.")
-            response = "resume"
-        if response == "abort":
-            log("Aborted. No changes made.")
-            sys.exit(0)
-        return response == "regen"
-
-    return False
-
-
-# Subagent definitions
+    return confirm_regenerate(log, AGENT_NAME, spec_dir, "tasks.md", RESULT_PREFIX)
 
 
 def tasks_agent_definition(
@@ -163,80 +135,6 @@ Key rules:
     )
 
 
-def critic_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    iteration: int,
-    violations: list | None = None,
-    model: str | None = None,
-    test_stage_enabled: bool = True,
-) -> AgentDefinition:
-    violations_block = format_violations_block(
-        violations, iteration, "violations (already addressed by the tasks agent)"
-    )
-
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-2-tasks-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-2-tasks-critic] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Validates tasks.md against plan.md, spec.md, and constitution.md. Returns structured JSON.",
-        model=model,
-        prompt=build_tasks_critic_prompt(
-            constitution,
-            spec,
-            plan,
-            tasks,
-            iteration,
-            violations_block=violations_block,
-            output_instructions=output_instructions,
-            test_stage_enabled=test_stage_enabled,
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def tasks_reconcile_agent_definition(
-    constitution: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None = None,
-    test_stage_enabled: bool = True,
-) -> AgentDefinition:
-    test_stage_note = (
-        "(test stage enabled for this project)"
-        if test_stage_enabled
-        else "(test stage DISABLED for this project — §T3 findings should flag any [TEST] "
-        "task or test-pairing requirement as BLOCKING, not require one)"
-    )
-    context_block = (
-        f"--- CONSTITUTION ---\n{constitution}\n\n"
-        f"--- SPEC ---\n{spec}\n\n"
-        f"--- PLAN ---\n{plan}\n\n"
-        f"--- TASKS (current) ---\n{tasks}\n\n"
-        f"--- §T3 TEST/IMPL PAIRING STATUS ---\n{test_stage_note}\n\n"
-        f"--- HARNESS §T RULES (the only valid §T rule labels) ---\n"
-        f"{tasks_rules(test_stage_enabled)}"
-    )
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-2-tasks-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-2-tasks-critic-reconcile] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reconciles findings from multiple independent tasks critics into one verified result.",
-        model=model,
-        prompt=critic_reconcile.build_reconcile_prompt(
-            context_block, raw_results, iteration, "violations", output_instructions
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
 async def _run_format_gate(
     feature: str,
     spec_dir: Path,
@@ -263,9 +161,6 @@ async def _run_format_gate(
             f"Deterministic §T5 format check found {len(violations)} violation(s) "
             f"(attempt {attempt}/{max_attempts}) — kicking back to tasks agent before critic loop..."
         )
-        tasks_agent = tasks_agent_definition(
-            constitution, spec, plan, data_model, test_stage_enabled=test_stage_enabled
-        )
         user_prompt = (
             f"Reformat specs/{feature}/tasks.md to comply with the machine-readable task "
             f"format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (see .specify/templates/"
@@ -273,28 +168,19 @@ async def _run_format_gate(
             f"out-of-repo action. Fix ONLY the lines below — do not change task content, order, "
             f"or numbering beyond what's needed to fix the format:\n\n" + "\n".join(violations)
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "tasks",
-            claude_fallback=lambda model, user_prompt=user_prompt: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "tasks-agent": tasks_agent_definition(
-                            constitution,
-                            spec,
-                            plan,
-                            data_model,
-                            model=model,
-                            test_stage_enabled=test_stage_enabled,
-                        )
-                    },
-                    model=model,
-                ),
+            "tasks-agent",
+            lambda model: tasks_agent_definition(
+                constitution,
+                spec,
+                plan,
+                data_model,
+                model=model,
+                test_stage_enabled=test_stage_enabled,
             ),
-            system_prompt=tasks_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
     remaining = task_format_violations(read_file(spec_dir / "tasks.md"))
@@ -305,9 +191,6 @@ async def _run_format_gate(
         )
 
 
-# Main orchestration loop
-
-
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -315,7 +198,7 @@ async def run(feature: str):
 
     force_regen = preflight(spec_dir, feature)
 
-    constitution = read_file(Path(".specify/memory/constitution.md"))
+    constitution = read_file(CONSTITUTION_PATH)
     spec = read_file(spec_dir / "spec.md")
     plan = read_file(spec_dir / "plan.md")
 
@@ -328,49 +211,34 @@ async def run(feature: str):
         spec_dir, "ch-2-tasks-critic-escalation-review.md", RESULT_PREFIX, 3, log
     )
 
-    # --- Step 1: Generate tasks.md if needed ---
     if not (spec_dir / "tasks.md").exists() or force_regen:
         log("Running tasks agent...")
-        tasks_agent = tasks_agent_definition(
-            constitution, spec, plan, data_model, test_stage_enabled=test_stage_enabled
-        )
         user_prompt = (
             f"Generate tasks.md for feature {feature}. Write it to specs/{feature}/tasks.md."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "tasks",
-            claude_fallback=lambda model: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "tasks-agent": tasks_agent_definition(
-                            constitution,
-                            spec,
-                            plan,
-                            data_model,
-                            model=model,
-                            test_stage_enabled=test_stage_enabled,
-                        )
-                    },
-                    model=model,
-                ),
+            "tasks-agent",
+            lambda model: tasks_agent_definition(
+                constitution,
+                spec,
+                plan,
+                data_model,
+                model=model,
+                test_stage_enabled=test_stage_enabled,
             ),
-            system_prompt=tasks_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
         if not (spec_dir / "tasks.md").exists():
             log("ERROR: tasks agent did not produce tasks.md. Aborting.")
             sys.exit(1)
 
-    # --- Step 1b: Deterministic §T5 format gate before the critic loop ---
     await _run_format_gate(
         feature, spec_dir, constitution, spec, plan, data_model, test_stage_enabled
     )
 
-    # --- Resume guard: exit if a previous run already achieved PASS ---
     if finish_if_already_passing(
         log,
         spec_dir,
@@ -383,7 +251,6 @@ async def run(feature: str):
     ):
         return
 
-    # --- Resume state: load violations from last FAIL so revision runs before next critic ---
     iteration = next_iteration(spec_dir, RESULT_PREFIX)
     violations = load_prior_violations(spec_dir, RESULT_PREFIX, iteration)
 
@@ -391,36 +258,24 @@ async def run(feature: str):
         log(
             f"Running revision agent to address {len(pending_violations)} violation(s) from iteration {pending_iter}..."
         )
-        tasks_agent = tasks_agent_definition(
-            constitution, spec, plan, data_model, test_stage_enabled=test_stage_enabled
-        )
         user_prompt = (
             f"Revise tasks.md for feature {feature} to fix critic violations. "
             f"Violations to address: {json.dumps(pending_violations)} "
             f"Write updated tasks.md to specs/{feature}/tasks.md."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "tasks",
-            claude_fallback=lambda model: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "tasks-agent": tasks_agent_definition(
-                            constitution,
-                            spec,
-                            plan,
-                            data_model,
-                            model=model,
-                            test_stage_enabled=test_stage_enabled,
-                        )
-                    },
-                    model=model,
-                ),
+            "tasks-agent",
+            lambda model: tasks_agent_definition(
+                constitution,
+                spec,
+                plan,
+                data_model,
+                model=model,
+                test_stage_enabled=test_stage_enabled,
             ),
-            system_prompt=tasks_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
     async def on_pass(result: dict) -> None:
@@ -433,72 +288,53 @@ async def run(feature: str):
             "Tasks are ready for human review. No further action taken.",
         )
 
-    def build_critic_query(iteration: int, prev_violations, model: str | None):
-        tasks = read_file(spec_dir / "tasks.md")
-        return query(
-            prompt=(
-                f"Validate tasks.md for feature {feature}. "
-                f"Write result to specs/{feature}/ch-2-tasks-critic-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "tasks-critic": critic_agent_definition(
-                        constitution,
-                        spec,
-                        plan,
-                        tasks,
-                        iteration,
-                        prev_violations,
-                        model,
-                        test_stage_enabled,
-                    )
-                },
-                model=model,
-            ),
-        )
-
-    def build_reconcile_query(iteration: int, raw_results: list[dict], model: str | None):
-        tasks = read_file(spec_dir / "tasks.md")
-        return query(
-            prompt=(
-                f"Reconcile the raw tasks-critic findings for feature {feature} into one "
-                f"verified result. Write result to specs/{feature}/ch-2-tasks-critic-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "tasks-critic-reconcile": tasks_reconcile_agent_definition(
-                        constitution,
-                        spec,
-                        plan,
-                        tasks,
-                        iteration,
-                        raw_results,
-                        model,
-                        test_stage_enabled,
-                    )
-                },
-                model=model,
-            ),
-        )
-
-    # --- Step 2: Critic loop ---
     await run_single_gate_loop(
         log,
         spec_dir,
         feature,
         budget,
         revised_artifact=spec_dir / "tasks.md",
-        gate=GateSpec(
-            RESULT_PREFIX,
-            "ch_2_tasks_critic.py",
-            "tasks",
-            "tasks critic",
-            build_critic_query,
-            build_reconcile_query,
+        gate=claude_gate(
+            feature=feature,
+            result_prefix=RESULT_PREFIX,
+            script_name="ch_2_tasks_critic.py",
+            critic_type="tasks",
+            label="tasks critic",
+            summary_style="violations",
+            agent_name="tasks-critic",
+            description="Validates tasks.md against plan.md, spec.md, and constitution.md. "
+            "Returns structured JSON.",
+            task=f"Validate tasks.md for feature {feature}.",
+            violations_context="violations (already addressed by the tasks agent)",
+            prompt=lambda iteration, violations_block, output_instructions: (
+                build_tasks_critic_prompt(
+                    constitution,
+                    spec,
+                    plan,
+                    read_file(spec_dir / "tasks.md"),
+                    iteration,
+                    violations_block=violations_block,
+                    output_instructions=output_instructions,
+                    test_stage_enabled=test_stage_enabled,
+                )
+            ),
+            context=lambda: [
+                ("CONSTITUTION", constitution),
+                ("SPEC", spec),
+                ("PLAN", plan),
+                ("TASKS (current)", read_file(spec_dir / "tasks.md")),
+                (
+                    "§T3 TEST/IMPL PAIRING STATUS",
+                    "(test stage enabled for this project)"
+                    if test_stage_enabled
+                    else "(test stage DISABLED for this project — §T3 findings should flag any "
+                    "[TEST] task or test-pairing requirement as BLOCKING, not require one)",
+                ),
+                (
+                    "HARNESS §T RULES (the only valid §T rule labels)",
+                    tasks_rules(test_stage_enabled),
+                ),
+            ],
         ),
         resume_state=(iteration, violations),
         run_fix=run_fix,
@@ -522,8 +358,6 @@ async def run(feature: str):
         },
     )
 
-
-# Entry point
 
 if __name__ == "__main__":
     run_cli(AGENT_NAME, "Tasks auto-orchestrator", run)

@@ -45,6 +45,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 from agent_common.console import (
     HUMAN_ACTION_EXIT_CODE,
@@ -63,16 +64,53 @@ from agent_common.resume_state import (
 AGENT_NAME = "ch-plan-to-implement-auto"
 log = make_logger(AGENT_NAME)
 
-TOTAL_STAGES = 5
 
-PLAN_ARCH_PREFIX = "ch-1-plan-architecture-review-result"
-TASKS_CRITIC_PREFIX = "ch-2-tasks-critic-result"
-TEST_QUALITY_PREFIX = "ch-3-test-quality-review-result"
-IMPL_QUALITY_PREFIX = "ch-4-implement-code-quality-review-result"
-DOCS_CRITIC_PREFIX = "ch-5-docs-critic-result"
+class Stage(NamedTuple):
+    number: int
+    name: str
+    passing_prefix: str | None
+    toggleable: bool = False
+
+    @property
+    def marker(self) -> str:
+        return f"ch-{self.number}-{self.name}"
+
+    @property
+    def script(self) -> str:
+        return f".claude/agents/ch_{self.number}_{self.name}_auto.py"
+
+    @property
+    def escalation(self) -> str:
+        return f"ch-{self.number}-{self.name}-critic-escalation.md"
 
 
-# Helpers
+# implement has no passing_prefix: its on-both-pass path runs CI checks (and a
+# possible CI-fix agent + commit-hygiene check) *after* the quality review
+# passes and before finish_stage() — so a passing quality-review result does
+# not by itself prove the stage finished. Only its completion marker does.
+STAGES = (
+    Stage(1, "plan", "ch-1-plan-architecture-review-result"),
+    Stage(2, "tasks", "ch-2-tasks-critic-result"),
+    Stage(3, "test", "ch-3-test-quality-review-result", toggleable=True),
+    Stage(4, "implement", None),
+    Stage(5, "docs", "ch-5-docs-critic-result", toggleable=True),
+)
+TOTAL_STAGES = len(STAGES)
+
+
+def _run_stage(spec_dir: Path, feature: str, stage: Stage) -> None:
+    label = f"Stage {stage.number}/{TOTAL_STAGES} ({stage.name})"
+    skip_reason = _stage_skip_reason(stage.number, stage.name) if stage.toggleable else None
+    if skip_reason:
+        log(skip_reason)
+    elif stage_is_complete(spec_dir, stage.marker) or (
+        stage.passing_prefix and find_passing_iteration(spec_dir, stage.passing_prefix) is not None
+    ):
+        log(f"{label}: already complete — skipping.")
+    else:
+        log(f"{label}: running {stage.marker}-auto...")
+        rc = stream_subprocess(["python", stage.script, "--feature", feature])
+        _check_stage_result(rc, stage.number, stage.name, stage.escalation)
 
 
 def get_current_branch() -> str:
@@ -129,9 +167,6 @@ def _stage_skip_reason(stage_num: int, stage_key: str) -> str | None:
     )
 
 
-# Main
-
-
 def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -147,84 +182,13 @@ def run(feature: str):
 
     check_providers(log)
     log(f"Pipeline start — feature: {feature}, branch: {branch}")
-    log(
-        "Stages: ch-1-plan-auto → ch-2-tasks-auto → ch-3-test-auto → "
-        "ch-4-implement-auto → ch-5-docs-auto"
-    )
+    log("Stages: " + " → ".join(f"{stage.marker}-auto" for stage in STAGES))
 
-    # --- Stage 1: Plan ---
-    if (
-        stage_is_complete(spec_dir, "ch-1-plan")
-        or find_passing_iteration(spec_dir, PLAN_ARCH_PREFIX) is not None
-    ):
-        log(f"Stage 1/{TOTAL_STAGES} (plan): already complete — skipping.")
-    else:
-        log(f"Stage 1/{TOTAL_STAGES} (plan): running ch-1-plan-auto...")
-        rc = stream_subprocess(["python", ".claude/agents/ch_1_plan_auto.py", "--feature", feature])
-        _check_stage_result(rc, 1, "plan", "ch-1-plan-critic-escalation.md")
-
-    # --- Stage 2: Tasks ---
-    if (
-        stage_is_complete(spec_dir, "ch-2-tasks")
-        or find_passing_iteration(spec_dir, TASKS_CRITIC_PREFIX) is not None
-    ):
-        log(f"Stage 2/{TOTAL_STAGES} (tasks): already complete — skipping.")
-    else:
-        log(f"Stage 2/{TOTAL_STAGES} (tasks): running ch-2-tasks-auto...")
-        rc = stream_subprocess(
-            ["python", ".claude/agents/ch_2_tasks_auto.py", "--feature", feature]
-        )
-        _check_stage_result(rc, 2, "tasks", "ch-2-tasks-critic-escalation.md")
-
-    # --- Stage 3: Test ---
-    skip_reason = _stage_skip_reason(3, "test")
-    if skip_reason:
-        log(skip_reason)
-    elif (
-        stage_is_complete(spec_dir, "ch-3-test")
-        or find_passing_iteration(spec_dir, TEST_QUALITY_PREFIX) is not None
-    ):
-        log(f"Stage 3/{TOTAL_STAGES} (test): already complete — skipping.")
-    else:
-        log(f"Stage 3/{TOTAL_STAGES} (test): running ch-3-test-auto...")
-        rc = stream_subprocess(["python", ".claude/agents/ch_3_test_auto.py", "--feature", feature])
-        _check_stage_result(rc, 3, "test", "ch-3-test-critic-escalation.md")
-
-    # --- Stage 4: Implement ---
-    # Unlike stages 1-3 (and 5), ch_4_implement_auto's on-both-pass path runs CI
-    # checks (and a possible CI-fix-agent + commit-hygiene check) *between* the
-    # quality review passing and finish_stage() actually being called — so a
-    # passing quality-review iteration does NOT by itself prove the stage
-    # finished (a crash or failure in that CI step leaves no completion marker
-    # and no commit). Require the actual completion marker here, not the
-    # gate-passing shortcut the other stages use safely.
-    if stage_is_complete(spec_dir, "ch-4-implement"):
-        log(f"Stage 4/{TOTAL_STAGES} (implement): already complete — skipping.")
-    else:
-        log(f"Stage 4/{TOTAL_STAGES} (implement): running ch-4-implement-auto...")
-        rc = stream_subprocess(
-            ["python", ".claude/agents/ch_4_implement_auto.py", "--feature", feature]
-        )
-        _check_stage_result(rc, 4, "implement", "ch-4-implement-critic-escalation.md")
-
-    # --- Stage 5: Docs ---
-    skip_reason = _stage_skip_reason(5, "docs")
-    if skip_reason:
-        log(skip_reason)
-    elif (
-        stage_is_complete(spec_dir, "ch-5-docs")
-        or find_passing_iteration(spec_dir, DOCS_CRITIC_PREFIX) is not None
-    ):
-        log(f"Stage 5/{TOTAL_STAGES} (docs): already complete — skipping.")
-    else:
-        log(f"Stage 5/{TOTAL_STAGES} (docs): running ch-5-docs-auto...")
-        rc = stream_subprocess(["python", ".claude/agents/ch_5_docs_auto.py", "--feature", feature])
-        _check_stage_result(rc, 5, "docs", "ch-5-docs-critic-escalation.md")
+    for stage in STAGES:
+        _run_stage(spec_dir, feature, stage)
 
     log("Pipeline complete. All stages passed.")
 
-
-# Entry point
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Full plan-to-implement pipeline orchestrator")

@@ -17,7 +17,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
-CONSTITUTION_PATH = Path(".specify/memory/constitution.md")
+from agent_common.files import CONSTITUTION_PATH
+
 README_PATH = Path("README.md")
 
 _LOG_PREFIX = "[project-conventions]"
@@ -26,7 +27,6 @@ _LOG_PREFIX = "[project-conventions]"
 # bucket checks into a fixed set of categories.
 _SLOW_KEYWORDS = ("e2e", "end-to-end", "end to end", "playwright", "integration", "browser")
 
-# Heading/label keywords that mark a README fenced code block as CI-relevant.
 _README_CI_KEYWORDS = (
     "typecheck",
     "type check",

@@ -2,6 +2,7 @@
 handling — the pass/fail/usage-limit-pause branching used after each stage subprocess."""
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -85,3 +86,33 @@ class TestStageSkipReason(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRunStage(unittest.TestCase):
+    def _run(self, stage, files=()):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            for name in files:
+                (spec_dir / name).write_text('{"status": "PASS"}')
+            with (
+                patch.object(ptia, "log"),
+                patch.object(ptia, "stream_subprocess", return_value=0) as run,
+            ):
+                ptia._run_stage(spec_dir, "001-feat", stage)
+            return run
+
+    def test_stage_with_a_passing_gate_result_is_skipped(self):
+        run = self._run(ptia.STAGES[1], ["ch-2-tasks-critic-result-1.json"])
+        run.assert_not_called()
+
+    def test_implement_reruns_until_its_completion_marker_exists(self):
+        implement = ptia.STAGES[3]
+        run = self._run(implement, ["ch-4-implement-code-quality-review-result-1.json"])
+        run.assert_called_once_with(
+            ["python", ".claude/agents/ch_4_implement_auto.py", "--feature", "001-feat"]
+        )
+        self._run(implement, ["ch-4-implement-auto-complete"]).assert_not_called()
+
+    def test_disabled_toggleable_stage_is_skipped(self):
+        with patch.object(ptia, "is_stage_enabled", return_value=False):
+            self._run(ptia.STAGES[4]).assert_not_called()

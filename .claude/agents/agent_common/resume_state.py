@@ -79,7 +79,6 @@ def normalize_result(result: dict, summary_style: str) -> bool:
 
 
 def next_iteration(spec_dir: Path, result_prefix: str) -> int:
-    """Return the next critic iteration number based on existing result files."""
     existing = list(spec_dir.glob(f"{result_prefix}-*.json"))
     return len(existing) + 1
 
@@ -304,11 +303,12 @@ def find_two_gate_resume_state(
 def format_violations_block(
     violations: list | None,
     iteration: int,
-    context: str = "violations (already addressed by the fix agent)",
+    context: str | None = None,
 ) -> str:
     """Return a formatted violations context block for a critic prompt, or '' if no violations."""
     if not violations:
         return ""
+    context = context or "violations (already addressed by the fix agent)"
     return (
         f"\n\nFor context, the previous iteration ({iteration - 1}) found these "
         f"{context}:\n\n{json.dumps(violations, indent=2)}\n\n"
@@ -316,14 +316,12 @@ def format_violations_block(
 
 
 def write_stage_complete(spec_dir: Path, stage: str) -> None:
-    """Write a completion marker file for the given pipeline stage."""
     ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     marker = spec_dir / f"{stage}-auto-complete"
     marker.write_text(f"completed: true\nstage: {stage}\ntimestamp: {ts}\n", encoding="utf-8")
 
 
 def stage_is_complete(spec_dir: Path, stage: str) -> bool:
-    """Return True if the given pipeline stage has a completion marker."""
     return (spec_dir / f"{stage}-auto-complete").exists()
 
 

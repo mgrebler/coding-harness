@@ -673,3 +673,69 @@ class TestRunTwoGateLoop(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestClaudeGate(unittest.TestCase):
+    def _gate(self):
+        return critic_loop.claude_gate(
+            feature="001-feat",
+            result_prefix="ch-1-plan-critic-result",
+            script_name="ch_1_plan_critic.py",
+            critic_type="plan",
+            label="plan critic",
+            summary_style="violations",
+            agent_name="plan-critic",
+            description="Validates plan.md.",
+            task="Validate plan.md for feature 001-feat.",
+            prompt=lambda iteration, block, instructions: (
+                f"PROMPT {iteration}{block}\n{instructions}"
+            ),
+            context=lambda: [("PLAN (current)", "the plan")],
+        )
+
+    def _render(self, build, *args):
+        with (
+            patch.object(critic_loop, "query", side_effect=lambda **kw: kw),
+            patch.object(critic_loop, "driving_agent_options", side_effect=lambda **kw: kw),
+        ):
+            return build(*args)
+
+    def test_critic_query_wires_prompt_result_path_and_previous_violations(self):
+        q = self._render(self._gate().build_query, 2, [{"rule": "R-PREV"}], "opus")
+        self.assertTrue(
+            q["prompt"].startswith(
+                "Validate plan.md for feature 001-feat. "
+                "Write result to specs/001-feat/ch-1-plan-critic-result-2.json."
+            )
+        )
+        agent = q["options"]["agents"]["plan-critic"]
+        self.assertEqual(agent.model, "opus")
+        self.assertIn("R-PREV", agent.prompt)
+        self.assertIn("[ch-1-plan-critic] iteration 2", agent.prompt)
+        self.assertEqual(agent.tools, critic_loop.CRITIC_TOOLS)
+
+    def test_reconcile_query_gets_context_sections_and_own_tag(self):
+        raw = [{"id": "a", "model": "m", "result": {"status": "FAIL", "violations": []}}]
+        q = self._render(self._gate().build_reconcile_query, 2, raw, None)
+        agent = q["options"]["agents"]["plan-critic-reconcile"]
+        self.assertIn("--- PLAN (current) ---\nthe plan", agent.prompt)
+        self.assertIn("[ch-1-plan-critic-reconcile] iteration 2", agent.prompt)
+        self.assertIn("independent plan critics", agent.description)
+
+
+class TestConfirmReviewExisting(unittest.TestCase):
+    def test_declining_on_a_terminal_aborts_and_unattended_runs_proceed(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            with (
+                patch.object(sys, "stdin", MagicMock(isatty=lambda: True)),
+                patch("builtins.input", return_value="no"),
+                self.assertRaises(SystemExit),
+            ):
+                critic_loop.confirm_review_existing(
+                    MagicMock(), "a", spec_dir, "ch-3-test-critic-result", "All [TEST] tasks"
+                )
+            with patch.object(sys, "stdin", MagicMock(isatty=lambda: False)):
+                critic_loop.confirm_review_existing(
+                    MagicMock(), "a", spec_dir, "ch-3-test-critic-result", "All [TEST] tasks"
+                )

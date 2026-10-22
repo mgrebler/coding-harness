@@ -42,12 +42,12 @@ import sys
 from pathlib import Path
 
 from ch_5_docs_critic import build_docs_critic_prompt
-from claude_agent_sdk import AgentDefinition, query
+from claude_agent_sdk import AgentDefinition
 
-from agent_common import critic_reconcile, git, local_agent_loop, ollama
+from agent_common import git, local_agent_loop, ollama
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
-    GateSpec,
+    claude_gate,
     finish_if_already_passing,
     finish_stage,
     run_cli,
@@ -55,13 +55,10 @@ from agent_common.critic_loop import (
 )
 from agent_common.driving_agent import (
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
-    NO_RECURSION_NOTICE,
-    driving_agent_options,
 )
-from agent_common.files import read_file, require_spec_files
+from agent_common.files import CONSTITUTION_PATH, MEMORY_DIR, read_file, require_spec_files
 from agent_common.resume_state import (
     apply_escalation_review,
-    format_violations_block,
     load_prior_violations,
     next_iteration,
     stage_is_complete,
@@ -71,9 +68,6 @@ AGENT_NAME = "ch-5-docs-auto"
 RESULT_PREFIX = "ch-5-docs-critic-result"
 DOCS_DIR = Path("docs")
 log = make_logger(AGENT_NAME)
-
-
-# Pre-flight checks
 
 
 def preflight(spec_dir: Path, feature: str) -> None:
@@ -102,9 +96,6 @@ def snapshot_baseline(spec_dir: Path) -> None:
 def _is_own_output(path: str, spec_dir: Path) -> bool:
     own_roots = (DOCS_DIR.as_posix(), spec_dir.as_posix())
     return any(path == root or path.startswith(root.rstrip("/") + "/") for root in own_roots)
-
-
-# Subagent definitions
 
 
 def docs_agent_definition(
@@ -170,75 +161,6 @@ You do not touch code, specs, plans, or tasks. Your only output is docs/.
     )
 
 
-def critic_agent_definition(
-    constitution: str,
-    documentation_principles: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    iteration: int,
-    violations: list | None = None,
-    model: str | None = None,
-) -> AgentDefinition:
-    violations_block = format_violations_block(
-        violations, iteration, "violations (already addressed by the docs agent)"
-    )
-
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-5-docs-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-5-docs-critic] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Validates this run's merge into docs/ against documentation-principles.md and the shipped diff. Returns structured JSON.",
-        model=model,
-        prompt=build_docs_critic_prompt(
-            constitution,
-            documentation_principles,
-            spec,
-            plan,
-            tasks,
-            iteration,
-            violations_block=violations_block,
-            output_instructions=output_instructions,
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-def docs_reconcile_agent_definition(
-    constitution: str,
-    documentation_principles: str,
-    spec: str,
-    plan: str,
-    tasks: str,
-    iteration: int,
-    raw_results: list[dict],
-    model: str | None = None,
-) -> AgentDefinition:
-    context_block = (
-        f"--- CONSTITUTION ---\n{constitution}\n\n"
-        f"--- DOCUMENTATION PRINCIPLES ---\n{documentation_principles}\n\n"
-        f"--- SPEC ---\n{spec}\n\n"
-        f"--- PLAN ---\n{plan}\n\n"
-        f"--- TASKS ---\n{tasks}"
-    )
-    output_instructions = (
-        f"- After producing JSON, write it to specs/$FEATURE/ch-5-docs-critic-result-{iteration}.json using Bash\n"
-        f"- Print one line: [ch-5-docs-critic-reconcile] iteration {iteration} → PASS or FAIL → path"
-    )
-    return AgentDefinition(
-        description="Reconciles findings from multiple independent docs critics into one verified result.",
-        model=model,
-        prompt=critic_reconcile.build_reconcile_prompt(
-            context_block, raw_results, iteration, "violations", output_instructions
-        ),
-        tools=["Read", "Write", "Bash", "Glob", "Grep"],
-    )
-
-
-# Main orchestration loop
-
-
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -259,8 +181,8 @@ async def run(feature: str):
     # than be excluded as pre-existing drift. See FOLLOWUP_HARNESS.md Bug 4.
     baseline_dirty = [p for p in git.dirty_files() if not _is_own_output(p, spec_dir)]
 
-    constitution = read_file(Path(".specify/memory/constitution.md"))
-    documentation_principles = read_file(Path(".specify/memory/documentation-principles.md"))
+    constitution = read_file(CONSTITUTION_PATH)
+    documentation_principles = read_file(MEMORY_DIR / "documentation-principles.md")
     spec = read_file(spec_dir / "spec.md")
     plan = read_file(spec_dir / "plan.md")
     tasks = read_file(spec_dir / "tasks.md")
@@ -269,39 +191,25 @@ async def run(feature: str):
         spec_dir, "ch-5-docs-critic-escalation-review.md", RESULT_PREFIX, 3, log
     )
 
-    # --- Step 1: Snapshot the pre-merge docs/ tree, then merge this feature in ---
     snapshot_baseline(spec_dir)
 
     if not list(spec_dir.glob(f"{RESULT_PREFIX}-*.json")):
         log("Running docs agent...")
-        docs_agent = docs_agent_definition(
-            constitution, documentation_principles, spec, plan, tasks
-        )
         user_prompt = f"Merge feature {feature}'s shipped behaviour into docs/."
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "docs",
-            claude_fallback=lambda model: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "docs-agent": docs_agent_definition(
-                            constitution, documentation_principles, spec, plan, tasks, model=model
-                        )
-                    },
-                    model=model,
-                ),
+            "docs-agent",
+            lambda model: docs_agent_definition(
+                constitution, documentation_principles, spec, plan, tasks, model=model
             ),
-            system_prompt=docs_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
         if not DOCS_DIR.exists():
             log("ERROR: docs agent did not produce docs/. Aborting.")
             sys.exit(1)
 
-    # --- Resume guard: exit if a previous run already achieved PASS ---
     if finish_if_already_passing(
         log,
         spec_dir,
@@ -315,7 +223,6 @@ async def run(feature: str):
     ):
         return
 
-    # --- Resume state: load violations from last FAIL so revision runs before next critic ---
     iteration = next_iteration(spec_dir, RESULT_PREFIX)
     violations = load_prior_violations(spec_dir, RESULT_PREFIX, iteration)
 
@@ -323,31 +230,19 @@ async def run(feature: str):
         log(
             f"Running revision agent to address {len(pending_violations)} violation(s) from iteration {pending_iter}..."
         )
-        docs_agent = docs_agent_definition(
-            constitution, documentation_principles, spec, plan, tasks
-        )
         user_prompt = (
             f"Revise docs/ for feature {feature} to fix critic violations. "
             f"Violations to address: {json.dumps(pending_violations)} "
             f"Fix ONLY the files needed to resolve those violations."
         )
-        await local_agent_loop.run_generation(
+        await local_agent_loop.run_agent(
             log,
             "docs",
-            claude_fallback=lambda model: query(
-                prompt=user_prompt + NO_RECURSION_NOTICE,
-                options=driving_agent_options(
-                    allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent"],
-                    agents={
-                        "docs-agent": docs_agent_definition(
-                            constitution, documentation_principles, spec, plan, tasks, model=model
-                        )
-                    },
-                    model=model,
-                ),
+            "docs-agent",
+            lambda model: docs_agent_definition(
+                constitution, documentation_principles, spec, plan, tasks, model=model
             ),
-            system_prompt=docs_agent.prompt,
-            user_prompt=user_prompt,
+            user_prompt,
         )
 
     async def on_pass(result: dict) -> None:
@@ -361,69 +256,42 @@ async def run(feature: str):
             exclude_from_commit=baseline_dirty,
         )
 
-    def build_critic_query(iteration: int, prev_violations, model: str | None):
-        return query(
-            prompt=(
-                f"Validate this run's merge into docs/ for feature {feature}. "
-                f"Write result to specs/{feature}/ch-5-docs-critic-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "docs-critic": critic_agent_definition(
-                        constitution,
-                        documentation_principles,
-                        spec,
-                        plan,
-                        tasks,
-                        iteration,
-                        prev_violations,
-                        model,
-                    )
-                },
-                model=model,
-            ),
-        )
-
-    def build_reconcile_query(iteration: int, raw_results: list[dict], model: str | None):
-        return query(
-            prompt=(
-                f"Reconcile the raw docs-critic findings for feature {feature} into one "
-                f"verified result. Write result to specs/{feature}/ch-5-docs-critic-result-{iteration}.json."
-            )
-            + NO_RECURSION_NOTICE,
-            options=driving_agent_options(
-                allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "Agent"],
-                agents={
-                    "docs-critic-reconcile": docs_reconcile_agent_definition(
-                        constitution,
-                        documentation_principles,
-                        spec,
-                        plan,
-                        tasks,
-                        iteration,
-                        raw_results,
-                        model,
-                    )
-                },
-                model=model,
-            ),
-        )
-
-    # --- Step 2: Critic loop ---
     await run_single_gate_loop(
         log,
         spec_dir,
         feature,
         budget,
-        gate=GateSpec(
-            RESULT_PREFIX,
-            "ch_5_docs_critic.py",
-            "docs",
-            "docs critic",
-            build_critic_query,
-            build_reconcile_query,
+        gate=claude_gate(
+            feature=feature,
+            result_prefix=RESULT_PREFIX,
+            script_name="ch_5_docs_critic.py",
+            critic_type="docs",
+            label="docs critic",
+            summary_style="violations",
+            agent_name="docs-critic",
+            description="Validates this run's merge into docs/ against "
+            "documentation-principles.md and the shipped diff. Returns structured JSON.",
+            task=f"Validate this run's merge into docs/ for feature {feature}.",
+            violations_context="violations (already addressed by the docs agent)",
+            prompt=lambda iteration, violations_block, output_instructions: (
+                build_docs_critic_prompt(
+                    constitution,
+                    documentation_principles,
+                    spec,
+                    plan,
+                    tasks,
+                    iteration,
+                    violations_block=violations_block,
+                    output_instructions=output_instructions,
+                )
+            ),
+            context=lambda: [
+                ("CONSTITUTION", constitution),
+                ("DOCUMENTATION PRINCIPLES", documentation_principles),
+                ("SPEC", spec),
+                ("PLAN", plan),
+                ("TASKS", tasks),
+            ],
         ),
         resume_state=(iteration, violations),
         run_fix=run_fix,
@@ -447,8 +315,6 @@ async def run(feature: str):
         },
     )
 
-
-# Entry point
 
 if __name__ == "__main__":
     run_cli(AGENT_NAME, "Docs auto-orchestrator", run)

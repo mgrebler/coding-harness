@@ -19,7 +19,12 @@ Exit codes:
 from pathlib import Path
 
 from agent_common.critic_reconcile import CONFIDENCE_STATUS_RULE
-from agent_common.files import read_changed_source_files, read_optional, require_files
+from agent_common.files import (
+    CONSTITUTION_PATH,
+    read_changed_source_files,
+    read_memory,
+    read_required,
+)
 from agent_common.git import get_changed_files
 from agent_common.ollama import run_local_critic_cli
 
@@ -127,27 +132,12 @@ Rules:
 
 def main():
     def _build(spec_dir: Path, iteration: int) -> str:
-        constitution_path = Path(".specify/memory/constitution.md")
-        quality_principles_path = Path(".specify/memory/code-quality-principles.md")
-        spec_path = spec_dir / "spec.md"
-        plan_path = spec_dir / "plan.md"
-        tasks_path = spec_dir / "tasks.md"
-
-        require_files(
+        constitution, spec, plan, tasks = read_required(
             "ch-4-implement-code-quality-review",
-            constitution_path,
-            spec_path,
-            plan_path,
-            tasks_path,
+            CONSTITUTION_PATH,
+            *(spec_dir / name for name in ("spec.md", "plan.md", "tasks.md")),
         )
-
-        constitution = constitution_path.read_text(encoding="utf-8")
-        quality_principles = read_optional(
-            quality_principles_path, "(code-quality-principles.md not found)"
-        )
-        spec = spec_path.read_text(encoding="utf-8")
-        plan = plan_path.read_text(encoding="utf-8")
-        tasks = tasks_path.read_text(encoding="utf-8")
+        quality_principles = read_memory("code-quality-principles")
 
         changed_sources = read_changed_source_files(get_changed_files())
 
