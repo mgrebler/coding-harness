@@ -631,6 +631,32 @@ ruff format .
 
 ---
 
+## Notifications When Claude Is Waiting
+
+When you develop this repo with Claude Code, the project hooks in `.claude/settings.json` (via `.claude/hooks/notify.py`) tell you when Claude is waiting on you. Installed projects don't get these hooks yet.
+
+| When | What you get |
+|---|---|
+| Claude finishes a turn | terminal bell |
+| Claude needs a permission | terminal bell |
+| A permission prompt has waited about 6s while you weren't typing, or a finished turn has gone unanswered for 60s | push notification via [ntfy](https://ntfy.sh), if configured |
+
+**Terminal bell.** It is on by default. Claude Code emits the BEL on its own terminal, so it reaches your host terminal through the container. Enable bells (sound, tab badge, or urgency hint) in your terminal profile to notice it.
+
+To turn the bell off for yourself, set `CLAUDE_NOTIFY_BELL` to `0` without touching the committed settings. Add it either to `.claude/settings.local.json` (this repo only, gitignored) or to `~/.claude/settings.json` (every repo):
+
+```json
+{ "env": { "CLAUDE_NOTIFY_BELL": "0" } }
+```
+
+**Phone/desktop push** is off until you set a topic:
+
+1. Pick an unguessable topic name, for example `claude-$(openssl rand -hex 8)`. Anyone who knows the name can read and post to it.
+2. Subscribe to it in the ntfy app or at `https://ntfy.sh/<topic>`.
+3. Set `NTFY_TOPIC=<topic>` in your host shell or in this repo's gitignored `.env`. `docker-compose.yml` passes it into the container. Set `NTFY_SERVER` too if you self-host ntfy.
+
+The push contains only the project name and Claude's one-line notification text, such as "Claude needs your permission to use Bash". It never includes code or conversation content. The unattended `ch-*-auto` pipelines run Claude without loading project settings (`setting_sources=[]`), so they never trigger these hooks.
+
 ## What This Repo Contains
 
 The `speckit-*` skills (including the `speckit-git-*` git extension) and the five templates in `.specify/templates/` come from upstream [SpecKit](https://github.com/github/spec-kit). Everything else — the `ch-*` skills and agents, the critic loop pattern, the principle docs beyond `constitution.md` (`architecture.md`, `architecture-principles.md`, `code-quality-principles.md`, `test-principles.md`, `documentation-principles.md`, `product-context.md`), and the `docs/` output of the documentation stage — is coding-harness's own addition.
