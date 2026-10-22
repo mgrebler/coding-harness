@@ -18,6 +18,10 @@ description: "Task list template for feature implementation"
 - **[IMPL]**: This task writes implementation to pass the paired [TEST] task's tests
 - **[P]**: Can run in parallel (different files, no dependencies)
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
+- **[MANUAL]**: The task needs a human or something outside the repo — waiting for an
+  approval, a live/cloud deploy, a real external account, a manual verification
+  checklist. Agents never perform or check off [MANUAL] tasks, so every such task MUST
+  carry the tag (`- [ ] T040 [MANUAL] ...`); an untagged one blocks the implement stage
 - Include exact file paths in descriptions
 - [IMPL] tasks must reference their paired [TEST] task ID in the description
 - A task whose implementation touches a uniqueness, count, or last-item invariant (e.g.

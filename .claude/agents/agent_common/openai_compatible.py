@@ -37,6 +37,9 @@ class TruncatedResponseError(Exception):
 # or bad auth just wastes time, so those raise immediately.
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 5
+# A read timeout re-sends the whole prompt and waits the full timeout again;
+# specs/005-006 lost ~26 minutes per critic to 5 of them in a row.
+_MAX_TIMEOUT_RETRIES = 2
 _BASE_DELAY_S = 2.0
 _MAX_DELAY_S = 60.0
 
@@ -59,6 +62,7 @@ def _urlopen_with_retry(req: urllib.request.Request, timeout: int = 300):
     TimeoutError/URLError — so they're handled in a separate except clause
     from HTTPError (a URLError subclass) and always retried, unlike HTTPError
     where only specific status codes are worth retrying."""
+    timeouts = 0
     for attempt in range(_MAX_RETRIES + 1):
         try:
             return urllib.request.urlopen(req, timeout=timeout)  # noqa: S310 — see _build_request
@@ -73,7 +77,8 @@ def _urlopen_with_retry(req: urllib.request.Request, timeout: int = 300):
             )
             time.sleep(delay)
         except (TimeoutError, urllib.error.URLError) as e:
-            if attempt == _MAX_RETRIES:
+            timeouts += isinstance(e, TimeoutError)
+            if attempt == _MAX_RETRIES or timeouts > _MAX_TIMEOUT_RETRIES:
                 raise
             delay = _retry_delay_s(attempt, None)
             print(
@@ -148,66 +153,91 @@ def _build_request(prompt: str, config: dict) -> urllib.request.Request:
     )
 
 
-def _parse_sse_chunk(data: str) -> tuple[str, bool] | None:
-    """Parse one SSE data line's JSON chunk into (token, is_truncated), or
-    None if it has no usable content (a keep-alive with an empty choices
-    array, or malformed JSON)."""
+class ContextOverflowError(RuntimeError):
+    """The prompt exceeds the model's context window — deterministic, so never
+    worth retrying with the same prompt (specs/084: 454k tokens sent to a
+    262k-token model)."""
+
+
+def _parse_sse_chunk(data: str) -> tuple[str, str, bool, int | None] | None:
+    """Parse one SSE data line's JSON chunk into (content, reasoning,
+    is_truncated, completion_tokens), or None if it is malformed or a
+    keep-alive with neither choices nor usage."""
     try:
         chunk = json.loads(data)
-        choices = chunk.get("choices")
-        if not choices:
-            return None
-        truncated = choices[0].get("finish_reason") == "length"
-        token = choices[0].get("delta", {}).get("content", "")
-        return token, truncated
-    except (KeyError, json.JSONDecodeError):
+    except json.JSONDecodeError:
         return None
+    usage = (chunk.get("usage") or {}).get("completion_tokens")
+    choices = chunk.get("choices")
+    if not choices:
+        return ("", "", False, usage) if usage else None
+    delta = choices[0].get("delta") or {}
+    return (
+        delta.get("content") or "",
+        delta.get("reasoning_content") or "",
+        choices[0].get("finish_reason") == "length",
+        usage,
+    )
+
+
+def _iter_sse_chunks(resp):
+    """Yield each parsed SSE data chunk (see _parse_sse_chunk) until [DONE].
+    Skips chunks with nothing usable (observed as a leading keep-alive chunk
+    with an empty choices array before content starts)."""
+    for raw_line in resp:
+        line = raw_line.decode("utf-8").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[len("data:") :].strip()
+        if data == _SSE_DONE:
+            return
+        parsed = _parse_sse_chunk(data)
+        if parsed is not None:
+            yield parsed
 
 
 def _stream_chat_response(
     req: urllib.request.Request, progress_fn=None, progress_interval: int = 250
 ) -> str:
     """Consume an SSE /chat/completions response, invoking progress_fn(token_count,
-    elapsed_s) every progress_interval content tokens for logging heartbeats.
-    Skips chunks whose choices array is empty (observed as a leading keep-alive
-    chunk before content starts) rather than indexing choices[0] unconditionally."""
+    elapsed_s) every progress_interval content chunks for logging heartbeats."""
     content_parts = []
-    token_count = 0
+    reasoning_parts = []
+    chunk_count = 0
+    reported_tokens = None
     start = time.monotonic()
     truncated = False
 
     try:
         with _urlopen_with_retry(req, timeout=300) as resp:
-            for raw_line in resp:
-                line = raw_line.decode("utf-8").strip()
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[len("data:") :].strip()
-                if data == _SSE_DONE:
-                    break
-                parsed = _parse_sse_chunk(data)
-                if parsed is None:
-                    continue
-                token, chunk_truncated = parsed
+            for token, reasoning, chunk_truncated, usage in _iter_sse_chunks(resp):
                 truncated = truncated or chunk_truncated
+                reported_tokens = usage or reported_tokens
+                reasoning_parts.append(reasoning)
                 if token:
                     content_parts.append(token)
-                    token_count += 1
-                    if progress_fn and token_count % progress_interval == 0:
-                        progress_fn(token_count, time.monotonic() - start)
+                    chunk_count += 1
+                    if progress_fn and chunk_count % progress_interval == 0:
+                        progress_fn(chunk_count, time.monotonic() - start)
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
+        if e.code == 400 and "maximum context length" in body:
+            raise ContextOverflowError(
+                f"prompt exceeds the model's context window (not retried): {body[:500]}"
+            ) from e
         raise RuntimeError(f"HTTP {e.code} {e.reason}: {body[:2000]}") from e
 
-    if progress_fn and token_count > 0:
-        progress_fn(token_count, time.monotonic() - start, done=True)
+    if progress_fn and chunk_count > 0:
+        progress_fn(reported_tokens or chunk_count, time.monotonic() - start, done=True)
 
-    content = "".join(content_parts)
+    # Some reasoning models return the whole answer in reasoning_content and
+    # leave content empty — the 0-byte "unparseable" critic results in specs/084.
+    content = "".join(content_parts) or "".join(reasoning_parts)
     if truncated:
         raise TruncatedResponseError(
-            f"response truncated by provider (finish_reason=length) after {token_count} "
-            "tokens — the model hit a token budget cap before finishing; raise "
-            "num_predict in local-llm.json for this critic.",
+            f"response truncated by provider (finish_reason=length) after "
+            f"{reported_tokens or chunk_count} tokens — the model hit a token budget cap "
+            "before finishing; raise num_predict in pipeline.json for this critic.",
             partial_content=content,
         )
     return content

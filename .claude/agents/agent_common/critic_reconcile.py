@@ -57,10 +57,12 @@ _CONFIDENCE_SCHEMA = """{
   "summary": "<one paragraph>"
 }"""
 
-_CONFIDENCE_TAIL = (
-    "- status is FAIL if any blocking_issue exists with severity Critical or High "
-    "(more than 2 High = FAIL)\n"
-    "- status is PASS if no Critical issues and at most 2 High issues and confidence >= 7"
+# The one statement of the confidence-style status rule, shared by every
+# confidence-style critic prompt and enforced by resume_state.normalize_result.
+CONFIDENCE_STATUS_RULE = (
+    "- status is FAIL if any Critical issue exists, more than 2 High issues exist, "
+    "or confidence < 7\n"
+    "- status is PASS otherwise"
 )
 
 _FINDING_KEYS = ("violations", "blocking_issues", "non_blocking_concerns")
@@ -134,7 +136,7 @@ def build_reconcile_prompt(
     can never drift from what a single critic for this gate would produce.
     """
     schema, tail = (
-        (_CONFIDENCE_SCHEMA, _CONFIDENCE_TAIL)
+        (_CONFIDENCE_SCHEMA, CONFIDENCE_STATUS_RULE)
         if summary_style == "confidence"
         else (_VIOLATIONS_SCHEMA, _VIOLATIONS_TAIL)
     )

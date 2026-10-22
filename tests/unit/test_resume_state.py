@@ -61,6 +61,81 @@ class TestFindPassingIteration(unittest.TestCase):
             )
 
 
+class TestApplyEscalationReview(unittest.TestCase):
+    PREFIX = "ch-4-implement-critic-result"
+    REVIEW = "ch-4-implement-critic-escalation-review.md"
+
+    def _results(self, spec_dir, n):
+        for i in range(1, n + 1):
+            (spec_dir / f"{self.PREFIX}-{i}.json").write_text("{}")
+
+    def _apply(self, spec_dir):
+        return resume_state.apply_escalation_review(
+            spec_dir, self.REVIEW, self.PREFIX, 3, log_fn=lambda _m: None
+        )
+
+    def test_no_review_keeps_base_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            budget = self._apply(Path(d))
+            self.assertEqual(budget, resume_state.IterationBudget(3, 3))
+
+    def test_fresh_review_extends_and_passes_guidance(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            self._results(spec_dir, 3)
+            (spec_dir / self.REVIEW).write_text("Use window.location instead.")
+            budget = self._apply(spec_dir)
+            self.assertEqual(budget.max_iterations, 6)
+            self.assertEqual(budget.human_guidance, "Use window.location instead.")
+            self.assertFalse(budget.resolved_externally)
+            self.assertFalse((spec_dir / self.REVIEW).exists())
+            self.assertTrue((spec_dir / f"{self.REVIEW[:-3]}-consumed-to-6.md").exists())
+
+    def test_fixed_by_human_marker_skips_fix_agent(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            self._results(spec_dir, 3)
+            (spec_dir / self.REVIEW).write_text(
+                f"Committed the fix.\n{resume_state.FIXED_BY_HUMAN_MARKER}"
+            )
+            budget = self._apply(spec_dir)
+            self.assertTrue(budget.resolved_externally)
+            self.assertIsNone(budget.human_guidance)
+
+    def test_consumed_review_is_not_reapplied_on_resume(self):
+        """specs/002: a resume inside the extended range re-granted iterations
+        from an already-used review and skipped a pending fix."""
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            self._results(spec_dir, 3)
+            (spec_dir / self.REVIEW).write_text("guidance")
+            self._apply(spec_dir)
+            self._results(spec_dir, 5)
+            budget = self._apply(spec_dir)
+            self.assertEqual(budget, resume_state.IterationBudget(6, 3))
+
+    def test_second_review_extends_from_granted_ceiling(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            self._results(spec_dir, 3)
+            (spec_dir / self.REVIEW).write_text("first")
+            self._apply(spec_dir)
+            self._results(spec_dir, 6)
+            (spec_dir / self.REVIEW).write_text("second")
+            budget = self._apply(spec_dir)
+            self.assertEqual(budget.max_iterations, 9)
+            self.assertEqual(budget.human_guidance, "second")
+
+    def test_review_while_budget_remains_is_left_in_place(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            self._results(spec_dir, 1)
+            (spec_dir / self.REVIEW).write_text("early")
+            budget = self._apply(spec_dir)
+            self.assertEqual(budget, resume_state.IterationBudget(3, 3))
+            self.assertTrue((spec_dir / self.REVIEW).exists())
+
+
 class TestStageComplete(unittest.TestCase):
     def test_not_complete(self):
         with tempfile.TemporaryDirectory() as d:
@@ -96,23 +171,57 @@ class TestFormatViolationsBlock(unittest.TestCase):
 class TestValidateGateSchema(unittest.TestCase):
     def test_confidence_style_all_keys_present_does_not_raise(self):
         result = {"status": "PASS", "confidence": 9, "blocking_issues": []}
-        resume_state.validate_gate_schema(result, "confidence")  # no raise
+        resume_state.normalize_result(result, "confidence")  # no raise
 
     def test_confidence_style_missing_keys_raises_naming_them(self):
         with self.assertRaises(resume_state.GateSchemaError) as cm:
-            resume_state.validate_gate_schema({"findings": []}, "confidence")
+            resume_state.normalize_result({"findings": []}, "confidence")
         self.assertIn("blocking_issues", str(cm.exception))
         self.assertIn("confidence", str(cm.exception))
         self.assertIn("status", str(cm.exception))
 
     def test_violations_style_all_keys_present_does_not_raise(self):
         result = {"status": "FAIL", "violations": []}
-        resume_state.validate_gate_schema(result, "violations")  # no raise
+        resume_state.normalize_result(result, "violations")  # no raise
 
     def test_violations_style_missing_violations_raises(self):
         with self.assertRaises(resume_state.GateSchemaError) as cm:
-            resume_state.validate_gate_schema({"status": "PASS"}, "violations")
+            resume_state.normalize_result({"status": "PASS"}, "violations")
         self.assertIn("violations", str(cm.exception))
+
+
+class TestNormalizeResult(unittest.TestCase):
+    def _confidence(self, **overrides):
+        return {"status": "PASS", "confidence": 8, "blocking_issues": [], **overrides}
+
+    def test_two_high_issues_may_pass_but_a_critical_may_not(self):
+        two_high = self._confidence(blocking_issues=[{"severity": "High"}] * 2)
+        self.assertFalse(resume_state.normalize_result(two_high, "confidence"))
+        self.assertEqual(two_high["status"], "PASS")
+
+        critical = self._confidence(blocking_issues=[{"severity": "Critical"}])
+        self.assertTrue(resume_state.normalize_result(critical, "confidence"))
+        self.assertEqual(critical["status"], "FAIL")
+        self.assertIn("Critical", critical["harness_note"])
+
+    def test_pass_with_blocking_violation_becomes_fail(self):
+        result = {"status": "PASS", "violations": [{"rule": "§T1", "severity": "BLOCKING"}]}
+        resume_state.normalize_result(result, "violations")
+        self.assertEqual(result["status"], "FAIL")
+
+    def test_drifted_item_keys_are_mapped(self):
+        """specs/002: Claude results used summary/detail/file/line."""
+        result = self._confidence(
+            non_blocking_concerns=[
+                {"summary": "Format job", "detail": "Runs twice", "file": "ci.yml", "line": 4}
+            ]
+        )
+        resume_state.normalize_result(result, "confidence")
+        item = result["non_blocking_concerns"][0]
+        self.assertEqual(
+            (item["title"], item["finding"], item["location"]),
+            ("Format job", "Runs twice", "ci.yml:4"),
+        )
 
 
 class TestReadResult(unittest.TestCase):
@@ -176,7 +285,7 @@ class TestFindTwoGateResumeState(unittest.TestCase):
     def _write(self, d, prefix, i, status, key="violations", items=None):
         data = {"status": status, key: items or []}
         if key == "blocking_issues":
-            data.setdefault("confidence", 5)  # gate2 is confidence-style — needs both keys
+            data.setdefault("confidence", 8)  # gate2 is confidence-style — needs both keys
         (Path(d) / f"{prefix}-{i}.json").write_text(json.dumps(data))
 
     def test_iteration_1_unchanged(self):
@@ -211,7 +320,8 @@ class TestFindTwoGateResumeState(unittest.TestCase):
             it, g1, g2 = resume_state.find_two_gate_resume_state(Path(d), "gate1", "gate2", 2)
             self.assertEqual(it, 2)
             self.assertIsNone(g1)
-            self.assertEqual(g2, issues)
+            self.assertEqual(g2[0]["issue"], "arch violation")
+            self.assertEqual(g2[0]["title"], "arch violation")
 
     def test_both_pass_unchanged(self):
         with tempfile.TemporaryDirectory() as d:

@@ -9,7 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
 import ch_plan_to_implement_auto as ptia
 
-from agent_common.console import USAGE_LIMIT_EXIT_CODE
+from agent_common.console import HUMAN_ACTION_EXIT_CODE, USAGE_LIMIT_EXIT_CODE
 
 
 class TestCheckStageResult(unittest.TestCase):
@@ -38,6 +38,15 @@ class TestCheckStageResult(unittest.TestCase):
         mock_log.assert_called_once()
         self.assertIn("PAUSED", mock_log.call_args[0][0])
         self.assertIn("re-run", mock_log.call_args[0][0].lower())
+
+    def test_human_action_exit_code_logs_waiting_and_exits_with_that_code(self):
+        with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
+            ptia._check_stage_result(
+                HUMAN_ACTION_EXIT_CODE, 2, "tasks", "ch-2-tasks-critic-escalation.md"
+            )
+
+        self.assertEqual(cm.exception.code, HUMAN_ACTION_EXIT_CODE)
+        self.assertIn("WAITING for human action", mock_log.call_args[0][0])
 
     def test_stage_5_docs_failure_logs_escalation_hint_and_exits_1(self):
         with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:

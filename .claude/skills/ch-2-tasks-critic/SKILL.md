@@ -66,9 +66,9 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - Technology references in task descriptions match the constitution's Stack Constraints table (§2)
 - No unapproved library or tool introduced without a constitution amendment proposed in `plan.md`
 
-### §T5 — Schema Migration [BLOCKING]
-- If `plan.md` describes any data model schema changes (new model, new field, modified field, relation change), a migration task must exist in the Foundational phase referencing the migration command defined in the constitution's Data Model Authority section (§3)
-- If no schema changes are described in `plan.md`, this rule is not_applicable
+### §T5 — Task Format [BLOCKING]
+- Every task uses the machine-readable format `- [ ] TXXX [TEST|IMPL] [P?] [USZ] description` from `.specify/templates/tasks-template.md` — a checkbox immediately followed by a bare task ID (`- [ ] T001`, never `- [T001]`); numbered lists, plain bullets, and untagged prose tasks violate this rule
+- Every task an agent cannot complete inside the repo (waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist) is tagged `[MANUAL]` — an untagged one blocks the implement stage
 
 ### §T6 — v1 Scope [BLOCKING]
 - No task implements functionality that is absent from `spec.md`
@@ -92,6 +92,10 @@ Check each rule in order. Every rule must appear in the output as either a viola
 ### §T10 — Phase Checkpoints [WARNING]
 - Each phase (Setup, Foundational, User Story phases, Polish) should end with a Checkpoint line describing a concrete, runnable verification step (e.g. a test command or manual check)
 - Phases missing a Checkpoint or with a vague Checkpoint (e.g. "verify it works") should be flagged
+
+### §T11 — Schema Migration [BLOCKING]
+- If `plan.md` describes any data model schema changes (new model, new field, modified field, relation change), a migration task must exist in the Foundational phase referencing the migration command defined in the constitution's Data Model Authority section (§3)
+- If no schema changes are described in `plan.md`, this rule is not_applicable
 
 ---
 

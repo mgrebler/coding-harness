@@ -47,16 +47,16 @@ import sys
 from pathlib import Path
 
 from agent_common.console import (
+    HUMAN_ACTION_EXIT_CODE,
     USAGE_LIMIT_EXIT_CODE,
     make_logger,
     setup_log_file,
     stream_subprocess,
 )
 from agent_common.git import get_feature_from_branch
-from agent_common.ollama import is_stage_enabled
+from agent_common.ollama import check_providers, is_stage_enabled
 from agent_common.resume_state import (
     find_passing_iteration,
-    max_existing_iteration,
     stage_is_complete,
 )
 
@@ -96,6 +96,12 @@ def _check_stage_result(rc: int, stage_num: int, stage_name: str, escalation_hin
         log(
             f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): PAUSED — hit a Claude usage/session "
             f"limit. Re-run this command once the limit resets; progress so far is preserved."
+        )
+        sys.exit(rc)
+    if rc == HUMAN_ACTION_EXIT_CODE:
+        log(
+            f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): WAITING for human action — "
+            f"see the stage log above. Re-run once done."
         )
         sys.exit(rc)
     if rc != 0:
@@ -139,6 +145,7 @@ def run(feature: str):
         log(f"ERROR: {spec_dir}/spec.md not found. Run /speckit-specify first.")
         sys.exit(1)
 
+    check_providers(log)
     log(f"Pipeline start — feature: {feature}, branch: {branch}")
     log(
         "Stages: ch-1-plan-auto → ch-2-tasks-auto → ch-3-test-auto → "
@@ -148,10 +155,7 @@ def run(feature: str):
     # --- Stage 1: Plan ---
     if (
         stage_is_complete(spec_dir, "ch-1-plan")
-        or find_passing_iteration(
-            spec_dir, PLAN_ARCH_PREFIX, max_existing_iteration(spec_dir, PLAN_ARCH_PREFIX)
-        )
-        is not None
+        or find_passing_iteration(spec_dir, PLAN_ARCH_PREFIX) is not None
     ):
         log(f"Stage 1/{TOTAL_STAGES} (plan): already complete — skipping.")
     else:
@@ -162,10 +166,7 @@ def run(feature: str):
     # --- Stage 2: Tasks ---
     if (
         stage_is_complete(spec_dir, "ch-2-tasks")
-        or find_passing_iteration(
-            spec_dir, TASKS_CRITIC_PREFIX, max_existing_iteration(spec_dir, TASKS_CRITIC_PREFIX)
-        )
-        is not None
+        or find_passing_iteration(spec_dir, TASKS_CRITIC_PREFIX) is not None
     ):
         log(f"Stage 2/{TOTAL_STAGES} (tasks): already complete — skipping.")
     else:
@@ -181,10 +182,7 @@ def run(feature: str):
         log(skip_reason)
     elif (
         stage_is_complete(spec_dir, "ch-3-test")
-        or find_passing_iteration(
-            spec_dir, TEST_QUALITY_PREFIX, max_existing_iteration(spec_dir, TEST_QUALITY_PREFIX)
-        )
-        is not None
+        or find_passing_iteration(spec_dir, TEST_QUALITY_PREFIX) is not None
     ):
         log(f"Stage 3/{TOTAL_STAGES} (test): already complete — skipping.")
     else:
@@ -215,10 +213,7 @@ def run(feature: str):
         log(skip_reason)
     elif (
         stage_is_complete(spec_dir, "ch-5-docs")
-        or find_passing_iteration(
-            spec_dir, DOCS_CRITIC_PREFIX, max_existing_iteration(spec_dir, DOCS_CRITIC_PREFIX)
-        )
-        is not None
+        or find_passing_iteration(spec_dir, DOCS_CRITIC_PREFIX) is not None
     ):
         log(f"Stage 5/{TOTAL_STAGES} (docs): already complete — skipping.")
     else:

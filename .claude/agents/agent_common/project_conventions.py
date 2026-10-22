@@ -176,12 +176,18 @@ def _test_dirs_from_constitution(constitution_text: str) -> tuple[str, ...]:
     for bullet in _BULLET_RE.findall(section):
         if "test" not in bullet.lower():
             continue
-        for path in _BACKTICK_RE.findall(bullet):
-            path = path.strip()
-            if _is_placeholder(path) or not path.endswith("/"):
-                continue
-            if path not in dirs:
-                dirs.append(path)
+        # Only the bullet's first directory is its subject — later ones are
+        # descriptive ("`backend/tests/` mirroring the `src/` structure").
+        path = next(
+            (
+                p.strip()
+                for p in _BACKTICK_RE.findall(bullet)
+                if p.strip().endswith("/") and not _is_placeholder(p.strip())
+            ),
+            None,
+        )
+        if path and path not in dirs:
+            dirs.append(path)
     return tuple(dirs)
 
 

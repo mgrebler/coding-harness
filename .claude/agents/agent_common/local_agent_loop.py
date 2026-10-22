@@ -190,7 +190,7 @@ async def run_generation(
     SDK messages, e.g. `lambda model: query(prompt=..., options=driving_agent_options(..., model=model))`.
     Only invoked when no local generation config resolves for `stage`.
     """
-    escalation_files_before = _escalation_file_digests()
+    protected_before = _protected_file_digests()
     config = ollama.load_local_llm_generation_config(stage)
     if config is None:
         claude_model = ollama.load_claude_generation_model(stage)
@@ -198,38 +198,47 @@ async def run_generation(
     else:
         log(f"Using local LLM ({config['model']}) for {stage} generation...")
         await run_local_agent_loop(log, system_prompt, user_prompt, config)
-    _halt_if_escalation_files_touched(log, escalation_files_before)
+    _halt_if_protected_files_touched(log, protected_before)
 
 
-def _escalation_file_digests() -> dict[str, str]:
+# Files only a human may write: escalation reviews are proof of human review
+# (apply_escalation_review grants iterations on their strength alone), and
+# .specify/memory/ is project governance (constitution, architecture, decision
+# logs) whose amendments need real human approval — specs/003 had a fix agent
+# bump the constitution and log an "approved (<human>)" decision-log entry.
+_PROTECTED_GLOBS = ("specs/*/*-escalation*.md", ".specify/memory/**/*")
+
+
+def _protected_file_digests() -> dict[str, str]:
     return {
         str(path): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in Path("specs").glob("*/*-escalation*.md")
+        for pattern in _PROTECTED_GLOBS
+        for path in Path().glob(pattern)
+        if path.is_file()
     }
 
 
-def _halt_if_escalation_files_touched(log, before: dict[str, str]) -> None:
-    """Escalation and *-escalation-review.md files are the harness's record of a
-    human decision — extend_iterations_if_reviewed grants more iterations on the
-    strength of the review file alone. Every agent run (generation, revision,
-    fix, CI-fix) passes through here, so this is the one place an agent writing
-    one can be caught, regardless of what its prompt said. Halting without
-    deleting anything: the agent may already have committed the file, and only
-    a human should decide what to revert."""
-    after = _escalation_file_digests()
+def _halt_if_protected_files_touched(log, before: dict[str, str]) -> None:
+    """Every agent run (generation, revision, fix, CI-fix) passes through here,
+    so this is the one place an agent writing a human-only file can be caught,
+    regardless of what its prompt said. Halting without deleting anything: the
+    agent may already have committed the file, and only a human should decide
+    what to revert."""
+    after = _protected_file_digests()
     touched = sorted(
         path for path in before.keys() | after.keys() if before.get(path) != after.get(path)
     )
     if not touched:
         return
     log(
-        "FAIL: an agent created, modified, or deleted a human-review escalation file — "
-        "these may only be written by a human. Halting; human review required."
+        "FAIL: an agent created, modified, or deleted a human-only file (escalation review "
+        "or .specify/memory/ governance) — these may only be written by a human. Halting; "
+        "human review required."
     )
     for path in touched:
         log(f"  {path}")
     log(
-        "Inspect each file (and any commit that added it), restore or remove it by hand, "
+        "Inspect each file (and any commit that touched it), restore or remove it by hand, "
         "then re-run. A forged *-escalation-review.md left in place will be treated as a "
         "real human review on the next run."
     )

@@ -77,6 +77,18 @@
 | ----------------------------------- | -------------------- | ------------------- |
 |                                      |                       |                      |
 
+## Pending Human Approvals
+
+<!--
+  ACTION REQUIRED: List every constitution or architecture.md amendment this
+  plan proposes, one `- ` bullet each, or write `None.` Agents may not edit
+  .specify/memory/, so the automated pipeline stops before tasks while this
+  section lists anything. A human applies (or rejects) each amendment, then
+  replaces the list with `None.` and re-runs.
+-->
+
+None.
+
 ## Project Structure
 
 ### Documentation (this feature)

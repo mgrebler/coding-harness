@@ -188,6 +188,12 @@ Review and edit `specs/NNN-feature/spec.md` if needed, then:
 
 This chains five stages — plan, tasks, test, implement, docs — with built-in critic loops at each stage.
 
+The pipeline stops for you in three situations:
+
+- **Pending governance amendments.** If plan.md lists anything under `## Pending Human Approvals`, the pipeline stops before tasks (exit code 4). Agents may never edit `.specify/memory/`. Apply or reject each amendment yourself, replace the list with `None.`, and re-run.
+- **Escalation.** A stage that runs out of critic iterations writes `specs/NNN-feature/<stage>-escalation.md`. Reply by creating the `-review.md` file it names. Write guidance in it and the fix agent runs next with your review as an authoritative instruction. If you already made the fix yourself, include the line `Resolution: fixed-by-human` and the fix agent is skipped. Each review is used once: it is renamed to `*-consumed-to-<N>.md`.
+- **`[MANUAL]` tasks.** These are left unchecked for you. They cover anything that needs a human or an out-of-repo action, such as approvals, live deploys or manual verification.
+
 ---
 
 ## Quick Reference
@@ -355,6 +361,11 @@ a list entry is never meaningful (there's nothing for a local-critic
 subprocess fan-out to run) and is silently excluded from the fan-out rather
 than erroring.
 
+A single critic's verdict is used as-is. If every critic configured for a
+gate fails (unreachable, timed out, or still returning unusable output after
+one retry), the gate falls back to the Claude critic and logs that loudly; it
+no longer aborts the stage.
+
 When more than one critic resolves for a phase, each independently reviews
 the same artifact against the same objective (an identical prompt — only the
 model differs), writing its raw, unverified findings to
@@ -419,6 +430,21 @@ top-level field; they always come from the entry itself (or `"default"`,
 inheriting the `default` block wholesale). `num_ctx`/`max_ctx`/`keep_alive`/
 `num_gpu` are Ollama-specific and are ignored when `provider` is
 `openai-compatible`.
+
+Every pipeline run first checks each configured hosted or local model. It
+fails fast if a key's `api_key_env` variable isn't set, or if the provider no
+longer lists the model (for example, an end-of-life model). This check runs
+before any generation.
+
+`max_prompt_tokens` (any provider; per entry or top level) caps a critic's
+prompt. The default is `num_ctx`/`max_ctx` if set, otherwise 100000. When a
+test-stage critic's prompt would exceed the cap, the harness drops
+non-essential context first: red-state output is reduced to its tail, then
+the assertion summaries go, then architecture.md. The test files under review
+are never dropped. Give each multi-critic phase at least one large-context
+model so a gate keeps a working critic on a very large feature. A
+context-overflow response from a hosted API is reported as such and is not
+retried.
 
 For example, Ollama by default with the `test` critic overridden to run
 against NVIDIA instead:

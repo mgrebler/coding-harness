@@ -23,14 +23,15 @@ Resume behaviour:
   - If a critic result was already PASS, exits immediately (no work to do)
 """
 
+import json
 import sys
 from pathlib import Path
 
-from ch_2_tasks_critic import build_tasks_critic_prompt
+from ch_2_tasks_critic import build_tasks_critic_prompt, tasks_rules
 from claude_agent_sdk import AgentDefinition, query
 
 from agent_common import critic_reconcile, local_agent_loop, ollama
-from agent_common.console import make_logger, setup_log_file
+from agent_common.console import HUMAN_ACTION_EXIT_CODE, make_logger, setup_log_file
 from agent_common.critic_loop import (
     GateSpec,
     finish_if_already_passing,
@@ -44,9 +45,9 @@ from agent_common.driving_agent import (
     driving_agent_options,
 )
 from agent_common.files import read_file, require_spec_files
-from agent_common.preflight_checks import task_format_violations
+from agent_common.preflight_checks import pending_human_approvals, task_format_violations
 from agent_common.resume_state import (
-    extend_iterations_if_reviewed,
+    apply_escalation_review,
     format_violations_block,
     load_prior_violations,
     next_iteration,
@@ -66,6 +67,17 @@ def preflight(spec_dir: Path, feature: str) -> bool:
     Exits on unrecoverable conditions.
     """
     require_spec_files(log, spec_dir, "plan.md")
+
+    pending = pending_human_approvals((spec_dir / "plan.md").read_text(encoding="utf-8"))
+    if pending:
+        log("WAITING: plan.md lists amendments that need human approval before tasks:")
+        for item in pending:
+            log(f"  {item}")
+        log(
+            "Apply (or reject) each one in .specify/memory/, replace the plan.md section's "
+            "list with `None.`, then re-run."
+        )
+        sys.exit(HUMAN_ACTION_EXIT_CODE)
 
     existing_tasks = (spec_dir / "tasks.md").exists()
     existing_results = list(spec_dir.glob(f"{RESULT_PREFIX}-*.json"))
@@ -138,6 +150,9 @@ Key rules:
 - Organise tasks by phase: Setup → Foundational → one phase per user story (in spec priority order) → Polish
 - Every task must follow the checklist format: - [ ] T### [P?] [US#?] Description — file/path
 - Mark tasks [P] when they target different files with no dependencies
+- Tag [MANUAL] every task an agent cannot complete inside the repo — waiting for a human
+  approval, a live/cloud deploy, a real external account, a manual verification
+  checklist (see the template's Format section)
 {pairing_rule}
 - Include a Checkpoint at the end of each phase with a concrete runnable verification command
 - Write tasks.md to the correct specs/$FEATURE/ path
@@ -204,7 +219,9 @@ def tasks_reconcile_agent_definition(
         f"--- SPEC ---\n{spec}\n\n"
         f"--- PLAN ---\n{plan}\n\n"
         f"--- TASKS (current) ---\n{tasks}\n\n"
-        f"--- §T3 TEST/IMPL PAIRING STATUS ---\n{test_stage_note}"
+        f"--- §T3 TEST/IMPL PAIRING STATUS ---\n{test_stage_note}\n\n"
+        f"--- HARNESS §T RULES (the only valid §T rule labels) ---\n"
+        f"{tasks_rules(test_stage_enabled)}"
     )
     output_instructions = (
         f"- After producing JSON, write it to specs/$FEATURE/ch-2-tasks-critic-result-{iteration}.json using Bash\n"
@@ -252,7 +269,8 @@ async def _run_format_gate(
         user_prompt = (
             f"Reformat specs/{feature}/tasks.md to comply with the machine-readable task "
             f"format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (see .specify/templates/"
-            f"tasks-template.md). Fix ONLY the lines below — do not change task content, order, "
+            f"tasks-template.md), tagging [MANUAL] any task flagged as needing a human or an "
+            f"out-of-repo action. Fix ONLY the lines below — do not change task content, order, "
             f"or numbering beyond what's needed to fix the format:\n\n" + "\n".join(violations)
         )
         await local_agent_loop.run_generation(
@@ -306,7 +324,7 @@ async def run(feature: str):
 
     test_stage_enabled = ollama.is_stage_enabled("test")
 
-    max_iterations, _skip_fix_agent = extend_iterations_if_reviewed(
+    budget = apply_escalation_review(
         spec_dir, "ch-2-tasks-critic-escalation-review.md", RESULT_PREFIX, 3, log
     )
 
@@ -358,7 +376,6 @@ async def run(feature: str):
         spec_dir,
         AGENT_NAME,
         RESULT_PREFIX,
-        max_iterations,
         "tasks critic",
         "Tasks are ready for human review. No further action taken.",
         "after_tasks",
@@ -379,7 +396,7 @@ async def run(feature: str):
         )
         user_prompt = (
             f"Revise tasks.md for feature {feature} to fix critic violations. "
-            f"Read specs/{feature}/ch-2-tasks-critic-result-{pending_iter}.json for the violation list. "
+            f"Violations to address: {json.dumps(pending_violations)} "
             f"Write updated tasks.md to specs/{feature}/tasks.md."
         )
         await local_agent_loop.run_generation(
@@ -473,7 +490,8 @@ async def run(feature: str):
         log,
         spec_dir,
         feature,
-        max_iterations,
+        budget,
+        revised_artifact=spec_dir / "tasks.md",
         gate=GateSpec(
             RESULT_PREFIX,
             "ch_2_tasks_critic.py",
@@ -483,7 +501,6 @@ async def run(feature: str):
             build_reconcile_query,
         ),
         resume_state=(iteration, violations),
-        skip_fix_agent=_skip_fix_agent,
         run_fix=run_fix,
         on_pass=on_pass,
         escalation_kwargs={

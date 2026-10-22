@@ -300,6 +300,19 @@ class TestRunGenerationEscalationFileGuard(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SystemExit):
             await self._run_with_agent(escalation.unlink)
 
+    async def test_halts_when_agent_edits_governance_memory(self):
+        """specs/003: a fix agent bumped constitution.md and logged a fabricated
+        human approval in .specify/memory/constitution-decision-log.md."""
+        memory = Path(".specify/memory")
+        memory.mkdir(parents=True)
+        log_file = memory / "constitution-decision-log.md"
+        log_file.write_text("| Date | Change | Approved by |")
+
+        with self.assertRaises(SystemExit):
+            await self._run_with_agent(
+                lambda: log_file.write_text(log_file.read_text() + "\n| x | ORM | the human |")
+            )
+
     async def test_untouched_escalation_files_and_other_writes_pass(self):
         (self.spec_dir / "ch-1-plan-critic-escalation-review.md").write_text("Reviewed by: human")
 

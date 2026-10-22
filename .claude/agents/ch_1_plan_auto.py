@@ -29,6 +29,7 @@ Resume behaviour:
   - If the last arch result was FAIL, revision runs before the next critic
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -57,7 +58,7 @@ from agent_common.files import (
     require_spec_files,
 )
 from agent_common.resume_state import (
-    extend_iterations_if_reviewed,
+    apply_escalation_review,
     find_two_gate_resume_state,
     format_violations_block,
     next_iteration,
@@ -139,6 +140,9 @@ Key rules:
   framework, tool, or external service named anywhere in the plan and match each one
   against the constitution §2 stack table by exact name; anything not already listed
   there requires a proposed amendment in that section before the plan can pass.
+- List every constitution or architecture.md amendment the plan proposes under
+  "## Pending Human Approvals" (or `None.`). Never edit .specify/memory/ yourself — the
+  pipeline stops after this stage until a human applies them.
 - Whenever you introduce or change an additive field, endpoint, or message handler —
   whether this is the initial draft or a revision responding to critic violations —
   re-scan contracts/ and update it to reflect that change. This applies on every pass, not
@@ -309,7 +313,7 @@ async def run(feature: str):
         else "(architecture-principles.md not found)"
     )
 
-    max_iterations, _skip_fix_agent = extend_iterations_if_reviewed(
+    budget = apply_escalation_review(
         spec_dir, "ch-1-plan-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
     )
 
@@ -349,7 +353,6 @@ async def run(feature: str):
         spec_dir,
         AGENT_NAME,
         ARCH_RESULT_PREFIX,
-        max_iterations,
         "architecture review",
         "Plan is ready for human review. No further action taken.",
         "after_plan",
@@ -365,19 +368,16 @@ async def run(feature: str):
     )
 
     async def run_revision(pending_iter: int, pending_violations: list, pending_label: str) -> None:
-        pending_file = (
-            f"specs/{feature}/ch-1-plan-critic-result-{pending_iter}.json"
-            if pending_label == "plan critic"
-            else f"specs/{feature}/ch-1-plan-architecture-review-result-{pending_iter}.json"
-        )
         log(
             f"Running plan revision for {pending_label} violations from iteration {pending_iter}..."
         )
         plan_agent = plan_agent_definition(constitution, spec, arch_principles)
         user_prompt = (
             f"Revise plan.md for feature {feature}. "
-            f"Read {pending_file} for the full violation list. "
-            f"Write updated plan.md to specs/{feature}/plan.md."
+            f"Violations to address: {json.dumps(pending_violations)} "
+            f"Edit specs/{feature}/plan.md in place: keep every existing section and table, "
+            f"and update research.md, data-model.md, quickstart.md, and contracts/ wherever "
+            f"your change affects them."
         )
         await local_agent_loop.run_generation(
             log,
@@ -517,7 +517,8 @@ async def run(feature: str):
         log,
         spec_dir,
         feature,
-        max_iterations,
+        budget,
+        revised_artifact=spec_dir / "plan.md",
         gate1=GateSpec(
             CRITIC_RESULT_PREFIX,
             "ch_1_plan_critic.py",
@@ -535,7 +536,6 @@ async def run(feature: str):
             build_reconcile_arch_query,
         ),
         resume_state=resume_state,
-        skip_fix_agent=_skip_fix_agent,
         run_revision=run_revision,
         on_both_pass=on_both_pass,
         escalation_kwargs={

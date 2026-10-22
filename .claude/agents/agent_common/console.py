@@ -34,6 +34,9 @@ def _safe_print(text: str, end: str = "\n", retries: int = 20, delay: float = 0.
 # 0 = clean abort/already-done, 1 = generic failure, 2 = already means "local LLM not
 # configured" one layer down in ollama.py — never surfaced at this level.
 USAGE_LIMIT_EXIT_CODE = 3
+# A stage refused to start because a human must act first (e.g. approve a
+# plan's proposed governance amendments) — not a failure, nothing to escalate.
+HUMAN_ACTION_EXIT_CODE = 4
 
 _SESSION_LIMIT_MARKERS = ("session limit", "usage limit", "rate limit")
 

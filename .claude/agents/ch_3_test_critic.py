@@ -83,7 +83,7 @@ def _annotate_test_files(file_section: str) -> str:
     return "".join(out)
 
 
-def read_test_results(spec_dir: Path) -> str:
+def read_test_results(spec_dir: Path, tail_lines: int | None = None) -> str:
     results_dir = spec_dir / "test-results"
     if not results_dir.exists():
         return "(no test-results directory — red-state artifacts missing)"
@@ -93,7 +93,14 @@ def read_test_results(spec_dir: Path) -> str:
     parts = []
     for f in files:
         try:
-            parts.append(f"--- {f.name} ---\n{f.read_text(encoding='utf-8')}")
+            text = f.read_text(encoding="utf-8")
+            if tail_lines is not None:
+                lines = text.splitlines()
+                if len(lines) > tail_lines:
+                    text = f"(first {len(lines) - tail_lines} lines omitted)\n" + "\n".join(
+                        lines[-tail_lines:]
+                    )
+            parts.append(f"--- {f.name} ---\n{text}")
         except Exception:
             parts.append(f"--- {f.name} --- (could not read)")
     return "\n\n".join(parts)
@@ -234,7 +241,12 @@ Rules:
 
 
 def main():
-    def _build(spec_dir: Path, iteration: int) -> str:
+    def _build(spec_dir: Path, iteration: int, reduction: int = 0) -> str:
+        """reduction drops context in order of how little the review needs it:
+        1 tails each red-state artifact, 2 drops the pre-extracted assertion
+        lists (a duplicate of the file content), 3 drops architecture.md, 4 shows
+        test files that already existed on main as their diff. Changed test
+        content itself is never dropped."""
         feature = spec_dir.name
         constitution_path = Path(".specify/memory/constitution.md")
         architecture_path = Path(".specify/memory/architecture.md")
@@ -246,7 +258,11 @@ def main():
         require_files("ch-3-test-critic", constitution_path, spec_path, plan_path, tasks_path)
 
         constitution = constitution_path.read_text(encoding="utf-8")
-        architecture = read_optional(architecture_path, "(architecture.md not found)")
+        architecture = (
+            read_optional(architecture_path, "(architecture.md not found)")
+            if reduction < 3
+            else "(omitted to fit the model's context budget)"
+        )
         test_principles = read_optional(test_principles_path, "(test-principles.md not found)")
         spec = spec_path.read_text(encoding="utf-8")
         plan = plan_path.read_text(encoding="utf-8")
@@ -254,10 +270,14 @@ def main():
 
         changed_files = get_changed_files()
         changed_test_files = read_changed_files(
-            changed_files, resolve_test_dirs(), extra_match=looks_like_test_file
+            changed_files,
+            resolve_test_dirs(),
+            extra_match=looks_like_test_file,
+            diff_only=reduction >= 4,
         )
-        changed_test_files = _annotate_test_files(changed_test_files)
-        test_results = read_test_results(spec_dir)
+        if reduction < 2:
+            changed_test_files = _annotate_test_files(changed_test_files)
+        test_results = read_test_results(spec_dir, tail_lines=40 if reduction >= 1 else None)
 
         return build_test_critic_prompt(
             constitution,
@@ -272,7 +292,7 @@ def main():
             test_results=test_results,
         )
 
-    run_local_critic_cli("test", CRITIC_RESULT_PREFIX, _build)
+    run_local_critic_cli("test", CRITIC_RESULT_PREFIX, _build, max_reduction=4)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ Exit codes:
 
 from pathlib import Path
 
+from agent_common.critic_reconcile import CONFIDENCE_STATUS_RULE
 from agent_common.files import read_changed_source_files, read_optional, require_files
 from agent_common.git import get_changed_files
 from agent_common.ollama import run_local_critic_cli
@@ -56,10 +57,7 @@ def build_quality_review_prompt(
     else:
         review_process = f"--- CHANGED SOURCE FILES (changed files relative to base branch) ---\n{changed_files_section}"
 
-    tail = (
-        "- status is FAIL if any Critical issue exists, more than 2 High issues exist, or confidence < 7\n"
-        "- status is PASS otherwise"
-    )
+    tail = CONFIDENCE_STATUS_RULE
     if output_instructions:
         tail += f"\n{output_instructions}"
 

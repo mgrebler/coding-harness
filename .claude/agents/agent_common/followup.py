@@ -12,7 +12,6 @@ makes that backlog visible in the feature's own spec directory instead of
 depending on someone re-reading a passing JSON result after merge.
 """
 
-import json
 from pathlib import Path
 
 FOLLOWUP_FILENAME = "FOLLOWUP-non-blocking-concerns.md"
@@ -74,28 +73,25 @@ def record_non_blocking_concerns(
     followup_path.write_text(existing + entry, encoding="utf-8")
 
 
-def record_from_result_file(
-    spec_dir: Path,
-    feature: str,
-    source_label: str,
-    result_path: Path,
-) -> None:
-    """Convenience wrapper: read a *-result-N.json file and record its
-    non_blocking_concerns (only meaningful when status is PASS — a FAIL
-    result's non_blocking_concerns, if any, are addressed by the normal
-    fix-agent loop instead, since the gate hasn't cleared yet)."""
-    if not result_path.exists():
-        return
-    try:
-        result = json.loads(result_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, ValueError):
-        return
+def record_pass_followups(spec_dir: Path, source_label: str, iteration: int, result: dict) -> None:
+    """Record everything a PASS result still flags: its non_blocking_concerns,
+    any blocking_issues it passed with (the documented rule allows up to two
+    High — specs/083 shipped one), and its required_remediations (specs/006
+    passed with four). A FAIL result's findings go to the fix agent instead."""
     if result.get("status") != "PASS":
         return
+    remediations = [
+        {"title": r, "severity": "required remediation"} if isinstance(r, str) else r
+        for r in result.get("required_remediations") or []
+    ]
     record_non_blocking_concerns(
         spec_dir,
-        feature,
+        spec_dir.name,
         source_label,
-        result.get("iteration", 0),
-        result.get("non_blocking_concerns", []),
+        iteration,
+        [
+            *(result.get("non_blocking_concerns") or []),
+            *(result.get("blocking_issues") or []),
+            *remediations,
+        ],
     )

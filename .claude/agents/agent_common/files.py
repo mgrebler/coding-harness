@@ -4,6 +4,8 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from agent_common import git
+
 
 def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8")
@@ -35,6 +37,21 @@ def require_spec_files(log_fn, spec_dir: Path, *filenames: str) -> None:
             sys.exit(1)
 
 
+_PLAN_SIBLINGS = ("research.md", "data-model.md", "quickstart.md")
+
+
+def read_plan_bundle(spec_dir: Path) -> str:
+    """plan.md followed by its sibling plan artifacts. plan.md routinely defers
+    detail to them ("see research.md §4"), so a critic shown plan.md alone
+    reports gaps those files already answer (specs/006's local critics did)."""
+    parts = [read_file(spec_dir / "plan.md")]
+    for name in _PLAN_SIBLINGS:
+        path = spec_dir / name
+        if path.exists():
+            parts.append(f"--- {name} (sibling plan artifact) ---\n{read_file(path)}")
+    return "\n\n".join(parts)
+
+
 def read_changed_source_files(changed_files: list[str]) -> str:
     """Read the contents of changed_files, skipping specs/ paths and critic result files."""
     content_parts = []
@@ -51,17 +68,27 @@ def read_changed_source_files(changed_files: list[str]) -> str:
     return "\n\n".join(content_parts) if content_parts else "(no changed files found)"
 
 
+class NoChangedFilesError(Exception):
+    """read_changed_files matched nothing — a critic given this input would
+    review an empty diff and PASS it (specs/082: all four test-stage critics
+    passed on "no test files were changed")."""
+
+
 def read_changed_files(
     changed_files: list[str],
     dirs: tuple[str, ...],
     extra_match: Callable[[str], bool] | None = None,
+    diff_only: bool = False,
 ) -> str:
     """Read files in changed_files that start with any prefix in dirs, or
     (when extra_match is given) satisfy extra_match — a safety net for a
     changed file outside every resolved dir that still looks like a match by
     some other signal (e.g. project_conventions.looks_like_test_file), so a
     directory resolution gap doesn't silently drop it from the result. See
-    FOLLOWUP_HARNESS.md Bug 2."""
+    FOLLOWUP_HARNESS.md Bug 2. diff_only shows a file that already existed on
+    main as its branch diff rather than in full — a prompt-size reduction for
+    features that touch many large existing files (specs/084, a rename).
+    Raises NoChangedFilesError if nothing matches."""
     sections = []
     for path_str in changed_files:
         if not any(path_str.startswith(d) for d in dirs) and not (
@@ -71,14 +98,21 @@ def read_changed_files(
         p = Path(path_str)
         if not p.exists():
             continue
+        diff = git.branch_diff(path_str) if diff_only else None
+        if diff is not None:
+            sections.append(f"--- {path_str} (diff against main) ---\n{diff}")
+            continue
         try:
             content = p.read_text(encoding="utf-8")
             sections.append(f"--- {path_str} ---\n{content}")
         except Exception:
             sections.append(f"--- {path_str} --- (could not read)")
-    return (
-        "\n\n".join(sections) if sections else "(no changed files found in specified directories)"
-    )
+    if not sections:
+        raise NoChangedFilesError(
+            f"no changed files under {', '.join(dirs) or '(no resolved dirs)'} — check the "
+            "'Test file location' bullets in constitution.md"
+        )
+    return "\n\n".join(sections)
 
 
 def read_directory_tree(root: Path) -> dict[str, str]:

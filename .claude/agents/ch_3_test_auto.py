@@ -59,18 +59,15 @@ from agent_common.driving_agent import (
     driving_agent_options,
 )
 from agent_common.files import read_file, require_spec_files
-from agent_common.followup import record_from_result_file, record_non_blocking_concerns
 from agent_common.preflight_checks import (
     oversized_committed_files,
     unchecked_task_lines,
     validate_red_state_artifacts,
 )
 from agent_common.resume_state import (
-    extend_iterations_if_reviewed,
-    find_passing_iteration,
+    apply_escalation_review,
     find_two_gate_resume_state,
     format_violations_block,
-    max_existing_iteration,
     next_iteration,
 )
 
@@ -612,7 +609,7 @@ async def run(feature: str):
         else "(test-principles.md not found)"
     )
 
-    max_iterations, _skip_fix_agent = extend_iterations_if_reviewed(
+    budget = apply_escalation_review(
         spec_dir, "ch-3-test-critic-escalation-review.md", CRITIC_RESULT_PREFIX, 3, log
     )
 
@@ -625,24 +622,11 @@ async def run(feature: str):
     await _run_red_state_gate(feature, spec_dir, constitution, spec, plan, tasks, test_principles)
 
     # --- Resume guard: done if test quality review already passed ---
-    passing_quality_iter = find_passing_iteration(
-        spec_dir,
-        TEST_QUALITY_RESULT_PREFIX,
-        max_existing_iteration(spec_dir, TEST_QUALITY_RESULT_PREFIX, max_iterations),
-    )
-    if passing_quality_iter is not None:
-        record_from_result_file(
-            spec_dir,
-            feature,
-            "Test Quality Review",
-            spec_dir / f"{TEST_QUALITY_RESULT_PREFIX}-{passing_quality_iter}.json",
-        )
     if finish_if_already_passing(
         log,
         spec_dir,
         AGENT_NAME,
         TEST_QUALITY_RESULT_PREFIX,
-        max_iterations,
         "test quality review",
         "Test phase is ready for human review. No further action taken.",
         "after_test",
@@ -696,13 +680,6 @@ async def run(feature: str):
         )
 
     async def on_both_pass(quality_result: dict) -> None:
-        record_non_blocking_concerns(
-            spec_dir,
-            feature,
-            "Test Quality Review",
-            quality_result.get("iteration", 0),
-            quality_result.get("non_blocking_concerns", []),
-        )
         oversized = oversized_committed_files()
         if oversized:
             log("FAIL: oversized file(s) committed on this branch — human review required.")
@@ -782,7 +759,7 @@ async def run(feature: str):
         log,
         spec_dir,
         feature,
-        max_iterations,
+        budget,
         gate1=GateSpec(
             CRITIC_RESULT_PREFIX,
             "ch_3_test_critic.py",
@@ -816,7 +793,6 @@ async def run(feature: str):
             ),
         ),
         resume_state=resume_state,
-        skip_fix_agent=_skip_fix_agent,
         run_revision=run_revision,
         on_both_pass=on_both_pass,
         escalation_kwargs={

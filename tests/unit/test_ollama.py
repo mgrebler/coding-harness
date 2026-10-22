@@ -1042,6 +1042,32 @@ class TestRunLocalCriticCliSchemaValidation(_ConfigDirTestCase):
         )
 
 
+class TestRunLocalCriticCliBadOutputRetry(_ConfigDirTestCase):
+    """Hosted critics returned 0-byte or `{}` bodies (specs/002-005, 084); one
+    retry is cheaper than losing the critic for the whole iteration."""
+
+    def test_empty_response_is_retried_once(self):
+        self._write_config(
+            {
+                "ollama_url": "http://localhost:11434",
+                "default": {"provider": "ollama", "model": "llama3.2"},
+            }
+        )
+        verdict = '{"status": "PASS", "violations": []}'
+        with (
+            patch.object(sys, "argv", ["c.py", "--feature", "001-x", "--iteration", "1"]),
+            patch.object(ollama, "call_local_llm", side_effect=["", verdict]) as call,
+            patch.object(ollama.files, "write_file") as mock_write,
+        ):
+            ollama.run_local_critic_cli("plan", "ch-1-plan-critic-result", lambda d, i: "prompt")
+
+        self.assertEqual(call.call_count, 2)
+        mock_write.assert_called_once()
+        self.assertEqual(
+            mock_write.call_args.args[0], Path("specs/001-x/ch-1-plan-critic-result-1.json")
+        )
+
+
 class TestRunLocalCriticCliCriticId(_ConfigDirTestCase):
     """--critic-id routes to load_local_llm_configs and the raw-subdir result
     path; its absence must remain byte-identical to the pre-multi-critic
@@ -1275,39 +1301,44 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
             )
         claude_fallback.assert_called_once_with("opus")
 
-    async def test_one_config_runs_without_critic_id_flag(self):
-        log = MagicMock()
-        claude_fallback = MagicMock()
-        config = {"id": "default", "model": "qwen3", "provider": "ollama"}
-        with (
-            patch.object(ollama, "load_local_llm_configs", return_value=[config]),
-            patch.object(ollama, "_run_critic_subprocess", return_value=0) as mock_sub,
-            patch.object(ollama.console, "stream_query", new=AsyncMock()) as mock_stream,
-        ):
-            await ollama.run_gate(
-                log, "plan", "script.py", "feat", 1, "plan critic", claude_fallback
-            )
-        mock_sub.assert_called_once()
-        cmd = mock_sub.call_args[0][0]
-        self.assertNotIn("--critic-id", cmd)
-        claude_fallback.assert_not_called()
-        mock_stream.assert_not_awaited()
+    async def test_one_list_shaped_config_runs_with_critic_id_and_adopts_its_verdict(self):
+        """specs/002-006: a one-element critics list ran without --critic-id, so
+        the critic script exited 2 and the gate silently fell back to Claude
+        while logging the local model's name."""
+        config = {"id": "nemotron", "model": "nemotron-3", "provider": "openai-compatible"}
+        verdict = {"status": "FAIL", "violations": [{"rule": "§T1", "severity": "BLOCKING"}]}
+        raw_path = Path("specs/feat/ch-2-tasks-critic-result-raw/nemotron-1.json")
 
-    async def test_one_config_not_configured_falls_back_to_claude(self):
-        log = MagicMock()
-        claude_fallback = MagicMock(return_value="claude-query-obj")
-        config = {"id": "default", "model": "qwen3", "provider": "ollama"}
+        def fake_subprocess(cmd, prefix=""):
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_text(json.dumps(verdict))
+            return 0
+
+        claude_fallback = MagicMock()
+        build_reconcile_query = MagicMock()
         with (
             patch.object(ollama, "load_local_llm_configs", return_value=[config]),
-            patch.object(ollama, "_run_critic_subprocess", return_value=2),
-            patch.object(ollama, "load_claude_model", return_value=None),
-            patch.object(ollama.console, "stream_query", new=AsyncMock()) as mock_stream,
+            patch.object(ollama, "load_critic_execution_mode", return_value="sequential"),
+            patch.object(ollama, "_run_critic_subprocess", side_effect=fake_subprocess) as sub,
         ):
             await ollama.run_gate(
-                log, "plan", "script.py", "feat", 1, "plan critic", claude_fallback
+                MagicMock(),
+                "tasks",
+                "script.py",
+                "feat",
+                1,
+                "tasks critic",
+                claude_fallback,
+                result_prefix="ch-2-tasks-critic-result",
+                build_reconcile_query=build_reconcile_query,
             )
-        claude_fallback.assert_called_once_with(None)
-        mock_stream.assert_awaited_once_with("claude-query-obj")
+
+        cmd = sub.call_args[0][0]
+        self.assertEqual(cmd[cmd.index("--critic-id") + 1], "nemotron")
+        claude_fallback.assert_not_called()
+        build_reconcile_query.assert_not_called()
+        canonical = Path("specs/feat/ch-2-tasks-critic-result-1.json")
+        self.assertEqual(json.loads(canonical.read_text()), verdict)
 
     async def test_multi_critic_all_clean_pass_skips_reconciliation(self):
         log = MagicMock()
@@ -1543,29 +1574,36 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(canonical_path.exists())
         self.assertEqual(json.loads(canonical_path.read_text())["status"], "PASS")
 
-    async def test_multi_critic_parallel_mode_aborts_if_all_critics_fail(self):
-        log = MagicMock()
+    async def test_all_critics_failing_falls_back_to_claude(self):
+        """specs/001, 002, 084: "all N critics failed … Aborting" stopped the
+        stage outright six times; the Claude critic is the fallback now."""
         configs = [{"id": "a", "model": "m1"}, {"id": "b", "model": "m2"}]
 
         def fake_run_one(log, label, script, feature, iteration, raw_dir, config, prefix=""):
             raise ollama.CriticSubprocessError(f"critic '{config['id']}' failed")
 
-        with (
-            patch.object(ollama, "load_local_llm_configs", return_value=configs),
-            patch.object(ollama, "load_critic_execution_mode", return_value="parallel"),
-            patch.object(ollama, "_run_one_critic", side_effect=fake_run_one),
-            self.assertRaises(SystemExit),
-        ):
-            await ollama.run_gate(
-                log,
-                "plan",
-                "script.py",
-                "feat",
-                1,
-                "plan critic",
-                MagicMock(),
-                result_prefix="ch-1-plan-critic-result",
-            )
+        for mode in ("parallel", "sequential"):
+            claude_fallback = MagicMock(return_value="claude-query-obj")
+            with (
+                self.subTest(mode=mode),
+                patch.object(ollama, "load_local_llm_configs", return_value=configs),
+                patch.object(ollama, "load_critic_execution_mode", return_value=mode),
+                patch.object(ollama, "load_claude_model", return_value=None),
+                patch.object(ollama, "_run_one_critic", side_effect=fake_run_one),
+                patch.object(ollama.console, "stream_query", new=AsyncMock()) as mock_stream,
+            ):
+                await ollama.run_gate(
+                    MagicMock(),
+                    "plan",
+                    "script.py",
+                    "feat",
+                    1,
+                    "plan critic",
+                    claude_fallback,
+                    result_prefix="ch-1-plan-critic-result",
+                )
+            claude_fallback.assert_called_once_with(None)
+            mock_stream.assert_awaited_once_with("claude-query-obj")
 
 
 class TestResolveGenerationEntry(unittest.TestCase):
@@ -1838,3 +1876,81 @@ class TestIsStageEnabled(_ConfigDirTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCheckProviders(_ConfigDirTestCase):
+    def _nvidia_config(self, models):
+        self._write_config(
+            {
+                "base_url": "https://integrate.api.nvidia.com/v1",
+                "api_key_env": "TEST_NVIDIA_KEY",
+                "critics": {
+                    "plan": [{"id": m, "provider": "openai-compatible", "model": m} for m in models]
+                },
+            }
+        )
+
+    def _listing(self, ids):
+        resp = MagicMock()
+        resp.__enter__.return_value.read.return_value = json.dumps(
+            {"data": [{"id": i} for i in ids]}
+        ).encode()
+        return resp
+
+    def test_no_local_entries_needs_no_network(self):
+        with patch.object(ollama, "_urlopen") as urlopen:
+            ollama.check_providers(MagicMock())
+        urlopen.assert_not_called()
+
+    def test_missing_api_key_fails_fast(self):
+        self._nvidia_config(["kimi-k2"])
+        log = MagicMock()
+        with (
+            patch.dict(os.environ, {"TEST_NVIDIA_KEY": ""}),
+            self.assertRaises(SystemExit),
+        ):
+            ollama.check_providers(log)
+        self.assertTrue(any("TEST_NVIDIA_KEY is not set" in c.args[0] for c in log.call_args_list))
+
+    def test_unlisted_model_fails_fast_and_listed_one_passes(self):
+        self._nvidia_config(["kimi-k3", "nemotron"])
+        log = MagicMock()
+        with (
+            patch.dict(os.environ, {"TEST_NVIDIA_KEY": "k"}),
+            patch.object(ollama, "_urlopen", return_value=self._listing(["nemotron"])),
+            self.assertRaises(SystemExit),
+        ):
+            ollama.check_providers(log)
+        logged = " ".join(c.args[0] for c in log.call_args_list)
+        self.assertIn("kimi-k3", logged)
+        self.assertNotIn("nemotron (", logged)
+
+
+class TestBuildWithinBudget(unittest.TestCase):
+    """specs/084: the test critic sent 454k tokens to a 262k-token model."""
+
+    def _build(self, sizes):
+        levels = []
+
+        def build(spec_dir, iteration, level):
+            levels.append(level)
+            return "x" * sizes[level]
+
+        return build, levels
+
+    def test_first_level_that_fits_is_used(self):
+        build, levels = self._build([33_000, 20_000, 3_000])
+        prompt = ollama._build_within_budget(
+            "test", build, Path("s"), 1, {"max_prompt_tokens": 1_000}, 2
+        )
+        self.assertEqual(levels, [0, 1, 2])
+        self.assertEqual(len(prompt), 3_000)
+
+    def test_fitting_prompt_is_not_reduced(self):
+        build, levels = self._build([3_000, 1])
+        ollama._build_within_budget("test", build, Path("s"), 1, {}, 1)
+        self.assertEqual(levels, [0])
+
+    def test_max_prompt_tokens_resolves_from_entry(self):
+        raw = {"default": {"provider": "ollama", "model": "m", "max_prompt_tokens": 120000}}
+        self.assertEqual(ollama._resolve_entry(raw, None)["max_prompt_tokens"], 120000)

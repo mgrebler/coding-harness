@@ -1,8 +1,10 @@
 """Critic-loop resume-state and result-file bookkeeping."""
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 # Required top-level keys per summary_style, mirroring the confidence/violations
 # convention shared with critic_loop.py and ollama.py's _log_cli_result. A gate
@@ -19,11 +21,61 @@ class GateSchemaError(Exception):
     """A gate result file is missing key(s) required for its summary_style."""
 
 
-def validate_gate_schema(result: dict, summary_style: str) -> None:
-    """Raise GateSchemaError if result is missing keys required for summary_style."""
+# Claude-written results drifted to these keys (specs/002, 003), which left
+# FOLLOWUP entries reading "(untitled concern) (unspecified severity)".
+_ITEM_KEY_ALIASES = {
+    "title": ("summary", "issue"),
+    "finding": ("detail", "issue", "summary"),
+}
+_FINDING_LISTS = ("violations", "blocking_issues", "non_blocking_concerns")
+
+
+def _normalize_item(item: dict) -> None:
+    for key, aliases in _ITEM_KEY_ALIASES.items():
+        alias = next((a for a in aliases if item.get(a)), None)
+        if not item.get(key) and alias:
+            item[key] = item[alias]
+    if not item.get("location") and item.get("file"):
+        item["location"] = f"{item['file']}:{item['line']}" if item.get("line") else item["file"]
+
+
+def _status_rule_breach(result: dict, summary_style: str) -> str | None:
+    """Why a PASS contradicts its own findings under the documented rule, or None."""
+    if summary_style == "violations":
+        if any(
+            isinstance(v, dict) and v.get("severity") == "BLOCKING" for v in result["violations"]
+        ):
+            return "PASS with BLOCKING violation(s)"
+        return None
+    severities = [i.get("severity") for i in result["blocking_issues"] if isinstance(i, dict)]
+    if "Critical" in severities:
+        return "PASS with a Critical blocking issue"
+    if severities.count("High") > 2:
+        return "PASS with more than 2 High blocking issues"
+    if (result.get("confidence") or 0) < 7:
+        return "PASS with confidence below 7"
+    return None
+
+
+def normalize_result(result: dict, summary_style: str) -> bool:
+    """Validate a gate result in place and make it self-consistent, for local
+    and Claude critics alike. Raises GateSchemaError if required keys are
+    missing. Maps drifted finding keys onto title/finding/location, and turns a
+    PASS that breaks the documented status rule (any BLOCKING violation; any
+    Critical, more than 2 High, or confidence < 7) into FAIL — specs/083 had a
+    critic PASS its own High finding. Returns True if anything changed."""
     missing = sorted(_REQUIRED_KEYS[summary_style] - result.keys())
     if missing:
         raise GateSchemaError(f"missing required key(s) {missing}")
+    before = json.dumps(result, sort_keys=True)
+    for key in _FINDING_LISTS:
+        for item in result.get(key) or []:
+            if isinstance(item, dict):
+                _normalize_item(item)
+    if result.get("status") == "PASS" and (breach := _status_rule_breach(result, summary_style)):
+        result["status"] = "FAIL"
+        result["harness_note"] = f"status changed from PASS to FAIL by the harness: {breach}"
+    return json.dumps(result, sort_keys=True) != before
 
 
 def next_iteration(spec_dir: Path, result_prefix: str) -> int:
@@ -52,25 +104,29 @@ def read_result(
     spec_dir: Path, result_prefix: str, iteration: int, summary_style: str | None = None
 ) -> dict:
     """
-    Read and parse a gate's result file. If summary_style is given, also validate
-    that the result has the keys required for that style, raising GateSchemaError
-    if not — a missing required key is a harness/subagent bug, not a review
-    verdict, and must never be indistinguishable from one. summary_style=None
-    (the default) skips validation, for callers that don't know/need the shape.
+    Read and parse a gate's result file. If summary_style is given, also
+    normalize it (see normalize_result), writing any correction back so every
+    later reader sees the same verdict — a missing required key raises
+    GateSchemaError: it is a harness/subagent bug, not a review verdict, and
+    must never be indistinguishable from one. summary_style=None (the default)
+    skips this, for callers that don't know/need the shape.
     """
     path = spec_dir / f"{result_prefix}-{iteration}.json"
     result = json.loads(path.read_text(encoding="utf-8"))
-    if summary_style is not None:
-        validate_gate_schema(result, summary_style)
+    if summary_style is not None and normalize_result(result, summary_style):
+        path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
 
 def find_passing_iteration(
     spec_dir: Path,
     result_prefix: str,
-    max_iterations: int = 3,
+    max_iterations: int | None = None,
 ) -> int | None:
-    """Return the first iteration number whose result has status PASS, or None."""
+    """Return the first iteration number whose result has status PASS, or None.
+    max_iterations=None scans every result file on disk."""
+    if max_iterations is None:
+        max_iterations = max_existing_iteration(spec_dir, result_prefix, default=0)
     for i in range(1, max_iterations + 1):
         rp = spec_dir / f"{result_prefix}-{i}.json"
         if rp.exists():
@@ -83,47 +139,97 @@ def find_passing_iteration(
     return None
 
 
-def extend_iterations_if_reviewed(
+class IterationBudget(NamedTuple):
+    """How many critic iterations a stage may run, and what a human escalation
+    review (if one was just consumed) says to do with the first new one.
+
+    grant_size: iterations a future escalation review will add.
+    human_guidance: the review's text, to be handed to the fix agent as an
+        authoritative instruction (None when no fresh review was consumed).
+    resolved_externally: the review declared the human already made the fix
+        (FIXED_BY_HUMAN_MARKER), so the fix agent is skipped for one iteration.
+    """
+
+    max_iterations: int
+    grant_size: int
+    human_guidance: str | None = None
+    resolved_externally: bool = False
+
+
+FIXED_BY_HUMAN_MARKER = "Resolution: fixed-by-human"
+
+# A consumed review is renamed so a later resume (e.g. after a session-limit
+# pause inside the extended range) can't re-apply it as a fresh grant — the
+# ceiling it granted is recorded in the name instead.
+_CONSUMED_RE = re.compile(r"-consumed-to-(\d+)\.md$")
+
+
+def _granted_ceiling(spec_dir: Path, review_filename: str) -> int:
+    stem = review_filename.removesuffix(".md")
+    return max(
+        (
+            int(m.group(1))
+            for p in spec_dir.glob(f"{stem}-consumed-to-*.md")
+            if (m := _CONSUMED_RE.search(p.name))
+        ),
+        default=0,
+    )
+
+
+def apply_escalation_review(
     spec_dir: Path,
     review_filename: str,
     primary_result_prefix: str,
     max_iterations: int,
     log_fn=None,
-) -> tuple[int, bool]:
+) -> IterationBudget:
     """
-    Check for a human escalation review file. If it exists and the primary
-    critic loop has already exhausted its current ceiling, extend the limit by
-    max_iterations more and return (new_max, True). Otherwise return
-    (current_ceiling, False).
+    Resolve a stage's iteration budget, consuming a fresh human escalation
+    review if the loop has exhausted its current ceiling.
 
-    The current ceiling is computed from the highest iteration number actually
-    on disk (max_existing_iteration), not recomputed from the max_iterations
-    argument alone — otherwise a second (or later) escalation-review grant would
-    recompute the same fixed ceiling as the first one, which is a silent no-op
-    whenever real progress already exceeds it.
-
-    The boolean signals that violations were resolved externally — callers
-    should skip the fix agent for the first new iteration.
+    The ceiling is the highest one any previously consumed review granted (or
+    max_iterations if none). A review file present while the loop still has
+    budget left is left in place untouched. Consuming a review extends the
+    ceiling by max_iterations, renames the file to
+    <review>-consumed-to-<ceiling>.md, and returns its text as human_guidance
+    for the fix agent — unless the review contains FIXED_BY_HUMAN_MARKER, in
+    which case the fix agent is skipped instead.
 
     Call this BEFORE the resume guard so find_passing_iteration covers any
     extended iteration range.
     """
+    ceiling = max(max_iterations, _granted_ceiling(spec_dir, review_filename))
     review_path = spec_dir / review_filename
-    if not review_path.exists():
-        return max_iterations, False
-    current_ceiling = max_existing_iteration(
-        spec_dir, primary_result_prefix, default=max_iterations
-    )
-    if next_iteration(spec_dir, primary_result_prefix) <= current_ceiling:
-        return current_ceiling, False
+    if not review_path.exists() or next_iteration(spec_dir, primary_result_prefix) <= ceiling:
+        return IterationBudget(ceiling, max_iterations)
     _log = log_fn or print
-    review_text = review_path.read_text(encoding="utf-8")
-    new_ceiling = current_ceiling + max_iterations
+    review_text = review_path.read_text(encoding="utf-8").strip()
+    new_ceiling = max(ceiling, max_existing_iteration(spec_dir, primary_result_prefix)) + (
+        max_iterations
+    )
+    stem = review_filename.removesuffix(".md")
+    review_path.rename(spec_dir / f"{stem}-consumed-to-{new_ceiling}.md")
     _log(
         f"Human escalation review found ({review_filename}) — extending iteration limit to {new_ceiling}."
     )
-    _log(f"Review:\n{review_text.strip()}")
-    return new_ceiling, True
+    _log(f"Review:\n{review_text}")
+    if FIXED_BY_HUMAN_MARKER in review_text:
+        return IterationBudget(new_ceiling, max_iterations, resolved_externally=True)
+    return IterationBudget(new_ceiling, max_iterations, human_guidance=review_text)
+
+
+def human_guidance_violation(review_text: str) -> dict:
+    """Wrap a human escalation review as a pending violation, so it reaches the
+    fix agent through the same violations list every stage already passes it."""
+    return {
+        "rule": "Human escalation review",
+        "title": "Human escalation review",
+        "severity": "BLOCKING",
+        "location": "escalation review",
+        "finding": review_text,
+        "fix": "Apply the human's guidance above. It is authoritative and overrides any "
+        "conflicting critic finding.",
+    }
 
 
 def load_prior_violations(

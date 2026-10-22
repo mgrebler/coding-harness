@@ -169,6 +169,7 @@ manage_gitignore() {
 # .claude/agents/agent_common/ — fully harness-owned package, no project customisation expected inside
 .claude/agents/agent_common/
 .claude/agents/ch_*.py
+.claude/agents/__pycache__/
 .claude/agents/semble-search.md
 
 # .claude/skills — harness-owned skill dirs, matched by naming convention so new
@@ -305,4 +306,10 @@ if [[ "$DRY_RUN" == "false" && -f "$TARGET_DIR/.devcontainer/Dockerfile" ]] \
   log "  4. .devcontainer/Dockerfile is now a project-owned template (FROM ghcr.io/.../coding-harness-base)"
   log "     instead of a harness-managed file. Your existing Dockerfile predates this change and is no"
   log "     longer gitignored — replace it with the new template or 'git add' your customised version."
+fi
+
+if [[ "$DRY_RUN" == "false" ]] \
+   && [[ -n "$(git -C "$TARGET_DIR" ls-files .claude/agents/__pycache__ 2>/dev/null)" ]]; then
+  log "  5. .claude/agents/__pycache__/ is now gitignored, but this project already tracks files in it."
+  log "     Untrack them once: git rm -r --cached .claude/agents/__pycache__ && git commit -m \"Untrack harness bytecode\""
 fi
