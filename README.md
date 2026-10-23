@@ -547,14 +547,21 @@ generation-only, since they configure the tool-calling loop itself rather
 than the model call:
 
 - **`max_turns`** — the round budget (one model turn + its tool calls) before
-  the loop gives up and raises an error, treated the same as the agent
-  simply not finishing (the calling `ch-N-*-auto` stage already checks for
-  the expected artifact on disk after generation and aborts if it's
-  missing). Defaults to 40.
+  the loop gives up. That counts as a local failure (see below). Defaults to 40.
 - **`command_timeout_s`** — per-`Bash`-call timeout in seconds (default 120).
 - **`output_max_bytes`** — caps how much of a single `Bash` call's output is
   fed back to the model, tail-biased since the actionable failure is
   usually at the end (default ~200KB).
+
+If local generation fails, the stage doesn't stop. A failure is an
+unreachable or erroring backend after the transport's retries, a context
+overflow, or running out of `max_turns`. The harness logs a `WARNING` naming
+the model and the error, then re-runs that same call on Claude (the stage's
+`generation` Claude model if one is configured, otherwise the session
+default). Claude picks up from whatever the local model already wrote to
+disk. That stage stays on Claude for the rest of the run, so later revision
+and fix calls don't wait out a dead backend again. Other stages keep their
+own backends. A new run (including a resume) tries the local model again.
 
 A local/hosted model generating a stage doesn't change anything about how
 that stage is *reviewed* — the corresponding critic (local, hosted, or
