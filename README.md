@@ -655,7 +655,15 @@ To set up push:
 
 1. Pick an unguessable topic name, for example `claude-$(openssl rand -hex 8)`. Anyone who knows the name can read and post to it.
 2. Subscribe to it in the ntfy app or at `https://ntfy.sh/<topic>`.
-3. Set `NTFY_TOPIC=<topic>` in your host shell or in the project's gitignored `.env`. `docker-compose.yml` passes it into the container. Set `NTFY_SERVER` too if you self-host ntfy. Projects installed before this feature don't have those lines in their `docker-compose.yml`, so `install.sh` reminds you to add them.
+3. Add the topic to the `env` block of your personal `~/.claude/settings.json`. Add `NTFY_SERVER` there too if you self-host ntfy:
+
+   ```json
+   { "env": { "NTFY_TOPIC": "<topic>" } }
+   ```
+
+   The dev container mounts `~/.claude` from your host, so this one setting covers every project, with nothing to add per repo and nothing committed. Restart any open Claude Code sessions to pick it up.
+
+   Alternatively, set the topic for a single project: put `NTFY_TOPIC=<topic>` in that project's gitignored `.env` or your host shell. The project's `docker-compose.yml` passes `NTFY_TOPIC`/`NTFY_SERVER` into the container. `examples/docker-compose.yml` already has those lines, but projects installed earlier need them added by hand.
 
 The push contains only the project name and Claude's one-line notification text, such as "coding-harness: Claude needs your permission to use Bash". The project name comes from the repo's `origin` remote, because every dev container mounts its project at `/workspace` and the folder name can't tell sessions apart. It never includes code or conversation content. The unattended `ch-*-auto` pipelines run Claude without loading project settings (`setting_sources=[]`), so they never trigger these hooks.
 

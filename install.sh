@@ -335,9 +335,3 @@ if [[ "$DRY_RUN" == "false" ]] \
   log "  5. .claude/agents/__pycache__/ is now gitignored, but this project already tracks files in it."
   log "     Untrack them once: git rm -r --cached .claude/agents/__pycache__ && git commit -m \"Untrack harness bytecode\""
 fi
-
-if [[ "$DRY_RUN" == "false" && -f "$TARGET_DIR/docker-compose.yml" ]] \
-   && ! grep -q "NTFY_TOPIC" "$TARGET_DIR/docker-compose.yml"; then
-  log "  6. For phone/desktop pushes when Claude is waiting, pass NTFY_TOPIC and NTFY_SERVER into the"
-  log "     dev container: add them to docker-compose.yml's environment (see examples/docker-compose.yml)."
-fi
