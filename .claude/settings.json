@@ -1,0 +1,42 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify.py\" ] || python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify.py\" bell",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify.py\" ] || python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify.py\" push",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify.py\" ] || python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify.py\" bell",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify.py\" ] || python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify.py\" push",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -17,7 +17,7 @@
 #
 # Behaviour:
 #   ALWAYS OVERWRITES (harness-managed — no project customisation):
-#     .claude/agents/, .claude/skills/
+#     .claude/agents/, .claude/skills/, .claude/hooks/notify.py
 #     .specify/extensions/, .specify/scripts/, .specify/templates/, .specify/workflows/
 #     .specify/extensions.yml
 #
@@ -38,6 +38,7 @@
 #   MANAGED SECTION REFRESHED EVERY RUN (rest of the file stays project-owned):
 #     .gitignore
 #     CLAUDE.md
+#     .claude/settings.json — only notify.py's hook entries; other keys and hooks kept
 #
 #   NEVER TOUCHED BY THIS SCRIPT (agent-maintained, continuously updated by the
 #   pipeline itself — not copied, not seeded, not gitignored; created and
@@ -177,6 +178,9 @@ manage_gitignore() {
 .claude/skills/ch-*/
 .claude/skills/speckit-*/
 
+# .claude/hooks — only the harness's own hook script; project hooks stay tracked
+.claude/hooks/notify.py
+
 # .specify subdirs and files — fully harness-owned, no project files expected here
 .specify/extensions/
 .specify/extensions.yml
@@ -224,6 +228,22 @@ CLAUDEMD
   log "  UPDATE CLAUDE.md: coding-harness-managed section"
 }
 
+# Merge the "Claude is waiting" notification hooks into the project's
+# .claude/settings.json, keeping every other setting and hook it has.
+merge_notification_hooks() {
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "  MERGE .claude/settings.json: notification hooks"
+    return
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    log "  SKIP .claude/settings.json: python3 not found, notification hooks not merged"
+    return
+  fi
+
+  log "  $(python3 "$SOURCE_DIR/.claude/hooks/notify.py" install "$TARGET_DIR/.claude/settings.json")"
+}
+
 # Copy a file from examples/, but only if it doesn't already exist in the target.
 init_copy() {
   local src="$SOURCE_DIR/examples/$1"
@@ -257,6 +277,7 @@ log "==> Harness-managed files (always overwritten)"
 
 always_copy ".claude/agents"
 always_copy ".claude/skills"
+always_copy ".claude/hooks/notify.py"
 always_copy ".specify/extensions"
 always_copy ".specify/extensions.yml"
 always_copy ".specify/scripts"
@@ -264,6 +285,7 @@ always_copy ".specify/templates"
 always_copy ".specify/workflows"
 
 manage_gitignore
+merge_notification_hooks
 
 # ---------------------------------------------------------------------------
 # Project-initialised files (only written if absent)

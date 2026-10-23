@@ -638,6 +638,42 @@ ruff format .
 
 ---
 
+## Notifications When Claude Is Waiting
+
+The hooks in `.claude/settings.json` (via `.claude/hooks/notify.py`) tell you when Claude is waiting on you. They run in this repo and in every installed project. `install.sh` copies `notify.py` as a harness-managed file and merges the hooks into the project's own `.claude/settings.json`. Re-running it replaces only those hook entries, leaving every other setting and hook alone. If the file isn't valid JSON (for example, it has comments), `install.sh` leaves it untouched and says so.
+
+| When | What you get |
+|---|---|
+| Claude finishes a turn | terminal bell |
+| Claude needs a permission | terminal bell |
+| Claude finishes a turn, or a permission prompt has waited about 6s while you weren't typing | push notification via [ntfy](https://ntfy.sh), if configured |
+
+**Terminal bell.** It is on by default. Claude Code emits the BEL on its own terminal, so it reaches your host terminal through the container. Enable bells (sound, tab badge, or urgency hint) in your terminal profile to notice it.
+
+To turn the bell off for yourself, set `CLAUDE_NOTIFY_BELL` to `0` without touching the committed settings. Add it either to `.claude/settings.local.json` (this repo only, gitignored) or to `~/.claude/settings.json` (every repo):
+
+```json
+{ "env": { "CLAUDE_NOTIFY_BELL": "0" } }
+```
+
+**Phone/desktop push** needs a topic, since ntfy has nowhere to send it otherwise. Once `NTFY_TOPIC` is set, every push above is on by default. To only be pushed for permission prompts, plus a finished turn left unanswered for 60s, set `CLAUDE_NOTIFY_PUSH_ON_STOP` to `0` the same way as the bell.
+
+To set up push:
+
+1. Pick an unguessable topic name, for example `claude-$(openssl rand -hex 8)`. Anyone who knows the name can read and post to it.
+2. Subscribe to it in the ntfy app or at `https://ntfy.sh/<topic>`.
+3. Add the topic to the `env` block of your personal `~/.claude/settings.json`. Add `NTFY_SERVER` there too if you self-host ntfy:
+
+   ```json
+   { "env": { "NTFY_TOPIC": "<topic>" } }
+   ```
+
+   The dev container mounts `~/.claude` from your host, so this one setting covers every project, with nothing to add per repo and nothing committed. Restart any open Claude Code sessions to pick it up.
+
+   Alternatively, set the topic for a single project: put `NTFY_TOPIC=<topic>` in that project's gitignored `.env` or your host shell. The project's `docker-compose.yml` passes `NTFY_TOPIC`/`NTFY_SERVER` into the container. `examples/docker-compose.yml` already has those lines, but projects installed earlier need them added by hand.
+
+The push contains only the project name and Claude's one-line notification text, such as "coding-harness: Claude needs your permission to use Bash". The project name comes from the repo's `origin` remote, because every dev container mounts its project at `/workspace` and the folder name can't tell sessions apart. It never includes code or conversation content. The unattended `ch-*-auto` pipelines run Claude without loading project settings (`setting_sources=[]`), so they never trigger these hooks.
+
 ## What This Repo Contains
 
 The `speckit-*` skills (including the `speckit-git-*` git extension) and the five templates in `.specify/templates/` come from upstream [SpecKit](https://github.com/github/spec-kit). Everything else — the `ch-*` skills and agents, the critic loop pattern, the principle docs beyond `constitution.md` (`architecture.md`, `architecture-principles.md`, `code-quality-principles.md`, `test-principles.md`, `documentation-principles.md`, `product-context.md`), and the `docs/` output of the documentation stage — is coding-harness's own addition.
