@@ -170,7 +170,6 @@ manage_gitignore() {
 # .claude/agents/agent_common/ — fully harness-owned package, no project customisation expected inside
 .claude/agents/agent_common/
 .claude/agents/ch_*.py
-.claude/agents/__pycache__/
 .claude/agents/semble-search.md
 
 # .claude/skills — harness-owned skill dirs, matched by naming convention so new

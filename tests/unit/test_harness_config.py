@@ -164,5 +164,5 @@ class TestInstalledGitignore(unittest.TestCase):
                 check=True,
             )
 
-            self.assertIn(".claude/agents/__pycache__/", (target / ".gitignore").read_text())
+            self.assertIn("\n__pycache__/\n", (target / ".gitignore").read_text())
             self.assertIn("git rm -r --cached .claude/agents/__pycache__", result.stdout)
