@@ -49,10 +49,14 @@ class LocalAgentError(Exception):
     """Raised when the local agentic loop exhausts its turn budget
     (max_turns) without the model stopping on its own — i.e. without a turn
     that returns no tool_calls, and without tripping the no-progress circuit
-    breaker (see _DEFAULT_NO_PROGRESS_TURNS) either. Callers don't need to
-    catch this specially: every *-auto.py generation call site already
-    checks for its expected artifact on disk immediately after generation
-    and exits(1) if it's missing, which is the correct behavior here too."""
+    breaker (see _DEFAULT_NO_PROGRESS_TURNS) either. run_generation treats it
+    like any other local failure and falls back to Claude."""
+
+
+# Stages whose local model already failed in this process. The transport has
+# retried by the time a failure surfaces, so retrying the same backend on every
+# later revision/fix call would only re-pay those timeouts before each fallback.
+_local_generation_failed: set[str] = set()
 
 
 def _build_sandbox(config: dict) -> local_tools.BashSandboxConfig:
@@ -190,19 +194,35 @@ async def run_generation(
     stage. One config per stage covers every agent role for that stage
     (initial generation, revision, fix, CI-fix all call this the same way).
 
+    If the local loop fails, the same call is re-run on Claude, which picks up
+    from whatever the local model left on disk, and the stage stays on Claude
+    for the rest of this process.
+
     claude_fallback: 1-arg callable (the resolved Claude model, or None to
     inherit the invoking session's default) returning the async iterator of
     SDK messages, e.g. `lambda model: query(prompt=..., options=driving_agent_options(..., model=model))`.
-    Only invoked when no local generation config resolves for `stage`.
+    Invoked when no local generation config resolves for `stage`, or the local
+    loop failed.
     """
     protected_before = _protected_file_digests()
     config = ollama.load_local_llm_generation_config(stage)
+    if config is not None and stage in _local_generation_failed:
+        log(f"Local LLM failed earlier for {stage} generation — using Claude.")
+        config = None
+    if config is not None:
+        log(f"Using local LLM ({config['model']}) for {stage} generation...")
+        try:
+            await run_local_agent_loop(log, system_prompt, user_prompt, config)
+        except Exception as e:
+            log(
+                f"WARNING: local LLM ({config['model']}) failed for {stage} generation: {e} "
+                "— falling back to Claude for the rest of this run."
+            )
+            _local_generation_failed.add(stage)
+            config = None
     if config is None:
         claude_model = ollama.load_claude_generation_model(stage)
         await console.stream_query(claude_fallback(claude_model))
-    else:
-        log(f"Using local LLM ({config['model']}) for {stage} generation...")
-        await run_local_agent_loop(log, system_prompt, user_prompt, config)
     _halt_if_protected_files_touched(log, protected_before)
 
 

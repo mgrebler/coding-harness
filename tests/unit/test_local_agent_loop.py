@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
 from agent_common import local_agent_loop, local_tools
@@ -205,6 +205,10 @@ class TestRunLocalAgentLoop(unittest.IsolatedAsyncioTestCase):
 
 
 class TestRunGeneration(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        local_agent_loop._local_generation_failed.clear()
+        self.addCleanup(local_agent_loop._local_generation_failed.clear)
+
     async def test_not_configured_falls_back_to_claude(self):
         log = MagicMock()
         claude_fallback = MagicMock(return_value="claude-query-obj")
@@ -242,6 +246,47 @@ class TestRunGeneration(unittest.IsolatedAsyncioTestCase):
 
         claude_fallback.assert_not_called()
         mock_loop.assert_awaited_once_with(log, "system prompt", "user prompt", config)
+
+    async def test_local_failure_falls_back_to_claude_for_the_rest_of_the_run(self):
+        log = MagicMock()
+        claude_fallback = MagicMock(return_value="claude-query-obj")
+        failing_loop = AsyncMock(side_effect=RuntimeError("HTTP 503 Service Unavailable"))
+
+        with (
+            patch.object(
+                local_agent_loop.ollama,
+                "load_local_llm_generation_config",
+                return_value={"model": "qwen3-coder:30b"},
+            ),
+            patch.object(
+                local_agent_loop.ollama, "load_claude_generation_model", return_value="opus"
+            ),
+            patch.object(local_agent_loop, "run_local_agent_loop", new=failing_loop),
+            patch.object(local_agent_loop.console, "stream_query", new=AsyncMock()) as mock_stream,
+        ):
+            await local_agent_loop.run_generation(log, "plan", claude_fallback, "s", "u")
+            await local_agent_loop.run_generation(log, "plan", claude_fallback, "s", "u")
+
+        failing_loop.assert_awaited_once()
+        self.assertEqual(claude_fallback.call_args_list, [call("opus")] * 2)
+        self.assertEqual(mock_stream.await_count, 2)
+        self.assertIn("HTTP 503", log.call_args_list[1].args[0])
+
+    async def test_local_failure_in_one_stage_leaves_other_stages_local(self):
+        local_agent_loop._local_generation_failed.add("plan")
+        local_loop = AsyncMock(return_value="ok")
+
+        with (
+            patch.object(
+                local_agent_loop.ollama,
+                "load_local_llm_generation_config",
+                return_value={"model": "qwen3-coder:30b"},
+            ),
+            patch.object(local_agent_loop, "run_local_agent_loop", new=local_loop),
+        ):
+            await local_agent_loop.run_generation(MagicMock(), "tasks", MagicMock(), "s", "u")
+
+        local_loop.assert_awaited_once()
 
 
 class TestRunGenerationEscalationFileGuard(unittest.IsolatedAsyncioTestCase):
