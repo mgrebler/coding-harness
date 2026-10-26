@@ -65,9 +65,4 @@ Browser → Frontend (React/Vite) → Backend (Hono/Node) → Database (PostgreS
 
 ## Architectural Decision Log
 
-<!-- Record significant architectural decisions in reverse chronological order.
-     This supplements the constitution's decision records with more technical detail. -->
-
-| Date | Decision | Rationale |
-|---|---|---|
-| [DATE] | Initial architecture established | Project setup |
+Significant architectural decisions are recorded in `.specify/memory/architecture-decision-log.md`, in reverse chronological order. The log lives outside this document because the Plan Agent reads the full `architecture.md` before every `plan.md`.
