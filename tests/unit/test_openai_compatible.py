@@ -43,7 +43,7 @@ class TestBuildRequest(unittest.TestCase):
         self.assertEqual(req.get_header("Authorization"), "Bearer nvapi-secret")
         self.assertEqual(req.full_url, "https://integrate.api.nvidia.com/v1/chat/completions")
 
-    def test_response_format_forced_regardless_of_config(self):
+    def test_response_format_json_object_by_default(self):
         config = {
             "model": "moonshotai/kimi-k2.6",
             "base_url": "https://integrate.api.nvidia.com/v1",
@@ -55,6 +55,20 @@ class TestBuildRequest(unittest.TestCase):
         body = json.loads(req.data)
         self.assertEqual(body["response_format"], {"type": "json_object"})
         self.assertTrue(body["stream"])
+
+    def test_json_mode_false_omits_response_format(self):
+        """poolside/laguna-xs-2.1 on NVIDIA answers a bare "{}" under
+        json_object but valid JSON without it."""
+        config = {
+            "model": "poolside/laguna-xs-2.1",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key_env": "NVIDIA_API_KEY",
+            "json_mode": False,
+        }
+        with patch.dict("os.environ", {"NVIDIA_API_KEY": "nvapi-secret"}, clear=True):
+            req = openai_compatible._build_request("hello", config)
+
+        self.assertNotIn("response_format", json.loads(req.data))
 
     def test_temperature_and_max_tokens_passthrough(self):
         config = {
@@ -334,6 +348,66 @@ class TestUrlopenWithRetry(unittest.TestCase):
             result = openai_compatible._urlopen_with_retry(MagicMock())
         self.assertIs(result, fake_resp)
         mock_sleep.assert_called_once()
+
+
+class TestStreamChatResponseInStreamError(unittest.TestCase):
+    _OVERLOADED = (
+        'data: {"error":{"message":"ResourceExhausted: Worker local total request '
+        'limit reached (112/32)","type":"internal_server_error","code":500}}'
+    )
+
+    def test_retryable_error_chunk_resends_request(self):
+        ok = ['data: {"choices": [{"delta": {"content": "{}"}}]}', "data: [DONE]"]
+        with (
+            patch.object(
+                openai_compatible.urllib.request,
+                "urlopen",
+                side_effect=[_sse_response([self._OVERLOADED]), _sse_response(ok)],
+            ),
+            patch.object(openai_compatible.time, "sleep") as mock_sleep,
+        ):
+            result = openai_compatible._stream_chat_response(MagicMock())
+
+        self.assertEqual(result, "{}")
+        self.assertEqual(mock_sleep.call_count, 1)
+
+    def test_retryable_error_chunk_raises_after_exhausting_retries(self):
+        responses = [_sse_response([self._OVERLOADED]) for _ in range(10)]
+        with (
+            patch.object(openai_compatible.urllib.request, "urlopen", side_effect=responses),
+            patch.object(openai_compatible.time, "sleep") as mock_sleep,
+            self.assertRaises(openai_compatible.StreamError) as ctx,
+        ):
+            openai_compatible._stream_chat_response(MagicMock())
+
+        self.assertIn("ResourceExhausted", str(ctx.exception))
+        self.assertEqual(mock_sleep.call_count, openai_compatible._MAX_RETRIES)
+
+    def test_non_retryable_error_chunk_raises_without_retry(self):
+        lines = ['data: {"error": {"message": "model not found", "code": 404}}']
+        with (
+            patch.object(
+                openai_compatible.urllib.request, "urlopen", return_value=_sse_response(lines)
+            ),
+            patch.object(openai_compatible.time, "sleep") as mock_sleep,
+            self.assertRaises(openai_compatible.StreamError),
+        ):
+            openai_compatible._stream_chat_response(MagicMock())
+
+        mock_sleep.assert_not_called()
+
+    def test_string_error_chunk_raises_without_retry(self):
+        lines = ['data: {"error": "something broke"}']
+        with (
+            patch.object(
+                openai_compatible.urllib.request, "urlopen", return_value=_sse_response(lines)
+            ),
+            patch.object(openai_compatible.time, "sleep") as mock_sleep,
+            self.assertRaises(openai_compatible.StreamError),
+        ):
+            openai_compatible._stream_chat_response(MagicMock())
+
+        mock_sleep.assert_not_called()
 
 
 class TestStreamChatResponseHttpError(unittest.TestCase):

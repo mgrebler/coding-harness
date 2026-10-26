@@ -352,7 +352,7 @@ once:
 
 Each list entry supports every field a single-critic config does (`provider`,
 `model`, `base_url`/`api_key_env`, `num_ctx`, `max_ctx`, `keep_alive`,
-`num_gpu`, `num_predict`, `temperature`), resolved exactly like a single
+`num_gpu`, `num_predict`, `temperature`, `json_mode`), resolved exactly like a single
 non-list entry (used as-is, no merge with `default`), and requires a unique
 `id` string (a missing or duplicate `id` fails fast at config-load time
 rather than mid-run). A list with only one entry behaves identically to the
@@ -445,6 +445,13 @@ are never dropped. Give each multi-critic phase at least one large-context
 model so a gate keeps a working critic on a very large feature. A
 context-overflow response from a hosted API is reported as such and is not
 retried.
+
+`json_mode` (any provider; per entry or top level, default `true`) controls
+whether critic calls switch on the provider's JSON mode (`response_format:
+json_object` / Ollama `format: "json"`). Set it to `false` for a model whose
+JSON mode is broken. For example, `poolside/laguna-xs-2.1` on NVIDIA answers
+every critic prompt with a bare `{}` when JSON mode is on, but follows the
+prompt's JSON instructions correctly when it's off.
 
 For example, Ollama by default with the `test` critic overridden to run
 against NVIDIA instead:

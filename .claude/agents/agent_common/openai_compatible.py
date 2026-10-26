@@ -55,23 +55,55 @@ def _retry_delay_s(attempt: int, retry_after: str | None) -> float:
     return min(_BASE_DELAY_S * (2**attempt), _MAX_DELAY_S)
 
 
-def _urlopen_with_retry(req: urllib.request.Request, timeout: int = 300):
-    """urlopen with retry/backoff on transient HTTP errors (429, 5xx) and on
-    transient network failures (read timeouts, dropped connections, DNS
-    blips). The latter aren't HTTP responses at all — they surface as
+class StreamError(RuntimeError):
+    """An error the provider reported as an SSE data chunk inside an HTTP 200
+    stream rather than as an HTTP status — e.g. NVIDIA's `{"error": {"message":
+    "ResourceExhausted: Worker local total request limit reached", "code":
+    500}}` for poolside/laguna-xs-2.1, which previously parsed as an empty
+    response and failed the critic."""
+
+    def __init__(self, code, message: str):
+        super().__init__(f"provider error {code} mid-stream: {message}")
+        self.code = code
+
+    @property
+    def retryable(self) -> bool:
+        try:
+            return int(self.code) in _RETRYABLE_STATUS
+        except (TypeError, ValueError):
+            return False
+
+
+def _call_with_retry(attempt_fn):
+    """Run attempt_fn() with retry/backoff on transient HTTP errors (429, 5xx),
+    on the same statuses reported mid-stream (StreamError), and on transient
+    network failures (read timeouts, dropped connections, DNS blips). The
+    network failures aren't HTTP responses at all — they surface as
     TimeoutError/URLError — so they're handled in a separate except clause
     from HTTPError (a URLError subclass) and always retried, unlike HTTPError
-    where only specific status codes are worth retrying."""
+    where only specific status codes are worth retrying. attempt_fn must
+    consume a streamed body itself, so a mid-stream error re-sends the whole
+    request."""
     timeouts = 0
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            return urllib.request.urlopen(req, timeout=timeout)  # noqa: S310 — see _build_request
+            return attempt_fn()
         except urllib.error.HTTPError as e:
             if e.code not in _RETRYABLE_STATUS or attempt == _MAX_RETRIES:
                 raise
             delay = _retry_delay_s(attempt, e.headers.get("Retry-After"))
             print(
                 f"[openai-compatible] HTTP {e.code} {e.reason} — retrying in "
+                f"{delay:.0f}s (attempt {attempt + 1}/{_MAX_RETRIES})",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+        except StreamError as e:
+            if not e.retryable or attempt == _MAX_RETRIES:
+                raise
+            delay = _retry_delay_s(attempt, None)
+            print(
+                f"[openai-compatible] {e} — retrying in "
                 f"{delay:.0f}s (attempt {attempt + 1}/{_MAX_RETRIES})",
                 file=sys.stderr,
             )
@@ -88,6 +120,10 @@ def _urlopen_with_retry(req: urllib.request.Request, timeout: int = 300):
             )
             time.sleep(delay)
     raise RuntimeError("unreachable: retry loop exited without returning or raising")
+
+
+def _urlopen_with_retry(req: urllib.request.Request, timeout: int = 300):
+    return _call_with_retry(lambda: urllib.request.urlopen(req, timeout=timeout))  # noqa: S310 — see _build_request
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -117,9 +153,10 @@ def _load_dotenv(path: str = ".env") -> None:
 
 
 def _build_request(prompt: str, config: dict) -> urllib.request.Request:
-    """Build the /chat/completions streaming request. response_format is forced
-    to json_object (rather than Ollama's format="json") since that's the field
-    this wire protocol uses for the same "raw JSON out" guarantee."""
+    """Build the /chat/completions streaming request. response_format is
+    json_object (rather than Ollama's format="json") since that's the field
+    this wire protocol uses for the same "raw JSON out" guarantee — on unless
+    the entry sets json_mode: false."""
     _load_dotenv()
     api_key_env = config["api_key_env"]
     api_key = os.environ.get(api_key_env)
@@ -134,9 +171,10 @@ def _build_request(prompt: str, config: dict) -> urllib.request.Request:
         "model": config["model"],
         "messages": [{"role": "user", "content": prompt}],
         "stream": True,
-        "response_format": {"type": "json_object"},
         "temperature": config.get("temperature", 0.1),
     }
+    if config.get("json_mode", True):
+        body["response_format"] = {"type": "json_object"}
     if config.get("num_predict"):
         body["max_tokens"] = config["num_predict"]
     payload = json.dumps(body).encode("utf-8")
@@ -162,11 +200,17 @@ class ContextOverflowError(RuntimeError):
 def _parse_sse_chunk(data: str) -> tuple[str, str, bool, int | None] | None:
     """Parse one SSE data line's JSON chunk into (content, reasoning,
     is_truncated, completion_tokens), or None if it is malformed or a
-    keep-alive with neither choices nor usage."""
+    keep-alive with neither choices nor usage. Raises StreamError for an
+    in-stream error chunk."""
     try:
         chunk = json.loads(data)
     except json.JSONDecodeError:
         return None
+    error = chunk.get("error")
+    if error:
+        if isinstance(error, dict):
+            raise StreamError(error.get("code"), error.get("message", ""))
+        raise StreamError(None, str(error))
     usage = (chunk.get("usage") or {}).get("completion_tokens")
     choices = chunk.get("choices")
     if not choices:
@@ -201,15 +245,15 @@ def _stream_chat_response(
 ) -> str:
     """Consume an SSE /chat/completions response, invoking progress_fn(token_count,
     elapsed_s) every progress_interval content chunks for logging heartbeats."""
-    content_parts = []
-    reasoning_parts = []
-    chunk_count = 0
-    reported_tokens = None
     start = time.monotonic()
-    truncated = False
 
-    try:
-        with _urlopen_with_retry(req, timeout=300) as resp:
+    def attempt():
+        content_parts = []
+        reasoning_parts = []
+        chunk_count = 0
+        reported_tokens = None
+        truncated = False
+        with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310 — see _build_request
             for token, reasoning, chunk_truncated, usage in _iter_sse_chunks(resp):
                 truncated = truncated or chunk_truncated
                 reported_tokens = usage or reported_tokens
@@ -219,6 +263,12 @@ def _stream_chat_response(
                     chunk_count += 1
                     if progress_fn and chunk_count % progress_interval == 0:
                         progress_fn(chunk_count, time.monotonic() - start)
+        return content_parts, reasoning_parts, chunk_count, reported_tokens, truncated
+
+    try:
+        content_parts, reasoning_parts, chunk_count, reported_tokens, truncated = _call_with_retry(
+            attempt
+        )
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         if e.code == 400 and "maximum context length" in body:
