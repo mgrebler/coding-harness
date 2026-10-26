@@ -1762,6 +1762,18 @@ class TestParseOllamaChatMessage(unittest.TestCase):
         self.assertIsNone(result["content"])
 
 
+class TestBuildChatRequest(unittest.TestCase):
+    def test_json_format_by_default(self):
+        config = {"ollama_url": "http://localhost:11434", "model": "qwen3:30b"}
+        body = json.loads(ollama._build_chat_request("hi", config).data)
+        self.assertEqual(body["format"], "json")
+
+    def test_json_mode_false_omits_format(self):
+        config = {"ollama_url": "http://localhost:11434", "model": "qwen3:30b", "json_mode": False}
+        body = json.loads(ollama._build_chat_request("hi", config).data)
+        self.assertNotIn("format", body)
+
+
 class TestBuildChatTurnRequest(unittest.TestCase):
     def test_never_forces_json_format(self):
         config = {"ollama_url": "http://localhost:11434", "model": "qwen3:30b"}
@@ -1950,6 +1962,14 @@ class TestBuildWithinBudget(unittest.TestCase):
         build, levels = self._build([3_000, 1])
         ollama._build_within_budget("test", build, Path("s"), 1, {}, 1)
         self.assertEqual(levels, [0])
+
+    def test_json_mode_resolves_from_entry_else_top_level(self):
+        entry = {"provider": "ollama", "model": "m", "json_mode": False}
+        self.assertIs(ollama._resolve_entry({}, entry)["json_mode"], False)
+        raw = {"json_mode": False, "default": {"provider": "ollama", "model": "m"}}
+        self.assertIs(ollama._resolve_entry(raw, None)["json_mode"], False)
+        unset = {"default": {"provider": "ollama", "model": "m"}}
+        self.assertNotIn("json_mode", ollama._resolve_entry(unset, None))
 
     def test_max_prompt_tokens_resolves_from_entry(self):
         raw = {"default": {"provider": "ollama", "model": "m", "max_prompt_tokens": 120000}}

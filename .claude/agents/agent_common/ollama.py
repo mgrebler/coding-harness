@@ -151,6 +151,12 @@ def _resolve_entry(raw: dict, override: str | dict | None) -> dict:
     max_prompt_tokens = entry.get("max_prompt_tokens", raw.get("max_prompt_tokens"))
     if max_prompt_tokens is not None:
         result["max_prompt_tokens"] = int(max_prompt_tokens)
+    # false omits the provider's forced JSON mode — some models answer a bare
+    # "{}" under it (poolside/laguna-xs-2.1 on NVIDIA) but emit valid JSON
+    # from the prompt's instructions alone.
+    json_mode = entry.get("json_mode", raw.get("json_mode"))
+    if json_mode is not None:
+        result["json_mode"] = bool(json_mode)
     # 0.0 = fully deterministic (greedy) — used for reproducible eval runs.
     temperature = entry.get("temperature") if "temperature" in entry else raw.get("temperature")
     if temperature is not None:
@@ -671,9 +677,10 @@ def _build_chat_request(prompt: str, config: dict) -> urllib.request.Request:
         "messages": [{"role": "user", "content": prompt}],
         "stream": True,
         "think": False,
-        "format": "json",
         "options": options,
     }
+    if config.get("json_mode", True):
+        body["format"] = "json"
     if "keep_alive" in config:
         body["keep_alive"] = config["keep_alive"]
     payload = json.dumps(body).encode("utf-8")
