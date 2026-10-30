@@ -163,6 +163,15 @@ class TestInstall(unittest.TestCase):
         self.assertTrue(pipeline_status.install(self.path).startswith("MERGE"))
         self.assertEqual(self._settings()["statusLine"], pipeline_status.STATUS_LINE)
 
+    def test_adds_refresh_interval_to_a_copy_installed_without_one(self):
+        self.path.parent.mkdir()
+        without_refresh = {
+            k: v for k, v in pipeline_status.STATUS_LINE.items() if k != "refreshInterval"
+        }
+        self.path.write_text(json.dumps({"statusLine": without_refresh}))
+        self.assertTrue(pipeline_status.install(self.path).startswith("MERGE"))
+        self.assertIn("refreshInterval", self._settings()["statusLine"])
+
     def test_never_clobbers_a_project_status_line(self):
         self.path.parent.mkdir()
         theirs = {"statusLine": {"type": "command", "command": "~/my-line.sh"}}

@@ -172,6 +172,9 @@ _SCRIPT = ".claude/agents/agent_common/pipeline_status.py"
 STATUS_LINE = {
     "type": "command",
     "command": f'd="${{CLAUDE_PROJECT_DIR:-.}}"; [ ! -f "$d/{_SCRIPT}" ] || python3 "$d/{_SCRIPT}"',
+    # Claude Code otherwise re-runs the command only on session events (e.g. a
+    # new assistant message), which go quiet while it waits on a pipeline run.
+    "refreshInterval": 5,
 }
 
 
