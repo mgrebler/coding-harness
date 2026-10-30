@@ -38,8 +38,10 @@ class TruncatedResponseError(Exception):
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 5
 # A read timeout re-sends the whole prompt and waits the full timeout again;
-# specs/005-006 lost ~26 minutes per critic to 5 of them in a row.
-_MAX_TIMEOUT_RETRIES = 2
+# specs/005-006 lost ~26 minutes per critic to 5 of them in a row, and a dead
+# gemma-4-31b endpoint in jobtracker 088 still cost ~15 minutes per call at 2.
+# One retry keeps the timeout-then-succeed recovery seen in specs/006.
+_MAX_TIMEOUT_RETRIES = 1
 _BASE_DELAY_S = 2.0
 _MAX_DELAY_S = 60.0
 
@@ -240,30 +242,95 @@ def _iter_sse_chunks(resp):
             yield parsed
 
 
+class _StreamTiming:
+    """Silence measurements for one streamed attempt. The socket read timeout
+    resets on any bytes received, so the longest silence — not total duration —
+    is what a shorter timeout would have to clear; logged so that value can be
+    chosen from observed data rather than guessed."""
+
+    def __init__(self):
+        self.sent = self.last = time.monotonic()
+        self.headers_s: float | None = None
+        self.longest_silence_s = 0.0
+        self.lines = 0
+
+    def _mark(self) -> None:
+        now = time.monotonic()
+        self.longest_silence_s = max(self.longest_silence_s, now - self.last)
+        self.last = now
+
+    def headers_received(self) -> None:
+        self._mark()
+        self.headers_s = self.last - self.sent
+
+    def timed(self, resp):
+        for line in resp:
+            self._mark()
+            self.lines += 1
+            yield line
+
+    def report(self, outcome: str) -> None:
+        total = time.monotonic() - self.sent
+        if self.headers_s is None:
+            detail = "no response headers"
+        else:
+            detail = (
+                f"headers after {self.headers_s:.0f}s, longest silence "
+                f"{self.longest_silence_s:.0f}s across {self.lines} lines"
+            )
+        print(f"[openai-compatible] {outcome} after {total:.0f}s: {detail}", file=sys.stderr)
+
+
+def _read_stream(lines, start: float, progress_fn, progress_interval: int):
+    """Accumulate one attempt's SSE lines into (content_parts, reasoning_parts,
+    content_chunk_count, reported_tokens, truncated), emitting heartbeats."""
+    content_parts = []
+    reasoning_parts = []
+    chunk_count = 0
+    reasoning_count = 0
+    reported_tokens = None
+    truncated = False
+    for token, reasoning, chunk_truncated, usage in _iter_sse_chunks(lines):
+        truncated = truncated or chunk_truncated
+        reported_tokens = usage or reported_tokens
+        reasoning_parts.append(reasoning)
+        if reasoning:
+            reasoning_count += 1
+            if reasoning_count % progress_interval == 0:
+                print(
+                    f"[openai-compatible] reasoning... {reasoning_count} chunks "
+                    f"({time.monotonic() - start:.0f}s elapsed)",
+                    file=sys.stderr,
+                )
+        if token:
+            content_parts.append(token)
+            chunk_count += 1
+            if progress_fn and chunk_count % progress_interval == 0:
+                progress_fn(chunk_count, time.monotonic() - start)
+    return content_parts, reasoning_parts, chunk_count, reported_tokens, truncated
+
+
 def _stream_chat_response(
     req: urllib.request.Request, progress_fn=None, progress_interval: int = 250
 ) -> str:
     """Consume an SSE /chat/completions response, invoking progress_fn(token_count,
-    elapsed_s) every progress_interval content chunks for logging heartbeats."""
+    elapsed_s) every progress_interval content chunks for logging heartbeats.
+    Reasoning chunks get their own heartbeat: a model that streams only
+    reasoning for a long time would otherwise print nothing and trip
+    stream_subprocess's idle watchdog while the socket is still live."""
     start = time.monotonic()
 
     def attempt():
-        content_parts = []
-        reasoning_parts = []
-        chunk_count = 0
-        reported_tokens = None
-        truncated = False
-        with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310 — see _build_request
-            for token, reasoning, chunk_truncated, usage in _iter_sse_chunks(resp):
-                truncated = truncated or chunk_truncated
-                reported_tokens = usage or reported_tokens
-                reasoning_parts.append(reasoning)
-                if token:
-                    content_parts.append(token)
-                    chunk_count += 1
-                    if progress_fn and chunk_count % progress_interval == 0:
-                        progress_fn(chunk_count, time.monotonic() - start)
-        return content_parts, reasoning_parts, chunk_count, reported_tokens, truncated
+        timing = _StreamTiming()
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310 — see _build_request
+                timing.headers_received()
+                result = _read_stream(timing.timed(resp), start, progress_fn, progress_interval)
+        except TimeoutError:
+            timing.report("timed out")
+            raise
+        timing.report("stream complete")
+        return result
 
     try:
         content_parts, reasoning_parts, chunk_count, reported_tokens, truncated = _call_with_retry(
