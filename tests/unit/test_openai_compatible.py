@@ -1,5 +1,6 @@
 """Unit tests for agent_common/openai_compatible.py — network-mocked, no real calls."""
 
+import contextlib
 import io
 import json
 import os
@@ -206,6 +207,131 @@ class TestStreamChatResponse(unittest.TestCase):
         self.assertEqual(done_calls, [(5, True)])
 
 
+class TestStreamChatResponseReasoningHeartbeat(unittest.TestCase):
+    def test_reasoning_only_stream_prints_heartbeat_every_interval(self):
+        lines = ['data: {"choices": [{"delta": {"reasoning_content": "x"}}]}' for _ in range(5)]
+        lines.append("data: [DONE]")
+        stderr = io.StringIO()
+        with (
+            patch.object(
+                openai_compatible.urllib.request, "urlopen", return_value=_sse_response(lines)
+            ),
+            contextlib.redirect_stderr(stderr),
+        ):
+            openai_compatible._stream_chat_response(MagicMock(), progress_interval=2)
+
+        heartbeats = [line for line in stderr.getvalue().splitlines() if "reasoning..." in line]
+        self.assertEqual(len(heartbeats), 2)
+        self.assertIn("4 chunks", heartbeats[1])
+
+
+class _FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _timed_sse_response(clock: _FakeClock, headers_delay: float, timed_lines: list, fail=None):
+    """An SSE response whose headers arrive headers_delay after the request and
+    whose lines each arrive after their paired delay, advancing clock; raises
+    fail once the lines run out, if given."""
+
+    def body():
+        for delay, line in timed_lines:
+            clock.now += delay
+            yield line.encode("utf-8")
+        if fail:
+            raise fail
+
+    def enter():
+        clock.now += headers_delay
+        return body()
+
+    resp = MagicMock()
+    resp.__enter__.side_effect = enter
+    return resp
+
+
+class TestStreamChatResponseSilenceReport(unittest.TestCase):
+    def test_reports_headers_and_longest_silence_counting_keepalives(self):
+        clock = _FakeClock()
+        resp = _timed_sse_response(
+            clock,
+            headers_delay=2,
+            timed_lines=[
+                (10, ": keep-alive"),
+                (40, 'data: {"choices": []}'),
+                (5, 'data: {"choices": [{"delta": {"content": "Hi"}}]}'),
+                (1, "data: [DONE]"),
+            ],
+        )
+        stderr = io.StringIO()
+        with (
+            patch.object(openai_compatible.urllib.request, "urlopen", return_value=resp),
+            patch.object(openai_compatible.time, "monotonic", clock),
+            contextlib.redirect_stderr(stderr),
+        ):
+            result = openai_compatible._stream_chat_response(MagicMock())
+
+        self.assertEqual(result, "Hi")
+        self.assertIn(
+            "stream complete after 58s: headers after 2s, longest silence 40s across 4 lines",
+            stderr.getvalue(),
+        )
+
+    def test_timeout_reports_partial_stats_before_retry_message(self):
+        clock = _FakeClock()
+        failing = _timed_sse_response(
+            clock,
+            headers_delay=3,
+            timed_lines=[(20, 'data: {"choices": []}')],
+            fail=TimeoutError("The read operation timed out"),
+        )
+        ok = _timed_sse_response(
+            clock,
+            headers_delay=1,
+            timed_lines=[
+                (1, 'data: {"choices": [{"delta": {"content": "{}"}}]}'),
+                (0, "data: [DONE]"),
+            ],
+        )
+        stderr = io.StringIO()
+        with (
+            patch.object(openai_compatible.urllib.request, "urlopen", side_effect=[failing, ok]),
+            patch.object(openai_compatible.time, "monotonic", clock),
+            patch.object(openai_compatible.time, "sleep"),
+            contextlib.redirect_stderr(stderr),
+        ):
+            openai_compatible._stream_chat_response(MagicMock())
+
+        lines = stderr.getvalue().splitlines()
+        timed_out = next(i for i, line in enumerate(lines) if "timed out after" in line)
+        retrying = next(i for i, line in enumerate(lines) if "retrying in" in line)
+        self.assertLess(timed_out, retrying)
+        self.assertIn("headers after 3s, longest silence 20s across 1 lines", lines[timed_out])
+
+    def test_timeout_before_headers_reports_no_response_headers(self):
+        clock = _FakeClock()
+
+        def silent_urlopen(req, timeout):
+            clock.now += timeout
+            raise TimeoutError("The read operation timed out")
+
+        stderr = io.StringIO()
+        with (
+            patch.object(openai_compatible.urllib.request, "urlopen", side_effect=silent_urlopen),
+            patch.object(openai_compatible.time, "monotonic", clock),
+            patch.object(openai_compatible.time, "sleep"),
+            contextlib.redirect_stderr(stderr),
+            self.assertRaises(TimeoutError),
+        ):
+            openai_compatible._stream_chat_response(MagicMock())
+
+        self.assertIn("timed out after 300s: no response headers", stderr.getvalue())
+
+
 class TestLoadDotenv(unittest.TestCase):
     def test_missing_file_is_noop(self):
         with patch.dict("os.environ", {}, clear=True):
@@ -328,12 +454,13 @@ class TestUrlopenWithRetry(unittest.TestCase):
                 openai_compatible.urllib.request,
                 "urlopen",
                 side_effect=TimeoutError("The read operation timed out"),
-            ),
+            ) as mock_urlopen,
             patch.object(openai_compatible.time, "sleep") as mock_sleep,
             self.assertRaises(TimeoutError),
         ):
             openai_compatible._urlopen_with_retry(MagicMock())
         self.assertEqual(mock_sleep.call_count, openai_compatible._MAX_TIMEOUT_RETRIES)
+        self.assertEqual(mock_urlopen.call_count, 2)
 
     def test_succeeds_after_transient_url_error(self):
         fake_resp = MagicMock()
