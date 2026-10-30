@@ -60,6 +60,7 @@ No comments that merely restate what the code already says — rely on naming an
 **Writes only if absent (project-customized by humans, never overwritten):**
 - `.specify/memory/constitution.md` — Supreme governance law for that project
 - `.specify/memory/architecture.md`, `architecture-principles.md`, `code-quality-principles.md`, `test-principles.md`, `product-context.md`
+- `.specify/memory/constitution-decision-log.md`, `constitution_update_checklist.md`, `architecture-decision-log.md` — amendment/decision records, kept out of the constitution and `architecture.md` so they don't grow every pipeline prompt
 - `docker-compose.yml`, `.devcontainer/Dockerfile`, `.devcontainer/devcontainer.json`
 - `CLAUDE.md`
 

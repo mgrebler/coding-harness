@@ -709,7 +709,10 @@ speckit/
 │   └── .specify/memory/
 │       ├── constitution.md     # Annotated template — fill in project-specific sections
 │       ├── architecture.md     # Structural template
-│       └── product-context.md  # Product vision template
+│       ├── product-context.md  # Product vision template
+│       ├── constitution-decision-log.md     # Amendment / breaking-API summary log
+│       ├── constitution_update_checklist.md # Full per-amendment record + downstream actions
+│       └── architecture-decision-log.md     # Architectural decision log
 ├── tests/
 │   ├── run_tests.sh            # Top-level runner (--skip-evals for unit only)
 │   ├── unit/                   # Pure-function tests, no LLM

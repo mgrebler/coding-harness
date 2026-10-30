@@ -6,6 +6,8 @@
 
 Changes to this document require explicit human decision and must be logged in `constitution_update_checklist.md` before taking effect.
 
+The `SYNC IMPACT REPORT` comment at the top of this file is a single pointer: the version change and the matching amendment number in `constitution_update_checklist.md`, e.g. `<!-- SYNC IMPACT REPORT: v1.3.0 → v1.4.0 — see Amendment 007 in constitution_update_checklist.md -->`. Replace it on each amendment — never append another one — and put all detail in the checklist.
+
 ---
 
 ## 1. Project Identity
@@ -67,7 +69,7 @@ No agent may introduce a dependency, framework, or tool outside this list withou
      format, defined here" regardless of which one is chosen. -->
 
 - [PROJECT: e.g. tRPC router definitions] in `specs/[###-feature]/contracts/` are the binding contract.
-- **Breaking changes** — removing a procedure/endpoint, changing an input shape, removing an output field — require a decision record committed to this constitution before the implementing task begins.
+- **Breaking changes** — removing a procedure/endpoint, changing an input shape, removing an output field — require a decision record in `constitution-decision-log.md` (§17) before the implementing task begins.
 - **Additive changes** — new optional input field, new output field, new procedure/endpoint — do not require a decision record but must be reflected in `contracts/` before code is written.
 - [PROJECT: e.g. No REST endpoints. No GraphQL. tRPC is the only API surface.]
 
@@ -198,7 +200,7 @@ implementation → CI pass + human review → merged
 - The Plan Agent reads `architecture.md` before producing `plan.md` for any feature.
 - If the feature plan is consistent with `architecture.md`, the Plan Agent states this explicitly in `plan.md`.
 - If the feature plan conflicts with `architecture.md`, the Plan Agent surfaces the conflict for human resolution before `plan.md` is finalised. No conflict is silently resolved by the agent.
-- If the feature introduces a new architectural decision, the Plan Agent proposes an addition to `architecture.md` as part of the plan phase. The human approves or amends the proposed addition before `tasks.md` is started.
+- If the feature introduces a new architectural decision, the Plan Agent proposes an addition to `architecture.md` and a matching entry in `.specify/memory/architecture-decision-log.md` as part of the plan phase. The human approves or amends the proposed addition before `tasks.md` is started.
 - The Refactor Agent reads `architecture.md` during every refactor session and reports any drift between the stated architecture and the actual codebase. It does not self-correct architectural drift — it reports it for human decision.
 
 ### Initialisation
@@ -313,11 +315,9 @@ An agent operating outside its permitted actions has violated this constitution.
 
 ## 17. Decision Records
 
-Breaking API changes and constitution amendments are logged below in reverse chronological order.
+Breaking API changes and constitution amendments are logged in `.specify/memory/constitution-decision-log.md`, in reverse chronological order, as part of the same change that makes them. The log lives outside this document because every pipeline phase reads the full constitution on every run.
 
-| Date | Type | Summary |
-|---|---|---|
-| [DATE] | Initial setup | Project constitution created. |
+Each constitution amendment additionally gets a full entry (before/after text, impact, downstream actions) in `.specify/memory/constitution_update_checklist.md`.
 
 ---
 

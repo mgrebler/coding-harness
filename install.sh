@@ -29,6 +29,9 @@
 #     .specify/memory/test-principles.md
 #     .specify/memory/documentation-principles.md
 #     .specify/memory/product-context.md
+#     .specify/memory/constitution-decision-log.md
+#     .specify/memory/constitution_update_checklist.md
+#     .specify/memory/architecture-decision-log.md
 #     .specify/pipeline.json
 #     docker-compose.yml
 #     .devcontainer/Dockerfile
@@ -300,6 +303,9 @@ init_copy ".specify/memory/code-quality-principles.md"
 init_copy ".specify/memory/test-principles.md"
 init_copy ".specify/memory/documentation-principles.md"
 init_copy ".specify/memory/product-context.md"
+init_copy ".specify/memory/constitution-decision-log.md"
+init_copy ".specify/memory/constitution_update_checklist.md"
+init_copy ".specify/memory/architecture-decision-log.md"
 init_copy ".specify/pipeline.json"
 init_copy "docker-compose.yml"
 init_copy ".devcontainer/Dockerfile"
