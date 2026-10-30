@@ -40,7 +40,7 @@ from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
 from claude_agent_sdk import AgentDefinition
 
-from agent_common import git, local_agent_loop, ollama
+from agent_common import git, local_agent_loop, ollama, pipeline_status
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
     claude_gate,
@@ -376,6 +376,7 @@ async def _run_implementation_agent(
     max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         log(f"Running implementation agent (attempt {attempt}/{max_attempts})...")
+        pipeline_status.step("implementing", attempt, max_attempts)
         tdd_instruction = (
             "Follow TDD order: write failing tests first, commit, then implement, commit."
             if test_stage_enabled
@@ -464,13 +465,16 @@ async def _ci_gate(
         return "CI SKIPPED (no CI commands declared)"
 
     log(f"Running {scope}...")
+    pipeline_status.step(scope)
     passed, failure_summary = _run_commands(commands)
     if not passed:
         log(f"{scope} failed — running CI fix agent (one attempt)...")
+        pipeline_status.step(f"fixing {scope}")
         tasks = read_file(spec_dir / "tasks.md")
         await _run_ci_fix_agent(feature, constitution, spec, plan, tasks, failure_summary)
 
         log(f"Re-running {scope} after fix attempt...")
+        pipeline_status.step(f"re-running {scope}")
         passed, failure_summary = _run_commands(commands)
         if not passed:
             log(f"FAIL: {scope} still failing after fix attempt. Human review required.")

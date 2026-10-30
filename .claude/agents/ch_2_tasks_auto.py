@@ -30,7 +30,7 @@ from pathlib import Path
 from ch_2_tasks_critic import build_tasks_critic_prompt, tasks_rules
 from claude_agent_sdk import AgentDefinition
 
-from agent_common import local_agent_loop, ollama
+from agent_common import local_agent_loop, ollama, pipeline_status
 from agent_common.console import HUMAN_ACTION_EXIT_CODE, make_logger, setup_log_file
 from agent_common.critic_loop import (
     claude_gate,
@@ -161,6 +161,7 @@ async def _run_format_gate(
             f"Deterministic §T5 format check found {len(violations)} violation(s) "
             f"(attempt {attempt}/{max_attempts}) — kicking back to tasks agent before critic loop..."
         )
+        pipeline_status.step("fixing task format", attempt, max_attempts)
         user_prompt = (
             f"Reformat specs/{feature}/tasks.md to comply with the machine-readable task "
             f"format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (see .specify/templates/"
@@ -213,6 +214,7 @@ async def run(feature: str):
 
     if not (spec_dir / "tasks.md").exists() or force_regen:
         log("Running tasks agent...")
+        pipeline_status.step("generating tasks")
         user_prompt = (
             f"Generate tasks.md for feature {feature}. Write it to specs/{feature}/tasks.md."
         )

@@ -51,6 +51,7 @@ No comments that merely restate what the code already says — rely on naming an
 - `.claude/agents/` — Python orchestrators for autonomous pipelines
 - `.claude/skills/` — All `/speckit-*` slash commands
 - `.claude/hooks/notify.py` — "Claude is waiting" bell/ntfy hook; its `HOOKS` block is merged into the project-owned `.claude/settings.json` on every run, replacing only its own entries
+- `.claude/agents/agent_common/pipeline_status.py` also provides the Claude Code status line; `install.sh` sets it as `statusLine` in `.claude/settings.json` only when the project has none of its own (writes to the gitignored `specs/*/pipeline-status.log`)
 - `.specify/extensions/` — Git integration module
 - `.specify/extensions.yml` — Hook registration read by every `speckit-*` skill; mirrors `.specify/extensions/git/extension.yml`'s `hooks:` block
 - `.specify/scripts/` — Shared Bash utilities

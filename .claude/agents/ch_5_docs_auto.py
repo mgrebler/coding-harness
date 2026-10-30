@@ -44,7 +44,7 @@ from pathlib import Path
 from ch_5_docs_critic import build_docs_critic_prompt
 from claude_agent_sdk import AgentDefinition
 
-from agent_common import git, local_agent_loop, ollama
+from agent_common import git, local_agent_loop, ollama, pipeline_status
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
     claude_gate,
@@ -195,6 +195,7 @@ async def run(feature: str):
 
     if not list(spec_dir.glob(f"{RESULT_PREFIX}-*.json")):
         log("Running docs agent...")
+        pipeline_status.step("merging docs")
         user_prompt = f"Merge feature {feature}'s shipped behaviour into docs/."
         await local_agent_loop.run_agent(
             log,

@@ -5,6 +5,7 @@ ollama.run_gate — this module only sequences gates and tracks resume state."""
 
 import argparse
 import asyncio
+import re
 import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -13,7 +14,7 @@ from typing import NamedTuple
 
 from claude_agent_sdk import AgentDefinition, query
 
-from agent_common import console, critic_reconcile, files, git, ollama
+from agent_common import console, critic_reconcile, files, git, ollama, pipeline_status
 from agent_common import resume_state as rstate
 from agent_common.driving_agent import NO_RECURSION_NOTICE, driving_agent_options
 from agent_common.followup import record_pass_followups
@@ -241,6 +242,7 @@ async def _run_gate_for_iteration(
     gate: GateSpec,
     prev_violations: list | None,
     summary_style: str,
+    max_iterations: int,
 ) -> tuple[str, dict]:
     """
     Idempotently run one gate for one iteration — the unit shared by both the
@@ -264,6 +266,7 @@ async def _run_gate_for_iteration(
     for attempt in (1, 2):
         if not path.exists():
             log(f"Running {gate.label} (iteration {iteration})...")
+            pipeline_status.step(gate.label, iteration, max_iterations)
             await ollama.run_gate(
                 log,
                 gate.critic_type,
@@ -416,6 +419,7 @@ async def run_two_gate_loop(
             if violations1 or violations2:
                 pending_label = gate1.label if violations1 else gate2.label
                 pending_violations = violations1 if violations1 else violations2
+                pipeline_status.step(f"revising ({pending_label})", iteration - 1)
                 await _run_fix_guarded(
                     log,
                     lambda v, i=iteration - 1, label=pending_label: run_revision(i, v, label),
@@ -426,7 +430,7 @@ async def run_two_gate_loop(
             violations2 = None
 
         status1, result1 = await _run_gate_for_iteration(
-            log, spec_dir, feature, iteration, gate1, prev_violations1, "violations"
+            log, spec_dir, feature, iteration, gate1, prev_violations1, "violations", max_iterations
         )
 
         if status1 == "FAIL":
@@ -449,7 +453,7 @@ async def run_two_gate_loop(
 
         stuck_sig1 = None
         status2, result2 = await _run_gate_for_iteration(
-            log, spec_dir, feature, iteration, gate2, violations2, "confidence"
+            log, spec_dir, feature, iteration, gate2, violations2, "confidence", max_iterations
         )
 
         if status2 == "PASS":
@@ -532,13 +536,14 @@ async def run_single_gate_loop(
         prev_violations = violations
         if not path.exists():
             if violations:
+                pipeline_status.step(f"revising ({gate.label})", iteration - 1)
                 await _run_fix_guarded(
                     log, lambda v, i=iteration - 1: run_fix(i, v), violations, revised_artifact
                 )
             violations = None
 
         status, result = await _run_gate_for_iteration(
-            log, spec_dir, feature, iteration, gate, prev_violations, "violations"
+            log, spec_dir, feature, iteration, gate, prev_violations, "violations", max_iterations
         )
 
         if status == "FAIL":
@@ -695,12 +700,15 @@ def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitab
     args = parser.parse_args()
 
     feature = args.feature or git.get_feature_from_branch(agent_name)
+    if stage := re.fullmatch(r"ch-\d+-(\w+)-auto", agent_name):
+        pipeline_status.bind(Path("specs") / feature, stage[1])
     ollama.check_providers(console.make_logger(agent_name))
     try:
         asyncio.run(run_coro(feature))
     except console.SessionLimitError as e:
         log = console.make_logger(agent_name)
         log(f"PAUSED — hit a Claude usage/session limit: {e}")
+        pipeline_status.step(pipeline_status.PAUSED)
         log(
             "This is not a critic or code failure — re-run this command once the "
             "limit resets. Progress made so far (commits, result files) is preserved."
@@ -727,6 +735,7 @@ def write_escalation(
     _log = log_fn or print
     ran = last_iteration or max_iterations
     _log(f"ESCALATION: {log_description} after {ran} iterations.")
+    pipeline_status.step(pipeline_status.ESCALATED)
     escalation_path = spec_dir / escalation_filename
     history = rstate.build_review_history(spec_dir, review_history_prefixes, max_iterations)
     content = (
