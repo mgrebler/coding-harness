@@ -180,6 +180,10 @@ class TestInstall(unittest.TestCase):
         self.assertIn(".claude/hooks/notify.py", (target / ".gitignore").read_text())
         self.assertEqual(self._hooks("Notification"), notify.HOOKS["Notification"])
         self.assertIn("MERGE settings.json: notification hooks", result.stdout)
+        self.assertIn("MERGE settings.json: pipeline status line", result.stdout)
+        settings = json.loads((target / ".claude/settings.json").read_text())
+        self.assertIn("pipeline_status.py", settings["statusLine"]["command"])
+        self.assertIn("\nspecs/*/pipeline-status.log\n", (target / ".gitignore").read_text())
 
 
 if __name__ == "__main__":

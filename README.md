@@ -681,6 +681,28 @@ To set up push:
 
 The push contains only the project name and Claude's one-line notification text, such as "coding-harness: Claude needs your permission to use Bash". The project name comes from the repo's `origin` remote, because every dev container mounts its project at `/workspace` and the folder name can't tell sessions apart. It never includes code or conversation content. The unattended `ch-*-auto` pipelines run Claude without loading project settings (`setting_sources=[]`), so they never trigger these hooks.
 
+## Pipeline Status Line
+
+While a `ch-*-auto` stage or `/ch-plan-to-implement-auto` is running, the Claude Code status line shows where it is:
+
+```
+012-foo  plan ✓ │ tasks ✓ │ test ▶ test quality review 2/3 · 14m │ implement · │ docs ⊘
+```
+
+| Symbol | Meaning |
+|---|---|
+| `✓` | stage complete (its `*-auto-complete` marker exists) |
+| `▶ <step> i/max · 14m` | running: current step, critic iteration or attempt, time on this step |
+| `⚠ escalated` | stage wrote an escalation and is waiting for your `-review.md` |
+| `⏸ paused` | stopped at a Claude usage/session limit; re-run once it resets |
+| `✗ stopped at <step>` | the stage's process exited mid-step (CI failure, crash, Ctrl-C) |
+| `⊘` | stage disabled via `.specify/pipeline.json` `stages` |
+| `·` | not started |
+
+Each stage appends one JSON line per step change to `specs/NNN-feature/pipeline-status.log`, which the installed `.gitignore` excludes. The status line (`.claude/agents/agent_common/pipeline_status.py`) renders it for the current branch's spec dir and prints nothing on branches with no pipeline state. The status line works however the pipeline was started: from Claude Code or from a terminal in the same container.
+
+`install.sh` sets this as the project's `statusLine` in `.claude/settings.json`, but only if the project has no `statusLine` of its own. A project-level `statusLine` takes precedence over a personal one in `~/.claude/settings.json`. To keep your own status line, set `statusLine` in the project's settings (or `.claude/settings.local.json`) and `install.sh` leaves it alone.
+
 ## What This Repo Contains
 
 The `speckit-*` skills (including the `speckit-git-*` git extension) and the five templates in `.specify/templates/` come from upstream [SpecKit](https://github.com/github/spec-kit). Everything else — the `ch-*` skills and agents, the critic loop pattern, the principle docs beyond `constitution.md` (`architecture.md`, `architecture-principles.md`, `code-quality-principles.md`, `test-principles.md`, `documentation-principles.md`, `product-context.md`), and the `docs/` output of the documentation stage — is coding-harness's own addition.

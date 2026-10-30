@@ -41,7 +41,8 @@
 #   MANAGED SECTION REFRESHED EVERY RUN (rest of the file stays project-owned):
 #     .gitignore
 #     CLAUDE.md
-#     .claude/settings.json — only notify.py's hook entries; other keys and hooks kept
+#     .claude/settings.json — only notify.py's hook entries and the pipeline statusLine
+#       (set only if the project has none of its own); other keys and hooks kept
 #
 #   NEVER TOUCHED BY THIS SCRIPT (agent-maintained, continuously updated by the
 #   pipeline itself — not copied, not seeded, not gitignored; created and
@@ -192,6 +193,9 @@ manage_gitignore() {
 
 # Python bytecode — written next to the agents whenever a pipeline runs
 __pycache__/
+
+# Live step-by-step progress for the status line, rewritten on every run
+specs/*/pipeline-status.log
 GITIGNORE
 )
 
@@ -230,20 +234,23 @@ CLAUDEMD
   log "  UPDATE CLAUDE.md: coding-harness-managed section"
 }
 
-# Merge the "Claude is waiting" notification hooks into the project's
-# .claude/settings.json, keeping every other setting and hook it has.
-merge_notification_hooks() {
+# Merge the "Claude is waiting" notification hooks and the pipeline status
+# line into the project's .claude/settings.json, keeping every other setting
+# and hook it has.
+merge_claude_settings() {
   if [[ "$DRY_RUN" == "true" ]]; then
-    log "  MERGE .claude/settings.json: notification hooks"
+    log "  MERGE .claude/settings.json: notification hooks, pipeline status line"
     return
   fi
 
   if ! command -v python3 >/dev/null 2>&1; then
-    log "  SKIP .claude/settings.json: python3 not found, notification hooks not merged"
+    log "  SKIP .claude/settings.json: python3 not found, notification hooks and status line not merged"
     return
   fi
 
-  log "  $(python3 "$SOURCE_DIR/.claude/hooks/notify.py" install "$TARGET_DIR/.claude/settings.json")"
+  local settings="$TARGET_DIR/.claude/settings.json"
+  log "  $(python3 "$SOURCE_DIR/.claude/hooks/notify.py" install "$settings")"
+  log "  $(python3 "$SOURCE_DIR/.claude/agents/agent_common/pipeline_status.py" install "$settings")"
 }
 
 # Copy a file from examples/, but only if it doesn't already exist in the target.
@@ -287,7 +294,7 @@ always_copy ".specify/templates"
 always_copy ".specify/workflows"
 
 manage_gitignore
-merge_notification_hooks
+merge_claude_settings
 
 # ---------------------------------------------------------------------------
 # Project-initialised files (only written if absent)

@@ -37,7 +37,7 @@ from ch_1_plan_architecture_critic import build_architecture_review_prompt
 from ch_1_plan_critic import build_plan_critic_prompt
 from claude_agent_sdk import AgentDefinition
 
-from agent_common import local_agent_loop
+from agent_common import local_agent_loop, pipeline_status
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
     claude_gate,
@@ -151,6 +151,7 @@ async def run(feature: str):
 
     if not (spec_dir / "plan.md").exists() or force_regen:
         log("Running plan agent...")
+        pipeline_status.step("generating plan")
         user_prompt = (
             f"Generate plan.md for feature {feature}. Write it to specs/{feature}/plan.md."
         )

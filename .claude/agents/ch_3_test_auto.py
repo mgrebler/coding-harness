@@ -42,7 +42,7 @@ from ch_3_test_critic import build_test_critic_prompt
 from ch_3_test_quality_critic import build_test_quality_review_prompt
 from claude_agent_sdk import AgentDefinition
 
-from agent_common import local_agent_loop, ollama
+from agent_common import local_agent_loop, ollama, pipeline_status
 from agent_common.console import make_logger, setup_log_file
 from agent_common.critic_loop import (
     claude_gate,
@@ -237,6 +237,7 @@ async def _run_red_state_gate(
             f"Deterministic §TQ2 red-state check found {len(issues)} invalid artifact(s) "
             f"(attempt {attempt}/{max_attempts}) — kicking back to test agent before critic loop..."
         )
+        pipeline_status.step("fixing red-state artifacts", attempt, max_attempts)
         user_prompt = (
             f"The following red-state artifacts for feature {feature} do not prove a "
             f"genuine test failure — most likely the test environment (database, dev "
@@ -287,6 +288,7 @@ async def _run_test_agent_if_needed(
     max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         log(f"Running test agent (attempt {attempt}/{max_attempts})...")
+        pipeline_status.step("writing tests", attempt, max_attempts)
         user_prompt = (
             f"Write failing tests for all unchecked [TEST] tasks in specs/{feature}/tasks.md. "
             f"No implementation code. Confirm each test fails for the expected reason. "

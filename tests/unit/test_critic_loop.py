@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
-from agent_common import console, critic_loop, git, ollama, resume_state
+from agent_common import console, critic_loop, git, ollama, pipeline_status, resume_state
 from agent_common.critic_loop import GateSpec
 from agent_common.resume_state import IterationBudget
 
@@ -194,6 +194,43 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
             run_fix.assert_not_called()
             on_pass.assert_awaited_once()
             mock_escalate.assert_not_called()
+
+    async def test_records_each_step_for_the_status_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            viols = [{"rule": "§T1", "severity": "BLOCKING"}]
+            gate, fake_run_gate, _ = self._make_gate(
+                spec_dir, {1: ("FAIL", viols), 2: ("PASS", [])}
+            )
+
+            with (
+                patch.object(pipeline_status, "_bound", (spec_dir, "tasks")),
+                patch.object(ollama, "run_gate", side_effect=fake_run_gate),
+            ):
+                await critic_loop.run_single_gate_loop(
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    IterationBudget(3, 3),
+                    gate,
+                    resume_state=(1, None),
+                    run_fix=AsyncMock(),
+                    on_pass=AsyncMock(),
+                    escalation_kwargs={},
+                )
+
+            lines = (spec_dir / pipeline_status.LOG_NAME).read_text().splitlines()
+            steps = [
+                (e["step"], e["iteration"], e["max_iterations"]) for e in map(json.loads, lines)
+            ]
+            self.assertEqual(
+                steps,
+                [
+                    ("tasks critic", 1, 3),
+                    ("revising (tasks critic)", 1, None),
+                    ("tasks critic", 2, 3),
+                ],
+            )
 
     async def test_fail_then_retry_carries_violations_into_fix(self):
         with tempfile.TemporaryDirectory() as d:
