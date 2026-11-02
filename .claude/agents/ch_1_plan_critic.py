@@ -19,6 +19,7 @@ from pathlib import Path
 
 from agent_common.files import (
     CONSTITUTION_PATH,
+    format_directory_outline,
     format_directory_tree,
     read_directory_tree,
     read_memory,
@@ -135,18 +136,33 @@ Rules:
 {tail}"""
 
 
+# The whole docs/ tree is what pushed 12 of 19 live-run plan prompts to
+# 104k-147k tokens (sprognoggin's docs/ alone was ~87k). Level 1 keeps full text
+# only for docs files the spec or plan cites and reduces the rest to headings;
+# level 2 is headings only.
+_DOCS_REDUCTION_LEVELS = 2
+
+
+def format_docs(tree: dict[str, str], cited_in: str, level: int) -> str:
+    empty = "(docs/ not yet created)"
+    if level == 0:
+        return format_directory_tree(tree, empty)
+    cited = {path for path in tree if level == 1 and f"docs/{path}" in cited_in}
+    return format_directory_outline(tree, cited, empty)
+
+
 def main():
-    def _build(spec_dir: Path, iteration: int) -> str:
+    def _build(spec_dir: Path, iteration: int, level: int) -> str:
         constitution, spec, _ = read_required(
             "ch-1-plan-critic", CONSTITUTION_PATH, spec_dir / "spec.md", spec_dir / "plan.md"
         )
         architecture = read_memory("architecture")
-        docs = format_directory_tree(read_directory_tree(Path("docs")), "(docs/ not yet created)")
         plan = read_plan_bundle(spec_dir)
+        docs = format_docs(read_directory_tree(Path("docs")), spec + plan, level)
 
         return build_plan_critic_prompt(constitution, architecture, docs, spec, plan, iteration)
 
-    run_local_critic_cli("plan", CRITIC_RESULT_PREFIX, _build)
+    run_local_critic_cli("plan", CRITIC_RESULT_PREFIX, _build, max_reduction=_DOCS_REDUCTION_LEVELS)
 
 
 if __name__ == "__main__":

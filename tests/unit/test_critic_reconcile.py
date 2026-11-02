@@ -131,3 +131,26 @@ class TestBuildReconcilePrompt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+_ONE_RAW_RESULT = [{"id": "a", "model": "m", "result": {"status": "PASS", "violations": []}}]
+
+
+class TestReconcileCoverageRule(unittest.TestCase):
+    def test_full_coverage_forbids_new_findings(self):
+        prompt = critic_reconcile.build_reconcile_prompt(
+            "ctx", _ONE_RAW_RESULT, 1, "violations", critics_configured=1
+        )
+        self.assertIn("Do not introduce a finding no critic reported", prompt)
+
+    def test_missing_critic_lets_the_reconciler_add_verified_findings(self):
+        """specs/018: the lone surviving critic PASSed a Critical defect."""
+        prompt = critic_reconcile.build_reconcile_prompt(
+            "ctx", _ONE_RAW_RESULT, 1, "violations", critics_configured=2
+        )
+        self.assertIn("Only 1 of the 2 configured critics", prompt)
+        self.assertNotIn("Do not introduce a finding no critic reported", prompt)
+
+    def test_earlier_iterations_raw_files_are_off_limits(self):
+        prompt = critic_reconcile.build_reconcile_prompt("ctx", _ONE_RAW_RESULT, 2, "violations")
+        self.assertIn("belong to earlier", prompt)

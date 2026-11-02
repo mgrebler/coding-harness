@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
 from ch_1_plan_architecture_critic import build_architecture_review_prompt
-from ch_1_plan_critic import build_plan_critic_prompt
+from ch_1_plan_critic import build_plan_critic_prompt, format_docs
 from ch_2_tasks_critic import build_tasks_critic_prompt, tasks_rules
 from ch_3_test_critic import build_test_critic_prompt
 from ch_3_test_quality_critic import build_test_quality_review_prompt
@@ -332,3 +332,29 @@ class TestTestQualityReviewPrompt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+_DOCS_TREE = {"reference/items.md": "# Items\nlong body", "reference/other.md": "# Other\nbody"}
+
+
+class TestPlanCriticDocsReduction(unittest.TestCase):
+    CITED = "This plan changes docs/reference/items.md."
+
+    def test_level_0_inlines_every_file(self):
+        out = format_docs(_DOCS_TREE, self.CITED, 0)
+        self.assertIn("long body", out)
+        self.assertIn("# Other\nbody", out)
+
+    def test_level_1_keeps_only_cited_files_in_full(self):
+        out = format_docs(_DOCS_TREE, self.CITED, 1)
+        self.assertIn("long body", out)
+        self.assertIn("reference/other.md (headings only)", out)
+        self.assertNotIn("# Other\nbody", out)
+
+    def test_level_2_is_headings_only(self):
+        out = format_docs(_DOCS_TREE, self.CITED, 2)
+        self.assertNotIn("long body", out)
+        self.assertIn("# Items", out)
+
+    def test_missing_docs_dir_message_survives_reduction(self):
+        self.assertEqual(format_docs({}, "", 2), "(docs/ not yet created)")

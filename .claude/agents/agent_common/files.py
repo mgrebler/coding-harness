@@ -146,6 +146,24 @@ def read_directory_tree(root: Path) -> dict[str, str]:
     return tree
 
 
+def format_directory_outline(
+    tree: dict[str, str], full_text: set[str], empty_message: str = "(no files)"
+) -> str:
+    """Like format_directory_tree, but only paths in full_text keep their content;
+    every other file is reduced to its markdown headings — enough for a critic to
+    see what is documented where without inlining the whole tree."""
+    if not tree:
+        return empty_message
+    sections = []
+    for path, content in tree.items():
+        if path in full_text:
+            sections.append(f"--- {path} ---\n{content}")
+        else:
+            headings = [line for line in content.splitlines() if line.startswith("#")]
+            sections.append(f"--- {path} (headings only) ---\n" + "\n".join(headings))
+    return "\n\n".join(sections)
+
+
 def format_directory_tree(tree: dict[str, str], empty_message: str = "(no files)") -> str:
     """Format a {relative_path: content} mapping (from read_directory_tree) into a
     prompt-ready block of --- path --- sections."""

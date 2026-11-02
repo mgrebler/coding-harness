@@ -118,6 +118,7 @@ def build_reconcile_prompt(
     iteration: int,
     summary_style: str,
     output_instructions: str = "",
+    critics_configured: int | None = None,
 ) -> str:
     """
     Build the reconciliation subagent's prompt: N independent critics
@@ -134,6 +135,10 @@ def build_reconcile_prompt(
     summary_style: selects the schema/status-rules block ("violations" or
     "confidence") that this gate's own critics use, so reconciliation output
     can never drift from what a single critic for this gate would produce.
+    critics_configured: how many critics were meant to run. When fewer
+    produced a result, the reconciler may add findings it verifies itself —
+    the review is missing a perspective it was designed to have (specs/018's
+    test-quality review: the one surviving critic PASSed a Critical defect).
     """
     schema, tail = (
         (_CONFIDENCE_SCHEMA, CONFIDENCE_STATUS_RULE)
@@ -143,6 +148,17 @@ def build_reconcile_prompt(
     schema = schema % {"iteration": iteration}
     if output_instructions:
         tail += f"\n{output_instructions}"
+
+    survivors = len(raw_results)
+    if critics_configured and survivors < critics_configured:
+        coverage_rule = (
+            f"5. Only {survivors} of the {critics_configured} configured critics produced a "
+            "result, so this review is missing perspectives it was designed to have. Review the "
+            "artifact yourself as well: you MAY add a finding no critic reported, but only one "
+            "you have personally verified at a cited location."
+        )
+    else:
+        coverage_rule = "5. Do not introduce a finding no critic reported."
 
     findings_block = "\n\n".join(
         f"--- CRITIC '{entry['id']}' (model: {entry['model']}) ---\n"
@@ -154,7 +170,9 @@ def build_reconcile_prompt(
 
 {len(raw_results)} independent critics reviewed the SAME artifact against the SAME review
 objective below, using different models for independent perspectives. Their raw,
-unverified findings are attached, labeled by critic id and model.
+unverified findings are attached, labeled by critic id and model. They are your
+complete input: other files in the critics' raw-results directory belong to earlier
+iterations and must not be read.
 
 Your job — and only yours, not any critic's — is to decide what is actually valid and
 what change (if any) is required. A critic's job was to report findings only; it is
@@ -176,7 +194,7 @@ Adjudication rules:
    cited location) into one entry.
 4. Where critics disagree, resolve it yourself and record your own independent
    judgment — never keep a finding solely because "a critic said so."
-5. Do not introduce a finding no critic reported.
+{coverage_rule}
 6. You alone decide the final status/severity of each surviving finding.
 
 Output ONLY valid JSON, no preamble, no markdown fences, in EXACTLY the same schema a
