@@ -1068,6 +1068,32 @@ class TestRunLocalCriticCliBadOutputRetry(_ConfigDirTestCase):
         )
 
 
+class TestAdjustForRetry(unittest.TestCase):
+    def _error(self, reason, raw, message="LLM response missing required key(s) ['status']: {}"):
+        return ollama._BadCriticOutputError(reason, message, raw)
+
+    def test_bare_object_under_json_mode_retries_without_it(self):
+        """laguna-xs answered `{}` under JSON mode ~20 times across the live runs."""
+        config, prompt = ollama._adjust_for_retry(
+            "tasks", {"model": "laguna"}, "p", self._error("schema-invalid", "{}")
+        )
+        self.assertFalse(config["json_mode"])
+        self.assertEqual(prompt, "p")
+
+    def test_schema_miss_with_content_names_the_missing_keys(self):
+        config, prompt = ollama._adjust_for_retry(
+            "tasks", {"model": "m"}, "p", self._error("schema-invalid", '{"verdict": "pass"}')
+        )
+        self.assertNotIn("json_mode", config)
+        self.assertIn("missing required key(s) ['status']", prompt)
+
+    def test_unparseable_output_is_retried_unchanged(self):
+        config, prompt = ollama._adjust_for_retry(
+            "tasks", {"model": "m"}, "p", self._error("unparseable", "not json", "bad")
+        )
+        self.assertEqual((config, prompt), ({"model": "m"}, "p"))
+
+
 class TestRunLocalCriticCliCriticId(_ConfigDirTestCase):
     """--critic-id routes to load_local_llm_configs and the raw-subdir result
     path; its absence must remain byte-identical to the pre-multi-critic
@@ -1392,7 +1418,7 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
 
         canonical_path = Path("specs/feat/ch-1-plan-critic-result-1.json")
 
-        def fake_reconcile_query(iteration, raw_results, claude_model):
+        def fake_reconcile_query(iteration, raw_results, claude_model, **kwargs):
             canonical_path.parent.mkdir(parents=True, exist_ok=True)
             canonical_path.write_text(json.dumps({"status": "FAIL", "violations": []}))
             return "reconcile-query-obj"
@@ -1435,7 +1461,7 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
         canonical_path = Path("specs/feat/ch-1-plan-critic-result-1.json")
         received = {}
 
-        def fake_reconcile_query(iteration, raw_results, claude_model):
+        def fake_reconcile_query(iteration, raw_results, claude_model, **kwargs):
             received["claude_model"] = claude_model
             canonical_path.parent.mkdir(parents=True, exist_ok=True)
             canonical_path.write_text(json.dumps({"status": "FAIL", "violations": []}))
@@ -1545,7 +1571,7 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
 
         canonical_path = Path("specs/feat/ch-1-plan-critic-result-1.json")
 
-        def fake_reconcile_query(iteration, raw_results, claude_model):
+        def fake_reconcile_query(iteration, raw_results, claude_model, **kwargs):
             # Only the surviving critic 'b' reached reconciliation — 'a' crashed.
             self.assertEqual([r["id"] for r in raw_results], ["b"])
             canonical_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1573,6 +1599,86 @@ class TestRunGate(unittest.IsolatedAsyncioTestCase):
         mock_stream.assert_awaited_once_with("reconcile-query-obj")
         self.assertTrue(canonical_path.exists())
         self.assertEqual(json.loads(canonical_path.read_text())["status"], "PASS")
+
+    async def _run_breaker_gate(self, fake_run_one, reconcile_calls):
+        configs = [{"id": "dead", "model": "m1"}, {"id": "live", "model": "m2"}]
+        canonical_path = Path("specs/feat/ch-1-plan-critic-result-1.json")
+
+        def fake_reconcile_query(iteration, raw_results, claude_model, **kwargs):
+            reconcile_calls.append(kwargs)
+            canonical_path.parent.mkdir(parents=True, exist_ok=True)
+            canonical_path.write_text(json.dumps({"status": "PASS", "violations": []}))
+            return "reconcile-query-obj"
+
+        with (
+            patch.object(ollama, "load_local_llm_configs", return_value=configs),
+            patch.object(ollama, "load_critic_execution_mode", return_value="sequential"),
+            patch.object(ollama, "_run_one_critic", side_effect=fake_run_one),
+            patch.object(ollama.console, "stream_query", new=AsyncMock()),
+        ):
+            canonical_path.unlink(missing_ok=True)
+            await ollama.run_gate(
+                MagicMock(),
+                "plan",
+                "script.py",
+                "feat",
+                1,
+                "plan critic",
+                MagicMock(),
+                result_prefix="ch-1-plan-critic-result",
+                build_reconcile_query=fake_reconcile_query,
+            )
+
+    async def test_unreachable_critic_is_skipped_after_two_consecutive_misses(self):
+        """gemma-31b timed out on ~80% of calls across 18 live-run features,
+        up to 10 minutes each, and was called again on every gate."""
+        called = []
+
+        def fake_run_one(log, label, script, feature, iteration, raw_dir, config, prefix=""):
+            called.append(config["id"])
+            if config["id"] == "dead":
+                raise ollama.CriticSubprocessError("timed out", unreachable=True)
+            return {"id": "live", "model": "m2", "result": {"status": "PASS"}}
+
+        reconcile_calls = []
+        for _ in range(3):
+            await self._run_breaker_gate(fake_run_one, reconcile_calls)
+
+        self.assertEqual(called.count("dead"), 2)
+        self.assertEqual(called.count("live"), 3)
+        # A skipped critic still counts as missing, so every gate reconciles.
+        self.assertEqual([c["critics_configured"] for c in reconcile_calls], [2, 2, 2])
+
+    async def test_a_bad_answer_does_not_trip_the_breaker(self):
+        called = []
+
+        def fake_run_one(log, label, script, feature, iteration, raw_dir, config, prefix=""):
+            called.append(config["id"])
+            if config["id"] == "dead":
+                raise ollama.CriticSubprocessError("exit code 1 for iteration 1")
+            return {"id": "live", "model": "m2", "result": {"status": "PASS"}}
+
+        for _ in range(3):
+            await self._run_breaker_gate(fake_run_one, [])
+
+        self.assertEqual(called.count("dead"), 3)
+
+    async def test_a_success_resets_the_miss_count(self):
+        outcomes = iter([True, False, True, True])
+        called = []
+
+        def fake_run_one(log, label, script, feature, iteration, raw_dir, config, prefix=""):
+            if config["id"] == "dead":
+                called.append("dead")
+                if next(outcomes):
+                    raise ollama.CriticSubprocessError("timed out", unreachable=True)
+                return {"id": "dead", "model": "m1", "result": {"status": "PASS"}}
+            return {"id": "live", "model": "m2", "result": {"status": "PASS"}}
+
+        for _ in range(5):
+            await self._run_breaker_gate(fake_run_one, [])
+
+        self.assertEqual(len(called), 4)
 
     async def test_all_critics_failing_falls_back_to_claude(self):
         """specs/001, 002, 084: "all N critics failed … Aborting" stopped the

@@ -196,6 +196,9 @@ __pycache__/
 
 # Live step-by-step progress for the status line, rewritten on every run
 specs/*/pipeline-status.log
+
+# Per-feature record of hosted critics whose endpoint stopped answering
+specs/*/.critic-health.json
 GITIGNORE
 )
 

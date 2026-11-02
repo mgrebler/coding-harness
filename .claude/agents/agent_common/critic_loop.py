@@ -130,8 +130,8 @@ class GateSpec(NamedTuple):
         re-run after the previous result file failed schema validation. claude_model is the resolved Claude model (or None) —
         only meaningful when this gate falls back to Claude; build_query itself
         decides how to use it (pass to driving_agent_options/AgentDefinition).
-    build_reconcile_query: (iteration, raw_results, claude_model) -> the query(...)
-        call that reconciles >1 critics' raw findings into the canonical result,
+    build_reconcile_query: (iteration, raw_results, claude_model, critics_configured)
+        -> the query(...) call that reconciles >1 critics' raw findings into the canonical result,
         when critic_type resolves to more than one configured critic. None (the
         default) for gates that will only ever have 0-or-1 critics configured.
     """
@@ -141,7 +141,7 @@ class GateSpec(NamedTuple):
     critic_type: str
     label: str
     build_query: Callable[..., object]
-    build_reconcile_query: Callable[[int, list[dict], str | None], object] | None = None
+    build_reconcile_query: Callable[..., object] | None = None
 
 
 CRITIC_TOOLS = ["Read", "Write", "Bash", "Glob", "Grep"]
@@ -226,7 +226,12 @@ def claude_gate(
         )
         return drive(f"{task} Write result to {result_path(iteration)}.", agent_name, agent, model)
 
-    def build_reconcile_query(iteration: int, raw_results: list[dict], model: str | None):
+    def build_reconcile_query(
+        iteration: int,
+        raw_results: list[dict],
+        model: str | None,
+        critics_configured: int | None = None,
+    ):
         context_block = "\n\n".join(f"--- {heading} ---\n{text}" for heading, text in context())
         agent = AgentDefinition(
             description=f"Reconciles findings from multiple independent {critics} critics "
@@ -238,6 +243,7 @@ def claude_gate(
                 iteration,
                 summary_style,
                 output_instructions(iteration, "-reconcile"),
+                critics_configured=critics_configured,
             ),
             tools=CRITIC_TOOLS,
         )

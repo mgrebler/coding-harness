@@ -24,6 +24,12 @@ _ALLOWED_URL_SCHEMES = ("http://", "https://")
 _DEFAULT_PREDICT_RESERVE = 1024  # ctx headroom for generated tokens when num_predict is unset
 _tokenize_unavailable: set[str] = set()  # ollama_urls where /api/tokenize 404'd this process
 _CRITIC_IDLE_TIMEOUT_S = 900
+# A critic whose endpoint never answered (gemma-31b on NVIDIA's API timed out on
+# ~80% of calls across 18 live-run features, each costing up to 10 minutes) is
+# skipped for the rest of the feature after this many consecutive misses.
+_UNREACHABLE_EXIT_CODE = 5
+_UNREACHABLE_TRIP_COUNT = 2
+_CRITIC_HEALTH_FILE = ".critic-health.json"
 _CONFIG_PATH = Path(".specify/pipeline.json")
 
 
@@ -41,12 +47,18 @@ def _load_raw_config() -> dict:
 
 class CriticSubprocessError(Exception):
     """A critic subprocess failed (non-zero exit, missing output, or timed out).
+    unreachable: the model endpoint never answered (transport failure or an
+    idle timeout), as opposed to answering badly.
 
     Raised instead of calling sys.exit() so this stays a normal Exception: it must
     survive being raised inside a worker thread under asyncio.to_thread/gather — a
     SystemExit (BaseException) crossing that boundary crashes or hangs the event
     loop nondeterministically instead of propagating cleanly. See FOLLOWUP_HARNESS.md.
     """
+
+    def __init__(self, message: str, unreachable: bool = False):
+        super().__init__(message)
+        self.unreachable = unreachable
 
 
 def _resolve_provider_fields(provider: str, resolved: dict, raw: dict) -> dict:
@@ -1018,6 +1030,24 @@ def _parse_critic_response(raw: str, summary_style: str) -> dict:
     return result
 
 
+def _adjust_for_retry(
+    label: str, config: dict, prompt: str, error: _BadCriticOutputError
+) -> tuple[dict, str]:
+    """An identical retry repeats a deterministic failure. laguna-xs answered
+    a bare `{}` or nothing under JSON mode ~20 times across the live runs, and
+    a schema miss repeats unless the model is told which keys it left out."""
+    no_content = strip_fences(error.raw) in ("", "{}")
+    if error.reason in ("empty", "schema-invalid") and no_content and config.get("json_mode", True):
+        print(f"[{label}] retrying with json_mode off (JSON mode gave no content)", flush=True)
+        return {**config, "json_mode": False}, prompt
+    if error.reason == "schema-invalid":
+        return config, (
+            f"{prompt}\n\nYour previous answer was rejected: {str(error).split(':', 1)[0]}. "
+            "Answer again with every required top-level key."
+        )
+    return config, prompt
+
+
 def _call_and_parse_critic(
     label: str,
     prompt: str,
@@ -1044,6 +1074,7 @@ def _call_and_parse_critic(
         except _BadCriticOutputError as e:
             if attempt == 1:
                 print(f"[{label}] WARNING: {e} — retrying once...", flush=True)
+                config, prompt = _adjust_for_retry(label, config, prompt, e)
                 continue
             print(f"[{label}] ERROR: {e}", flush=True)
             failure_path = _persist_raw_failure(
@@ -1053,7 +1084,7 @@ def _call_and_parse_critic(
             sys.exit(1)
         except Exception as e:
             print(f"[{label}] ERROR: local LLM call failed: {e}", flush=True)
-            sys.exit(1)
+            sys.exit(_UNREACHABLE_EXIT_CODE)
     raise AssertionError("unreachable")
 
 
@@ -1092,7 +1123,8 @@ def run_local_critic_cli(
     level whose prompt fits the critic's token budget is sent (see
     _build_within_budget).
 
-    Exit codes: 0 success, 1 runtime error, 2 local LLM not configured.
+    Exit codes: 0 success, 1 runtime error, 2 local LLM not configured,
+    5 (_UNREACHABLE_EXIT_CODE) the model endpoint never answered.
     """
     parser = argparse.ArgumentParser(description=f"{critic_type} using local LLM")
     parser.add_argument(
@@ -1197,8 +1229,9 @@ def _build_within_budget(
                     flush=True,
                 )
             return prompt
+    reduced = " even fully reduced" if max_reduction else ""
     print(
-        f"[{label}] WARNING: prompt is ~{estimate} tokens even fully reduced — over the "
+        f"[{label}] WARNING: prompt is ~{estimate} tokens{reduced} — over the "
         f"{budget}-token budget; set max_prompt_tokens for this critic, or use a "
         "larger-context model",
         flush=True,
@@ -1285,9 +1318,12 @@ def _run_one_critic(
             returncode = _run_critic_subprocess(cmd, prefix=prefix)
         except TimeoutError as e:
             log(f"ERROR: critic '{config['id']}' timed out for {label} iteration {iteration}: {e}")
-            raise CriticSubprocessError(str(e)) from e
+            raise CriticSubprocessError(str(e), unreachable=True) from e
         if returncode != 0:
-            raise CriticSubprocessError(f"exit code {returncode} for iteration {iteration}")
+            raise CriticSubprocessError(
+                f"exit code {returncode} for iteration {iteration}",
+                unreachable=returncode == _UNREACHABLE_EXIT_CODE,
+            )
         if not raw_path.exists():
             raise CriticSubprocessError(f"did not write {raw_path}")
     return {
@@ -1306,10 +1342,12 @@ async def _gather_raw_critic_results(
     raw_dir: Path,
     configs: list[dict],
     mode: str,
+    health: dict[str, int],
 ) -> list[dict]:
     """Run every critic in configs (sequentially, or concurrently via
     asyncio.to_thread when mode == 'parallel') and return the raw results of
-    those that succeeded; failures are logged and dropped.
+    those that succeeded; failures are logged and dropped. health (critic id ->
+    consecutive unreachable calls) is updated in place.
 
     Parallel mode uses return_exceptions=True so one critic's CriticSubprocessError
     can't strand an already-completed sibling critic's result.
@@ -1345,9 +1383,26 @@ async def _gather_raw_critic_results(
     for config, outcome in zip(configs, outcomes, strict=True):
         if isinstance(outcome, BaseException):
             log(f"  {label} critic '{config['id']}' failed (continuing without it): {outcome}")
+            if getattr(outcome, "unreachable", False):
+                health[config["id"]] = health.get(config["id"], 0) + 1
         else:
             survivors.append(outcome)
+            health[config["id"]] = 0
     return survivors
+
+
+def _load_critic_health(spec_dir: Path) -> dict[str, int]:
+    path = spec_dir / _CRITIC_HEALTH_FILE
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_critic_health(spec_dir: Path, health: dict[str, int]) -> None:
+    files.write_file(spec_dir / _CRITIC_HEALTH_FILE, json.dumps(health, indent=2))
 
 
 async def _run_multi_critic_gate(
@@ -1360,7 +1415,7 @@ async def _run_multi_critic_gate(
     configs: list[dict],
     result_prefix: str | None,
     summary_style: str,
-    build_reconcile_query: Callable[[int, list[dict], str | None], object] | None,
+    build_reconcile_query: Callable[..., object] | None,
 ) -> bool:
     """The local-critic branch of run_gate: fan out to every configured critic
     (passing --critic-id, so list- and dict-shaped config resolve identically),
@@ -1380,9 +1435,21 @@ async def _run_multi_critic_gate(
     ids = ", ".join(f"{c['id']} ({c['model']})" for c in configs)
     log(f"Using {len(configs)} local LLM critic(s) for {label} ({mode}): {ids}...")
 
+    health = _load_critic_health(spec_dir)
+    # Tripped critics still count toward len(configs) below, so losing one
+    # routes to reconciliation exactly as a timeout would — just without the wait.
+    reachable = [c for c in configs if health.get(c["id"], 0) < _UNREACHABLE_TRIP_COUNT]
+    for config in configs:
+        if config not in reachable:
+            log(
+                f"  skipping {label} critic '{config['id']}': its endpoint was unreachable on "
+                f"{health[config['id']]} consecutive calls this feature (reset by deleting "
+                f"{spec_dir / _CRITIC_HEALTH_FILE})."
+            )
     raw_results = await _gather_raw_critic_results(
-        log, label, script, feature, iteration, raw_dir, configs, mode
+        log, label, script, feature, iteration, raw_dir, reachable, mode, health
     )
+    _save_critic_health(spec_dir, health)
     if not raw_results:
         log(f"ALL {len(configs)} LOCAL CRITIC(S) FAILED for {label} — falling back to Claude.")
         return False
@@ -1419,7 +1486,9 @@ async def _run_multi_critic_gate(
 
     log(f"Critics reported findings for {label} — running reconciliation...")
     claude_model = load_claude_model(critic_type)
-    await console.stream_query(build_reconcile_query(iteration, raw_results, claude_model))
+    await console.stream_query(
+        build_reconcile_query(iteration, raw_results, claude_model, critics_configured=len(configs))
+    )
     if not canonical_path.exists():
         log(f"ERROR: reconciliation did not write {canonical_path}. Aborting.")
         sys.exit(1)
@@ -1436,7 +1505,7 @@ async def run_gate(
     claude_fallback: Callable[[str | None], object],
     result_prefix: str | None = None,
     summary_style: str = "violations",
-    build_reconcile_query: Callable[[int, list[dict], str | None], object] | None = None,
+    build_reconcile_query: Callable[..., object] | None = None,
 ) -> None:
     """
     Run one review gate for the *-auto.py orchestrators.

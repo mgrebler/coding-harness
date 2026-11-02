@@ -149,3 +149,17 @@ class TestReadMemoryAndRequired(unittest.TestCase):
             self.assertEqual(files.read_required("x", a, b), ["A", "B"])
             with self.assertRaises(SystemExit):
                 files.read_required("x", a, Path(d) / "missing.md")
+
+
+_OUTLINE_TREE = {"a.md": "# A\nbody a\n## A1\nmore", "b.md": "# B\nbody b"}
+
+
+class TestFormatDirectoryOutline(unittest.TestCase):
+    def test_full_text_paths_keep_content_and_others_keep_headings(self):
+        out = files.format_directory_outline(_OUTLINE_TREE, {"b.md"})
+        self.assertIn("--- a.md (headings only) ---\n# A\n## A1", out)
+        self.assertNotIn("body a", out)
+        self.assertIn("--- b.md ---\n# B\nbody b", out)
+
+    def test_empty_tree_returns_empty_message(self):
+        self.assertEqual(files.format_directory_outline({}, set(), "(none)"), "(none)")
