@@ -16,23 +16,37 @@ from agent_common.console import HUMAN_ACTION_EXIT_CODE, USAGE_LIMIT_EXIT_CODE
 class TestCheckStageResult(unittest.TestCase):
     def test_zero_exit_code_logs_passed_and_does_not_exit(self):
         with patch.object(ptia, "log") as mock_log:
-            ptia._check_stage_result(0, 1, "plan", "ch-1-plan-critic-escalation.md")
+            ptia._check_stage_result(0, 1, "plan", Path("ch-1-plan-critic-escalation.md"))
 
         mock_log.assert_called_once_with("Stage 1/5 (plan): PASSED.")
 
     def test_generic_failure_logs_escalation_hint_and_exits_1(self):
-        with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
-            ptia._check_stage_result(1, 2, "tasks", "ch-2-tasks-critic-escalation.md")
+        with tempfile.TemporaryDirectory() as d:
+            escalation = Path(d) / "ch-2-tasks-critic-escalation.md"
+            escalation.write_text("# Escalation")
+            with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
+                ptia._check_stage_result(1, 2, "tasks", escalation)
 
         self.assertEqual(cm.exception.code, 1)
         mock_log.assert_called_once_with(
             "Stage 2/5 (tasks): FAILED. Review ch-2-tasks-critic-escalation.md and re-run."
         )
 
+    def test_failure_without_escalation_file_points_at_the_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            escalation = Path(d) / "ch-4-implement-critic-escalation.md"
+            with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
+                ptia._check_stage_result(1, 4, "implement", escalation)
+
+        self.assertEqual(cm.exception.code, 1)
+        message = mock_log.call_args[0][0]
+        self.assertIn("No escalation file was written", message)
+        self.assertNotIn("Review ch-4", message)
+
     def test_usage_limit_exit_code_logs_paused_and_exits_with_that_code(self):
         with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
             ptia._check_stage_result(
-                USAGE_LIMIT_EXIT_CODE, 4, "implement", "ch-4-implement-critic-escalation.md"
+                USAGE_LIMIT_EXIT_CODE, 4, "implement", Path("ch-4-implement-critic-escalation.md")
             )
 
         self.assertEqual(cm.exception.code, USAGE_LIMIT_EXIT_CODE)
@@ -43,15 +57,18 @@ class TestCheckStageResult(unittest.TestCase):
     def test_human_action_exit_code_logs_waiting_and_exits_with_that_code(self):
         with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
             ptia._check_stage_result(
-                HUMAN_ACTION_EXIT_CODE, 2, "tasks", "ch-2-tasks-critic-escalation.md"
+                HUMAN_ACTION_EXIT_CODE, 2, "tasks", Path("ch-2-tasks-critic-escalation.md")
             )
 
         self.assertEqual(cm.exception.code, HUMAN_ACTION_EXIT_CODE)
         self.assertIn("WAITING for human action", mock_log.call_args[0][0])
 
     def test_stage_5_docs_failure_logs_escalation_hint_and_exits_1(self):
-        with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
-            ptia._check_stage_result(1, 5, "docs", "ch-5-docs-critic-escalation.md")
+        with tempfile.TemporaryDirectory() as d:
+            escalation = Path(d) / "ch-5-docs-critic-escalation.md"
+            escalation.write_text("# Escalation")
+            with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
+                ptia._check_stage_result(1, 5, "docs", escalation)
 
         self.assertEqual(cm.exception.code, 1)
         mock_log.assert_called_once_with(

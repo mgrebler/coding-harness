@@ -110,7 +110,7 @@ def _run_stage(spec_dir: Path, feature: str, stage: Stage) -> None:
     else:
         log(f"{label}: running {stage.marker}-auto...")
         rc = stream_subprocess(["python", stage.script, "--feature", feature])
-        _check_stage_result(rc, stage.number, stage.name, stage.escalation)
+        _check_stage_result(rc, stage.number, stage.name, spec_dir / stage.escalation)
 
 
 def get_current_branch() -> str:
@@ -123,12 +123,15 @@ def get_current_branch() -> str:
     return result.stdout.strip()
 
 
-def _check_stage_result(rc: int, stage_num: int, stage_name: str, escalation_hint: str) -> None:
+def _check_stage_result(rc: int, stage_num: int, stage_name: str, escalation: Path) -> None:
     """
     Log the outcome of a stage subprocess and exit if it didn't pass. A usage-limit
     pause (USAGE_LIMIT_EXIT_CODE) is distinguished from a real failure — no
     escalation file exists to review in that case, so re-running later is the
-    correct next step rather than reviewing an escalation doc.
+    correct next step rather than reviewing an escalation doc. Some failures
+    (a crash, a rejected commit, an off-schema gate result) write no escalation
+    file, so it is only named when it exists — specs/087's log pointed at one
+    that was never created.
     """
     if rc == USAGE_LIMIT_EXIT_CODE:
         log(
@@ -143,9 +146,11 @@ def _check_stage_result(rc: int, stage_num: int, stage_name: str, escalation_hin
         )
         sys.exit(rc)
     if rc != 0:
-        log(
-            f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): FAILED. Review {escalation_hint} and re-run."
-        )
+        if escalation.exists():
+            next_step = f"Review {escalation.name} and re-run."
+        else:
+            next_step = "No escalation file was written — the cause is in the stage log above."
+        log(f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): FAILED. {next_step}")
         sys.exit(1)
     log(f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): PASSED.")
 

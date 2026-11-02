@@ -1,5 +1,7 @@
 """Console/logging plumbing: stdout/stderr teeing and Claude Agent SDK message printing."""
 
+import contextlib
+import os
 import queue
 import subprocess
 import sys
@@ -12,14 +14,20 @@ from typing import IO
 from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
 
-def _safe_print(text: str, end: str = "\n", retries: int = 20, delay: float = 0.05) -> None:
-    """print(text, end=end, flush=True), retrying on BlockingIOError.
+def _restore_blocking_stdio() -> None:
+    for stream in (sys.__stdout__, sys.__stderr__):
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            os.set_blocking(stream.fileno(), True)
 
-    A large flush can hit EAGAIN if stdout's underlying fd has been put in
-    non-blocking mode (observed when a subprocess — e.g. a webServer's Node
-    process — flips O_NONBLOCK on a shared fd) and the pipe/file buffer is
-    momentarily full. Unlike a normal short write, print() doesn't retry this
-    itself, so a single big CI-output dump can crash the whole orchestrator."""
+
+def _safe_print(text: str, end: str = "\n", retries: int = 20, delay: float = 0.05) -> None:
+    """print(text, end=end, flush=True), surviving BlockingIOError.
+
+    A subprocess sharing our stdout (e.g. a webServer's Node process) can flip
+    its fd to O_NONBLOCK; a large write then hits EAGAIN, which print() doesn't
+    retry. Sleeping alone wasn't enough — specs/086 and 088 crashed the
+    orchestrator logging a multi-MB e2e failure — so the fd is put back into
+    blocking mode before each retry, which lets the write simply wait."""
     for attempt in range(retries):
         try:
             print(text, end=end, flush=True)
@@ -27,6 +35,7 @@ def _safe_print(text: str, end: str = "\n", retries: int = 20, delay: float = 0.
         except BlockingIOError:
             if attempt == retries - 1:
                 raise
+            _restore_blocking_stdio()
             time.sleep(delay)
 
 

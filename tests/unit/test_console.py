@@ -4,6 +4,7 @@ the claude_agent_sdk's generic session/usage-limit exception into SessionLimitEr
 import io
 import sys
 import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -111,3 +112,23 @@ class TestStreamSubprocess(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSafePrint(unittest.TestCase):
+    def test_blocking_io_error_restores_blocking_stdio_and_retries(self):
+        """specs/086/088: a multi-MB CI dump hit EAGAIN on a non-blocking stdout."""
+        calls = []
+
+        def flaky_print(*args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                raise BlockingIOError(11, "write could not complete without blocking")
+
+        with (
+            unittest.mock.patch("builtins.print", side_effect=flaky_print),
+            unittest.mock.patch.object(console.os, "set_blocking") as mock_set_blocking,
+        ):
+            console._safe_print("big dump")
+
+        self.assertEqual(len(calls), 2)
+        mock_set_blocking.assert_called()

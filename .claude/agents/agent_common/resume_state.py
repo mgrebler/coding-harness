@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -17,6 +18,10 @@ _REQUIRED_KEYS = {
 }
 
 
+def required_keys(summary_style: str) -> set[str]:
+    return set(_REQUIRED_KEYS[summary_style])
+
+
 class GateSchemaError(Exception):
     """A gate result file is missing key(s) required for its summary_style."""
 
@@ -30,11 +35,32 @@ _ITEM_KEY_ALIASES = {
 _FINDING_LISTS = ("violations", "blocking_issues", "non_blocking_concerns")
 
 
+# specs/017 wrote `"confidence": "high"` and `"status": "pass"`; the PASS
+# rule's `confidence < 7` then raised TypeError, and the lowercase PASS read
+# as FAIL, escalating a clean implementation after two wasted iterations.
+_CONFIDENCE_WORDS = {"very high": 9, "high": 8, "medium": 5, "moderate": 5, "low": 3}
+_RESULT_KEY_ALIASES = {"non_blocking_concerns": ("non_blocking_observations",)}
+_SEVERITY_CASING = {
+    word.lower(): word for word in ("BLOCKING", "WARNING", "Critical", "High", "Medium", "Low")
+}
+_TITLE_MAX_CHARS = 120
+
+
+def _short_title(text: str) -> str:
+    """First sentence of text, capped — so a title derived from a paragraph-long
+    `issue` doesn't repeat the whole finding (specs/017, 088 FOLLOWUP files)."""
+    first = re.split(r"(?<=[.!?])\s", text.strip(), maxsplit=1)[0]
+    return first if len(first) <= _TITLE_MAX_CHARS else first[: _TITLE_MAX_CHARS - 1] + "…"
+
+
 def _normalize_item(item: dict) -> None:
     for key, aliases in _ITEM_KEY_ALIASES.items():
         alias = next((a for a in aliases if item.get(a)), None)
         if not item.get(key) and alias:
-            item[key] = item[alias]
+            item[key] = _short_title(item[alias]) if key == "title" else item[alias]
+    severity = item.get("severity")
+    if isinstance(severity, str) and severity.strip().lower() in _SEVERITY_CASING:
+        item["severity"] = _SEVERITY_CASING[severity.strip().lower()]
     if not item.get("location") and item.get("file"):
         item["location"] = f"{item['file']}:{item['line']}" if item.get("line") else item["file"]
 
@@ -57,17 +83,39 @@ def _status_rule_breach(result: dict, summary_style: str) -> str | None:
     return None
 
 
+def _coerce_confidence(value):
+    if value is None or isinstance(value, int | float):
+        return value
+    text = str(value).strip().lower()
+    if text in _CONFIDENCE_WORDS:
+        return _CONFIDENCE_WORDS[text]
+    try:
+        return float(text.split("/")[0])
+    except ValueError:
+        raise GateSchemaError(f"confidence {value!r} is not a 1-10 number") from None
+
+
 def normalize_result(result: dict, summary_style: str) -> bool:
     """Validate a gate result in place and make it self-consistent, for local
     and Claude critics alike. Raises GateSchemaError if required keys are
-    missing. Maps drifted finding keys onto title/finding/location, and turns a
+    missing or confidence isn't a number. Canonicalises status/severity casing,
+    word confidences and drifted keys (finding title/finding/location,
+    non_blocking_observations), and turns a
     PASS that breaks the documented status rule (any BLOCKING violation; any
     Critical, more than 2 High, or confidence < 7) into FAIL — specs/083 had a
     critic PASS its own High finding. Returns True if anything changed."""
+    before = json.dumps(result, sort_keys=True)
+    for key, aliases in _RESULT_KEY_ALIASES.items():
+        alias = next((a for a in aliases if a in result), None)
+        if key not in result and alias:
+            result[key] = result.pop(alias)
     missing = sorted(_REQUIRED_KEYS[summary_style] - result.keys())
     if missing:
         raise GateSchemaError(f"missing required key(s) {missing}")
-    before = json.dumps(result, sort_keys=True)
+    if isinstance(result["status"], str):
+        result["status"] = result["status"].strip().upper()
+    if "confidence" in result:
+        result["confidence"] = _coerce_confidence(result["confidence"])
     for key in _FINDING_LISTS:
         for item in result.get(key) or []:
             if isinstance(item, dict):
@@ -131,7 +179,7 @@ def find_passing_iteration(
         if rp.exists():
             try:
                 result = json.loads(rp.read_text(encoding="utf-8"))
-                if result.get("status") == "PASS":
+                if str(result.get("status", "")).strip().upper() == "PASS":
                     return i
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -319,6 +367,28 @@ def write_stage_complete(spec_dir: Path, stage: str) -> None:
     ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     marker = spec_dir / f"{stage}-auto-complete"
     marker.write_text(f"completed: true\nstage: {stage}\ntimestamp: {ts}\n", encoding="utf-8")
+
+
+def stage_dirty_baseline(
+    spec_dir: Path, stage: str, snapshot: Callable[[], list[str]]
+) -> list[str]:
+    """The pre-existing dirty paths a stage's commit should leave out, taken
+    once on the stage's first start and reused on every resume. A fresh
+    snapshot on resume would capture the interrupted run's own uncommitted
+    work as "pre-existing" and exclude it for good (specs/089: 21 of the
+    feature's own source/test files). Paths under spec_dir are never
+    excluded — they are always this feature's own output."""
+    path = spec_dir / f"{stage}-dirty-baseline.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    prefix = spec_dir.as_posix().rstrip("/") + "/"
+    baseline = [p for p in snapshot() if not (p + "/").startswith(prefix)]
+    path.write_text(json.dumps(baseline, indent=2), encoding="utf-8")
+    return baseline
+
+
+def clear_stage_complete(spec_dir: Path, stage: str) -> None:
+    (spec_dir / f"{stage}-auto-complete").unlink(missing_ok=True)
 
 
 def stage_is_complete(spec_dir: Path, stage: str) -> bool:
