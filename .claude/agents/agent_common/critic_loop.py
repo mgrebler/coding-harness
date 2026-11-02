@@ -125,8 +125,9 @@ class GateSpec(NamedTuple):
     script_name: standalone critic script passed to run_gate, e.g. "ch_1_plan_critic.py"
     critic_type: local-LLM critic_type key in .specify/pipeline.json, e.g. "plan"
     label: display label used in log lines and passed to run_gate, e.g. "plan critic"
-    build_query: (iteration, prior_violations, claude_model) -> the query(...) call
-        to run via run_gate. claude_model is the resolved Claude model (or None) —
+    build_query: (iteration, prior_violations, claude_model, schema_error=None) ->
+        the query(...) call to run via run_gate. schema_error is only passed on a
+        re-run after the previous result file failed schema validation. claude_model is the resolved Claude model (or None) —
         only meaningful when this gate falls back to Claude; build_query itself
         decides how to use it (pass to driving_agent_options/AgentDefinition).
     build_reconcile_query: (iteration, raw_results, claude_model, critics_configured)
@@ -139,7 +140,7 @@ class GateSpec(NamedTuple):
     script_name: str
     critic_type: str
     label: str
-    build_query: Callable[[int, list | None, str | None], object]
+    build_query: Callable[..., object]
     build_reconcile_query: Callable[..., object] | None = None
 
 
@@ -180,11 +181,24 @@ def claude_gate(
     def result_path(iteration: int) -> str:
         return f"specs/{feature}/{result_prefix}-{iteration}.json"
 
-    def output_instructions(iteration: int, suffix: str = "") -> str:
-        return (
+    def output_instructions(
+        iteration: int, suffix: str = "", schema_error: str | None = None
+    ) -> str:
+        instructions = (
             f"- After producing JSON, write it to {result_path(iteration)} using Bash\n"
             f"- Print one line: [{tag}{suffix}] iteration {iteration} → PASS or FAIL → path"
         )
+        if schema_error:
+            # An unchanged re-run repeated the same off-schema shape in specs/087
+            # (twice, further off the second time) — say exactly what was wrong.
+            keys = ", ".join(f'"{k}"' for k in sorted(rstate.required_keys(summary_style)))
+            instructions += (
+                f"\n- Your previous result file for this iteration was REJECTED: it was "
+                f"{schema_error}. The JSON MUST have the top-level keys {keys}, exactly as "
+                "the output format above specifies — not a `verdict`/`findings` or any other "
+                "shape. Re-check the file against the format before finishing."
+            )
+        return instructions
 
     def drive(user_prompt: str, name: str, agent: AgentDefinition, model: str | None):
         return query(
@@ -194,14 +208,20 @@ def claude_gate(
             ),
         )
 
-    def build_query(iteration: int, prev_violations, model: str | None):
+    def build_query(
+        iteration: int, prev_violations, model: str | None, schema_error: str | None = None
+    ):
         violations_block = rstate.format_violations_block(
             prev_violations, iteration, violations_context
         )
         agent = AgentDefinition(
             description=description,
             model=model,
-            prompt=prompt(iteration, violations_block, output_instructions(iteration)),
+            prompt=prompt(
+                iteration,
+                violations_block,
+                output_instructions(iteration, schema_error=schema_error),
+            ),
             tools=CRITIC_TOOLS,
         )
         return drive(f"{task} Write result to {result_path(iteration)}.", agent_name, agent, model)
@@ -269,6 +289,7 @@ async def _run_gate_for_iteration(
     # An off-schema result file is a harness/subagent bug, not a verdict: move
     # it aside and run the gate once more instead of failing on it forever on
     # every resume (specs/006).
+    schema_error = None
     for attempt in (1, 2):
         if not path.exists():
             log(f"Running {gate.label} (iteration {iteration})...")
@@ -280,7 +301,11 @@ async def _run_gate_for_iteration(
                 feature,
                 iteration,
                 gate.label,
-                lambda model: gate.build_query(iteration, prev_violations, model),
+                lambda model, schema_error=schema_error: (
+                    gate.build_query(iteration, prev_violations, model, schema_error=schema_error)
+                    if schema_error
+                    else gate.build_query(iteration, prev_violations, model)
+                ),
                 result_prefix=gate.result_prefix,
                 summary_style=summary_style,
                 build_reconcile_query=gate.build_reconcile_query,
@@ -302,7 +327,12 @@ async def _run_gate_for_iteration(
                 f"ERROR: {gate.label} (iteration {iteration}) result file {e} — moved to {invalid}."
             )
             if attempt == 2:
+                log(
+                    f"ABORTED: {gate.label} wrote an off-schema result twice — no verdict and no "
+                    "escalation file. Re-running retries the gate."
+                )
                 sys.exit(1)
+            schema_error = str(e)
     status = result.get("status", "FAIL")
     record_pass_followups(spec_dir, gate.label.title(), iteration, result)
 
@@ -596,12 +626,24 @@ def finish_stage(
     exclude_from_commit: forwarded to git.run_auto_commit — paths (typically a
     pre-stage dirty-file baseline) to leave out of this commit. See
     FOLLOWUP_HARNESS.md Bug 4."""
-    log(ready_message)
-    if exclude_from_commit:
-        git.run_auto_commit(commit_event, agent_name, exclude=exclude_from_commit)
-    else:
-        git.run_auto_commit(commit_event, agent_name)
+    # The marker is written first so it lands in this stage's own commit, and
+    # removed again if the commit fails: a stage whose work a pre-commit hook
+    # rejected must not read as complete, or the next stage's dirty-baseline
+    # snapshot leaves that uncommitted work out of every later commit too.
     rstate.write_stage_complete(spec_dir, stage)
+    if exclude_from_commit:
+        committed = git.run_auto_commit(commit_event, agent_name, exclude=exclude_from_commit)
+    else:
+        committed = git.run_auto_commit(commit_event, agent_name)
+    if not committed:
+        rstate.clear_stage_complete(spec_dir, stage)
+        log(
+            f"ERROR: the {stage} commit was rejected (see the git output above — usually a "
+            "pre-commit hook such as lint). Fix the cause, then re-run — the passing "
+            "verdicts are kept."
+        )
+        sys.exit(1)
+    log(ready_message)
 
 
 def finish_if_already_passing(
