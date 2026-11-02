@@ -174,3 +174,24 @@ class TestRevisionRegressions(unittest.TestCase):
     def test_genuine_edit_passes(self):
         after = self.PLAN.replace("y\n", "y — now with contracts/\n")
         self.assertEqual(pc.revision_regressions(self.PLAN, after), [])
+
+
+class TestRedStateIssue(unittest.TestCase):
+    def test_genuine_assertion_failure_is_valid(self):
+        self.assertIsNone(pc.red_state_issue("Tests  1 failed | 3 passed"))
+
+    def test_passing_run_is_rejected_as_inconclusive(self):
+        self.assertIn("neither", pc.red_state_issue("Tests  4 passed (4)"))
+
+    def test_declared_regression_guard_passing_run_is_accepted(self):
+        """specs/087, 016, 017: every rejected artifact was a declared
+        regression-guard capture, kicked back twice per feature for nothing."""
+        artifact = (
+            "=== T023 — constitution §19 regression-guard exception ===\n"
+            "These tests PASS against today's code.\n\nTests  4 passed (4)"
+        )
+        self.assertIsNone(pc.red_state_issue(artifact))
+
+    def test_regression_guard_declaration_does_not_excuse_an_infra_failure(self):
+        artifact = "§19 REGRESSION-GUARD EXCEPTION\nError: connect ECONNREFUSED 127.0.0.1:5432"
+        self.assertIsNotNone(pc.red_state_issue(artifact))

@@ -312,15 +312,28 @@ _GENUINE_FAILURE_PATTERNS = [
 ]
 
 
+# An artifact that declares this records a deliberately PASSING run of a
+# no-regression test (a constitution "regression-guard exception"). Every
+# artifact the check rejected in specs/087, 016 and 017 was one, which cost two
+# wasted kickback sessions each; whether the exception is justified is the
+# test critic's call, not a pattern match's.
+_REGRESSION_GUARD_RE = re.compile(r"(?i)regression[- ]guard exception")
+_REGRESSION_GUARD_HEADER_CHARS = 2000
+
+
 def red_state_issue(artifact_text: str) -> str | None:
     """Return a description of why this red-state artifact is invalid, or
     None if it looks like a genuine failing-assertion/module-not-found
-    capture. Checked in this order: an infra-failure signature with no
-    accompanying genuine-failure signature is rejected outright; an
-    artifact with neither signature (e.g. a clean pass, or empty output)
-    is rejected as inconclusive."""
+    capture, or a declared regression-guard capture that ran. Checked in this
+    order: an infra-failure signature with no accompanying genuine-failure
+    signature is rejected outright; an artifact with neither signature (e.g. a
+    clean pass, or empty output) is rejected as inconclusive unless its header
+    declares a regression-guard exception."""
     has_infra = any(p.search(artifact_text) for p in _INFRA_FAILURE_PATTERNS)
     has_genuine = any(p.search(artifact_text) for p in _GENUINE_FAILURE_PATTERNS)
+    declares_guard = bool(
+        _REGRESSION_GUARD_RE.search(artifact_text[:_REGRESSION_GUARD_HEADER_CHARS])
+    )
 
     if has_infra and not has_genuine:
         return (
@@ -328,7 +341,7 @@ def red_state_issue(artifact_text: str) -> str | None:
             "service unreachable, no tests found) with no genuine assertion "
             "failure — the test environment did not run, not the test"
         )
-    if not has_infra and not has_genuine:
+    if not has_infra and not has_genuine and not declares_guard:
         return (
             "artifact shows neither an infrastructure-failure signature nor a "
             "genuine assertion/module-not-found failure signature — cannot "

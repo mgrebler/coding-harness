@@ -93,16 +93,27 @@ def branch_diff(path: str) -> str | None:
     if not exists_at_base:
         return None
     result = subprocess.run(
-        ["git", "diff", f"{base_ref}...HEAD", "--", path], capture_output=True, text=True
+        ["git", "diff", _merge_base(base_ref), "--", path], capture_output=True, text=True
     )
     return result.stdout
 
 
+def _merge_base(base_ref: str) -> str:
+    result = subprocess.run(["git", "merge-base", base_ref, "HEAD"], capture_output=True, text=True)
+    return result.stdout.strip() or base_ref
+
+
 def get_changed_files() -> list[str]:
-    base_ref = resolve_base_ref()
-    result = subprocess.run(
-        ["git", "diff", f"{base_ref}...HEAD", "--name-only"],
-        capture_output=True,
-        text=True,
-    )
-    return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+    """Every path this branch changed relative to its merge-base with main —
+    committed, uncommitted, or untracked. Committed-only left both local test
+    critics with "nothing to review" whenever the test agent hadn't committed
+    yet (specs/014, 016, 021, 086, 087: 22 lost critic runs)."""
+    base = _merge_base(resolve_base_ref())
+    tracked = subprocess.run(
+        ["git", "diff", base, "--name-only"], capture_output=True, text=True
+    ).stdout
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"], capture_output=True, text=True
+    ).stdout
+    paths = (f.strip() for f in (tracked + untracked).splitlines())
+    return list(dict.fromkeys(p for p in paths if p))

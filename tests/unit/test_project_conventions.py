@@ -42,6 +42,18 @@ class TestResolveCiCommands(_InTempProject):
         self.assertEqual(checks["Typecheck"], ["mypy", "."])
         self.assertEqual(checks["Security scan"], ["bandit", "-r", "src"])
 
+    def test_parenthetical_aside_backtick_is_not_taken_as_the_command(self):
+        """specs/016 ran the Playwright container image name as the e2e command."""
+        self._write_constitution(
+            "## 12. CI Requirements\n\n"
+            "- Playwright e2e suite — `pnpm --filter web test:e2e` "
+            "(runs in the `mcr.microsoft.com/playwright` image in CI)\n\n---\n"
+        )
+        self.assertEqual(
+            pc.resolve_ci_commands(),
+            [("Playwright e2e suite", ["pnpm", "--filter", "web", "test:e2e"])],
+        )
+
     def test_ignores_placeholder_commands(self):
         self._write_constitution(
             "## 12. CI Requirements\n\n- Typecheck (`[PROJECT: e.g. pnpm typecheck]`)\n\n---\n"
@@ -140,3 +152,22 @@ class TestResolveTestDirs(_InTempProject):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLooksLikeTestFile(unittest.TestCase):
+    def test_recognises_common_test_file_conventions(self):
+        for path in (
+            "src/app.test.ts",
+            "e2e/login.spec.ts",
+            "packages/x/src/__tests__/a.ts",
+            "tests/test_api.py",
+            "test/a.js",
+            "app/test_models.py",
+            "app/models_test.py",
+            "pkg/handler_test.go",
+        ):
+            self.assertTrue(pc.looks_like_test_file(path), path)
+
+    def test_ignores_ordinary_source_files(self):
+        for path in ("src/app.ts", "app/testing_utils.py", "contest/rules.py"):
+            self.assertFalse(pc.looks_like_test_file(path), path)

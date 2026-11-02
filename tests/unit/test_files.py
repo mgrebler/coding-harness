@@ -119,6 +119,22 @@ class TestReadChangedFiles(unittest.TestCase):
             files.read_changed_files(["src/app.ts"], ("tests/",))
 
 
+class TestUnderDir(unittest.TestCase):
+    def test_placeholder_segment_matches_any_one_segment(self):
+        """sprognoggin's constitution names `packages/<package>/tests/`."""
+        self.assertTrue(
+            files._under_dir("packages/pipeline/tests/a.ts", "packages/<package>/tests/")
+        )
+        self.assertFalse(files._under_dir("packages/a/b/tests/a.ts", "packages/<package>/tests/"))
+
+    def test_star_segment_matches_any_one_segment(self):
+        self.assertTrue(files._under_dir("apps/web/tests/a.ts", "apps/*/tests/"))
+
+    def test_plain_dir_is_a_prefix_match(self):
+        self.assertTrue(files._under_dir("backend/tests/a.ts", "backend/tests/"))
+        self.assertFalse(files._under_dir("backend/src/a.ts", "backend/tests/"))
+
+
 class TestReadPlanBundle(unittest.TestCase):
     def test_appends_existing_sibling_artifacts(self):
         with tempfile.TemporaryDirectory() as d:

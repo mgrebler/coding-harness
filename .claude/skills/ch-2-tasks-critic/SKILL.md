@@ -67,8 +67,9 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - No unapproved library or tool introduced without a constitution amendment proposed in `plan.md`
 
 ### §T5 — Task Format [BLOCKING]
-- Every task uses the machine-readable format `- [ ] TXXX [TEST|IMPL] [P?] [USZ] description` from `.specify/templates/tasks-template.md` — a checkbox immediately followed by a bare task ID (`- [ ] T001`, never `- [T001]`); numbered lists, plain bullets, and untagged prose tasks violate this rule
+- Every task uses the machine-readable format `- [ ] TXXX [TEST|IMPL] [P?] [USZ] description` from `.specify/templates/tasks-template.md` — a checkbox immediately followed by a bare task ID (`- [ ] T001`, never `- [T001]`); numbered task lists, bracketed IDs, and untagged prose tasks violate this rule. Bullets and numbered items in non-task sections (dependencies, execution order, parallel opportunities, implementation strategy) are prose, not tasks — never flag them
 - Every task an agent cannot complete inside the repo (waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist) is tagged `[MANUAL]` — an untagged one blocks the implement stage
+- Conversely, no task that writes or edits files in the repo is tagged `[MANUAL]` — the implement stage skips `[MANUAL]` tasks, so that code is never written
 
 ### §T6 — v1 Scope [BLOCKING]
 - No task implements functionality that is absent from `spec.md`

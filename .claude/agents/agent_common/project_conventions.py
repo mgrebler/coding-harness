@@ -39,7 +39,9 @@ _README_CI_KEYWORDS = (
     "continuous integration",
 )
 
-_TEST_FILENAME_RE = re.compile(r"(?i)(\.test\.|\.spec\.|/__tests__/|/tests?/)")
+_TEST_FILENAME_RE = re.compile(
+    r"(?i)(\.test\.|\.spec\.|(^|/)__tests__/|(^|/)tests?/|(^|/)test_[^/]*\.py$|_test\.(py|go)$)"
+)
 
 _HEADING_RE = re.compile(r"(?im)^#{1,6}\s*.*$")
 _CI_SECTION_HEADING_RE = re.compile(
@@ -49,6 +51,7 @@ _TEST_LOCATION_HEADING_RE = re.compile(r"(?im)^#{1,6}.*\btest file location\b.*$
 _BULLET_RE = re.compile(r"(?m)^-\s+(.*)$")
 _LABEL_RE = re.compile(r"^([^`(:]+)")
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
+_PARENTHETICAL_RE = re.compile(r"\([^()]*\)")
 _HEADING_FENCE_RE = re.compile(
     # Heading capture is deliberately restricted to a single line ([^\n]+?, no
     # DOTALL): with DOTALL applied to `.+?` here, a heading not directly
@@ -89,7 +92,7 @@ def _is_placeholder(command: str) -> bool:
 
 def _label_from_bullet(bullet: str) -> str:
     match = _LABEL_RE.match(bullet)
-    return (match.group(1) if match else bullet).strip()
+    return (match.group(1) if match else bullet).strip().rstrip("\u2014\u2013-").strip()
 
 
 def _commands_from_constitution(constitution_text: str) -> list[tuple[str, list[str]]]:
@@ -99,7 +102,11 @@ def _commands_from_constitution(constitution_text: str) -> list[tuple[str, list[
         return resolved
     section = _section_after(constitution_text, heading)
     for bullet in _BULLET_RE.findall(section):
-        backticks = _BACKTICK_RE.findall(bullet)
+        # A parenthetical aside's own backtick token (specs/016: the Playwright
+        # container image `mcr.microsoft.com/playwright`) is not the command.
+        backticks = _BACKTICK_RE.findall(_PARENTHETICAL_RE.sub("", bullet)) or (
+            _BACKTICK_RE.findall(bullet)
+        )
         if not backticks:
             continue
         command = backticks[-1].strip()
