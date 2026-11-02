@@ -1,5 +1,6 @@
 """File I/O helpers: reading/writing spec files and changed-file content."""
 
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -89,6 +90,15 @@ class NoChangedFilesError(Exception):
     passed on "no test files were changed")."""
 
 
+def _under_dir(path: str, directory: str) -> bool:
+    """Prefix match, where a `<placeholder>` or `*` segment (sprognoggin's
+    constitution names `packages/<package>/tests/`) matches any one segment."""
+    if "<" not in directory and "*" not in directory:
+        return path.startswith(directory)
+    segment = re.sub(r"<[^>/]*>|\\\*", "[^/]+", re.escape(directory))
+    return re.match(segment, path) is not None
+
+
 def read_changed_files(
     changed_files: list[str],
     dirs: tuple[str, ...],
@@ -106,7 +116,7 @@ def read_changed_files(
     Raises NoChangedFilesError if nothing matches."""
     sections = []
     for path_str in changed_files:
-        if not any(path_str.startswith(d) for d in dirs) and not (
+        if not any(_under_dir(path_str, d) for d in dirs) and not (
             extra_match and extra_match(path_str)
         ):
             continue

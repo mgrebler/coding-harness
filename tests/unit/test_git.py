@@ -2,12 +2,15 @@
 
 get_feature_from_branch and run_auto_commit remain only indirectly
 exercised (mocked out) by tests in test_critic_loop.py. resolve_base_ref
-and get_changed_files get direct coverage here, added alongside the
+and get_changed_files get direct coverage here (the latter against a real repo), added alongside the
 FOLLOWUP_HARNESS.md Bug 2 fix (stale local `main` silently widening
 critic-prompt diffs).
 """
 
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -67,48 +70,50 @@ class TestResolveBaseRef(unittest.TestCase):
 
 
 class TestGetChangedFiles(unittest.TestCase):
-    def test_diffs_against_origin_main_when_available(self):
-        def fake_run(cmd, **kwargs):
-            if cmd[:2] == ["git", "fetch"]:
-                return _result(returncode=0)
-            if cmd[:3] == ["git", "rev-parse", "--verify"]:
-                return _result(returncode=0)
-            if cmd[:2] == ["git", "diff"]:
-                if cmd[2] != "origin/main...HEAD":
-                    raise AssertionError(f"expected diff against origin/main...HEAD, got: {cmd}")
-                return _result(returncode=0, stdout="a.py\nb.py\n")
-            raise AssertionError(f"unexpected command: {cmd}")
+    """Against a real throwaway repo: a feature branch off main with one
+    committed, one modified-but-uncommitted, and one untracked file."""
 
-        with patch.object(git.subprocess, "run", side_effect=fake_run):
-            self.assertEqual(git.get_changed_files(), ["a.py", "b.py"])
+    def setUp(self):
+        self._orig_cwd = Path.cwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        for cmd in (
+            ["git", "init", "-q", "-b", "main"],
+            ["git", "config", "user.email", "t@example.com"],
+            ["git", "config", "user.name", "t"],
+        ):
+            subprocess.run(cmd, check=True)
+        Path("existing.py").write_text("v1\n")
+        Path(".gitignore").write_text("ignored.log\n")
+        self._git("add", ".")
+        self._git("commit", "-q", "-m", "base")
+        self._git("checkout", "-q", "-b", "feature")
+        Path("committed.py").write_text("x\n")
+        self._git("add", "committed.py")
+        self._git("commit", "-q", "-m", "feature work")
 
-    def test_falls_back_to_local_main_when_origin_main_unavailable(self):
-        def fake_run(cmd, **kwargs):
-            if cmd[:2] == ["git", "fetch"]:
-                return _result(returncode=1)
-            if cmd[:3] == ["git", "rev-parse", "--verify"]:
-                return _result(returncode=1)
-            if cmd[:2] == ["git", "diff"]:
-                if cmd[2] != "main...HEAD":
-                    raise AssertionError(f"expected diff against main...HEAD, got: {cmd}")
-                return _result(returncode=0, stdout="c.py\n")
-            raise AssertionError(f"unexpected command: {cmd}")
+    def tearDown(self):
+        os.chdir(self._orig_cwd)
+        self._tmp.cleanup()
 
-        with patch.object(git.subprocess, "run", side_effect=fake_run):
-            self.assertEqual(git.get_changed_files(), ["c.py"])
+    def _git(self, *args):
+        subprocess.run(["git", *args], check=True)
 
-    def test_blank_lines_filtered(self):
-        def fake_run(cmd, **kwargs):
-            if cmd[:2] == ["git", "fetch"]:
-                return _result(returncode=0)
-            if cmd[:3] == ["git", "rev-parse", "--verify"]:
-                return _result(returncode=0)
-            if cmd[:2] == ["git", "diff"]:
-                return _result(returncode=0, stdout="a.py\n\n  \nb.py\n")
-            raise AssertionError(f"unexpected command: {cmd}")
+    def test_includes_committed_uncommitted_and_untracked_changes(self):
+        """specs/086: the test agent hadn't committed, so both local test
+        critics found "nothing to review"."""
+        Path("existing.py").write_text("v2\n")
+        Path("tests").mkdir()
+        Path("tests/new_test.py").write_text("t\n")
+        Path("ignored.log").write_text("noise\n")
+        self.assertEqual(
+            sorted(git.get_changed_files()), ["committed.py", "existing.py", "tests/new_test.py"]
+        )
 
-        with patch.object(git.subprocess, "run", side_effect=fake_run):
-            self.assertEqual(git.get_changed_files(), ["a.py", "b.py"])
+    def test_branch_diff_includes_uncommitted_edits_to_an_existing_file(self):
+        Path("existing.py").write_text("v2\n")
+        self.assertIn("+v2", git.branch_diff("existing.py"))
+        self.assertIsNone(git.branch_diff("committed.py"))
 
 
 if __name__ == "__main__":
