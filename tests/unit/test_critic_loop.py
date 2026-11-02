@@ -28,6 +28,37 @@ class TestFinishStage(unittest.TestCase):
             mock_commit.assert_called_once_with("after_plan", "plan-auto")
             self.assertTrue(resume_state.stage_is_complete(spec_dir, "plan"))
 
+    def test_marker_is_written_before_the_commit_so_it_is_committed(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            seen = []
+            with patch.object(
+                git,
+                "run_auto_commit",
+                side_effect=lambda *a, **k: (
+                    seen.append(resume_state.stage_is_complete(spec_dir, "docs")) or True
+                ),
+            ):
+                critic_loop.finish_stage(
+                    MagicMock(), spec_dir, "docs-auto", "after_docs", "docs", ""
+                )
+            self.assertEqual(seen, [True])
+
+    def test_rejected_commit_exits_and_leaves_the_stage_incomplete(self):
+        """specs/021: a husky-rejected commit still reported PASSED, and later
+        stages excluded the uncommitted work from their commits for good."""
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            log = MagicMock()
+            with (
+                patch.object(git, "run_auto_commit", return_value=False),
+                self.assertRaises(SystemExit) as cm,
+            ):
+                critic_loop.finish_stage(log, spec_dir, "plan-auto", "after_plan", "plan", "Ready.")
+            self.assertEqual(cm.exception.code, 1)
+            self.assertFalse(resume_state.stage_is_complete(spec_dir, "plan"))
+            self.assertNotIn("Ready.", [c.args[0] for c in log.call_args_list])
+
 
 class TestFinishIfAlreadyPassing(unittest.TestCase):
     def test_no_passing_result_returns_false(self):
@@ -339,6 +370,48 @@ class TestRunSingleGateLoop(unittest.IsolatedAsyncioTestCase):
 
             on_pass.assert_awaited_once()
             self.assertTrue((spec_dir / "ch-2-tasks-critic-result-1.invalid").exists())
+
+    async def test_schema_rerun_tells_the_critic_what_was_wrong(self):
+        """specs/087: an unchanged re-run repeated the same off-schema shape."""
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            schema_errors = []
+
+            def build_query(iteration, prev_violations, model, schema_error=None):
+                schema_errors.append(schema_error)
+                return "query-object"
+
+            async def fake_run_gate(
+                log, critic_type, script_name, feature, iteration, label, claude_fallback, **kw
+            ):
+                claude_fallback(None)
+                body = {"verdict": "pass"} if len(schema_errors) == 1 else {"status": "PASS"}
+                (spec_dir / f"ch-2-tasks-critic-result-{iteration}.json").write_text(
+                    json.dumps({**body, "violations": []})
+                )
+
+            gate = GateSpec(
+                "ch-2-tasks-critic-result",
+                "ch_2_tasks_critic.py",
+                "tasks",
+                "tasks critic",
+                build_query,
+            )
+            with patch.object(ollama, "run_gate", side_effect=fake_run_gate):
+                await critic_loop.run_single_gate_loop(
+                    MagicMock(),
+                    spec_dir,
+                    "feat",
+                    IterationBudget(3, 3),
+                    gate,
+                    resume_state=(1, None),
+                    run_fix=AsyncMock(),
+                    on_pass=AsyncMock(),
+                    escalation_kwargs={},
+                )
+
+            self.assertIsNone(schema_errors[0])
+            self.assertIn("missing required key(s)", schema_errors[1])
 
     async def test_pass_records_its_leftover_findings_as_followups(self):
         with tempfile.TemporaryDirectory() as d:
@@ -750,6 +823,19 @@ class TestClaudeGate(unittest.TestCase):
         self.assertIn("R-PREV", agent.prompt)
         self.assertIn("[ch-1-plan-critic] iteration 2", agent.prompt)
         self.assertEqual(agent.tools, critic_loop.CRITIC_TOOLS)
+
+    def test_schema_error_rerun_names_the_required_keys(self):
+        q = self._render(
+            lambda *a: self._gate().build_query(
+                *a, schema_error="missing required key(s) ['status']"
+            ),
+            1,
+            None,
+            None,
+        )
+        prompt = q["options"]["agents"]["plan-critic"].prompt
+        self.assertIn("REJECTED", prompt)
+        self.assertIn('"status", "violations"', prompt)
 
     def test_reconcile_query_gets_context_sections_and_own_tag(self):
         raw = [{"id": "a", "model": "m", "result": {"status": "FAIL", "violations": []}}]

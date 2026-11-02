@@ -32,8 +32,10 @@ def dirty_files() -> list[str]:
     return paths
 
 
-def run_auto_commit(event: str, agent_name: str, exclude: list[str] | None = None):
+def run_auto_commit(event: str, agent_name: str, exclude: list[str] | None = None) -> bool:
     """Delegate commit to the speckit-git-commit script for the given event.
+    Returns False if the script failed (e.g. a pre-commit hook rejected the
+    commit) — a skipped or empty commit is still a success.
 
     exclude (optional): paths to leave out of this commit — typically a
     baseline of files that were already dirty before the current stage
@@ -43,7 +45,7 @@ def run_auto_commit(event: str, agent_name: str, exclude: list[str] | None = Non
     script = Path(".specify/extensions/git/scripts/bash/auto-commit.sh")
     if not script.exists():
         print(f"[{agent_name}] Warning: auto-commit.sh not found; skipping commit.", flush=True)
-        return
+        return True
     cmd = ["bash", str(script), event]
     if exclude:
         for path in exclude:
@@ -54,7 +56,7 @@ def run_auto_commit(event: str, agent_name: str, exclude: list[str] | None = Non
             )
         cmd.append("--exclude")
         cmd.extend(exclude)
-    subprocess.run(cmd, check=False)
+    return subprocess.run(cmd, check=False).returncode == 0
 
 
 def resolve_base_ref(base_branch: str = "main") -> str:

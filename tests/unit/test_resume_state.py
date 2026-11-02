@@ -61,6 +61,37 @@ class TestFindPassingIteration(unittest.TestCase):
             )
 
 
+class TestFindPassingIterationCasing(unittest.TestCase):
+    def test_lowercase_pass_on_disk_is_found(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            (spec_dir / "gate-result-1.json").write_text(json.dumps({"status": "pass"}))
+            self.assertEqual(resume_state.find_passing_iteration(spec_dir, "gate-result"), 1)
+
+
+class TestStageDirtyBaseline(unittest.TestCase):
+    def test_first_snapshot_is_persisted_and_reused_on_resume(self):
+        """specs/089: a fresh snapshot on resume excluded the interrupted run's own work."""
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            first = resume_state.stage_dirty_baseline(spec_dir, "ch-4", lambda: ["stray.txt"])
+            resumed = resume_state.stage_dirty_baseline(
+                spec_dir, "ch-4", lambda: ["stray.txt", "src/feature.ts"]
+            )
+            self.assertEqual(first, ["stray.txt"])
+            self.assertEqual(resumed, ["stray.txt"])
+
+    def test_paths_under_the_spec_dir_are_never_excluded(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d) / "specs" / "021-x"
+            spec_dir.mkdir(parents=True)
+            own = spec_dir.as_posix()
+            baseline = resume_state.stage_dirty_baseline(
+                spec_dir, "ch-4", lambda: [f"{own}/tasks.md", f"{own}/", "README.md"]
+            )
+            self.assertEqual(baseline, ["README.md"])
+
+
 class TestApplyEscalationReview(unittest.TestCase):
     PREFIX = "ch-4-implement-critic-result"
     REVIEW = "ch-4-implement-critic-escalation-review.md"
@@ -222,6 +253,46 @@ class TestNormalizeResult(unittest.TestCase):
             (item["title"], item["finding"], item["location"]),
             ("Format job", "Runs twice", "ci.yml:4"),
         )
+
+    def test_lowercase_status_and_word_confidence_are_canonicalised(self):
+        """specs/017: "pass" read as FAIL and "high" crashed the confidence < 7 rule."""
+        result = self._confidence(status="pass", confidence="high")
+        resume_state.normalize_result(result, "confidence")
+        self.assertEqual((result["status"], result["confidence"]), ("PASS", 8))
+
+    def test_word_confidence_below_threshold_still_fails_a_pass(self):
+        result = self._confidence(confidence="medium")
+        resume_state.normalize_result(result, "confidence")
+        self.assertEqual(result["status"], "FAIL")
+
+    def test_numeric_string_confidence_is_coerced(self):
+        result = self._confidence(confidence="9/10")
+        resume_state.normalize_result(result, "confidence")
+        self.assertEqual(result["confidence"], 9)
+
+    def test_unreadable_confidence_is_a_schema_error(self):
+        with self.assertRaises(resume_state.GateSchemaError):
+            resume_state.normalize_result(self._confidence(confidence="solid"), "confidence")
+
+    def test_lowercase_severity_is_canonicalised_so_the_pass_rule_sees_it(self):
+        result = self._confidence(blocking_issues=[{"severity": "critical"}])
+        resume_state.normalize_result(result, "confidence")
+        self.assertEqual(result["blocking_issues"][0]["severity"], "Critical")
+        self.assertEqual(result["status"], "FAIL")
+
+    def test_non_blocking_observations_become_non_blocking_concerns(self):
+        result = self._confidence(non_blocking_observations=["Oversize default may be low"])
+        resume_state.normalize_result(result, "confidence")
+        self.assertEqual(result["non_blocking_concerns"], ["Oversize default may be low"])
+        self.assertNotIn("non_blocking_observations", result)
+
+    def test_title_derived_from_a_long_issue_is_its_first_sentence(self):
+        issue = "The gate lives in the new-row branch. " + "Details. " * 40
+        result = self._confidence(non_blocking_concerns=[{"issue": issue}])
+        resume_state.normalize_result(result, "confidence")
+        item = result["non_blocking_concerns"][0]
+        self.assertEqual(item["title"], "The gate lives in the new-row branch.")
+        self.assertEqual(item["finding"], issue)
 
 
 class TestReadResult(unittest.TestCase):

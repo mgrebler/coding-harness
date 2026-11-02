@@ -63,6 +63,7 @@ from agent_common.resume_state import (
     find_two_gate_resume_state,
     next_iteration,
     read_result,
+    stage_dirty_baseline,
     stage_is_complete,
 )
 
@@ -301,6 +302,21 @@ def _build_ci_commands(*, include_slow: bool) -> list[tuple[str, list[str]]]:
 _SHELL_METACHARACTERS = ("&&", "||", ";", "|", ">", "<")
 
 
+# A failing e2e run's output is mostly accumulated dev-server noise (86% of
+# specs/086's 1.7 MB log); the failure summary is at the end. Keeping only the
+# tail keeps both the log and the fix agent's prompt readable.
+_CI_OUTPUT_TAIL_LINES = 200
+_CI_OUTPUT_TAIL_CHARS = 20_000
+
+
+def _tail(output: str) -> str:
+    lines = output.splitlines()
+    tail = "\n".join(lines[-_CI_OUTPUT_TAIL_LINES:])[-_CI_OUTPUT_TAIL_CHARS:]
+    if len(tail) == len(output):
+        return output
+    return f"[... {len(output) - len(tail)} earlier characters omitted ...]\n{tail}"
+
+
 def _run_commands(commands: list[tuple[str, list[str]]]) -> tuple[bool, str]:
     all_passed = True
     failures: list[str] = []
@@ -322,12 +338,11 @@ def _run_commands(commands: list[tuple[str, list[str]]]) -> tuple[bool, str]:
         else:
             log(f"CI: {label} — FAILED (exit {result.returncode})")
             section = [f"=== {label} (exit {result.returncode}) ==="]
-            if result.stdout.strip():
-                log(f"  stdout:\n{result.stdout.strip()}")
-                section.append(result.stdout.strip())
-            if result.stderr.strip():
-                log(f"  stderr:\n{result.stderr.strip()}")
-                section.append(result.stderr.strip())
+            for stream_name, output in (("stdout", result.stdout), ("stderr", result.stderr)):
+                if output.strip():
+                    tail = _tail(output.strip())
+                    log(f"  {stream_name}:\n{tail}")
+                    section.append(tail)
             failures.append("\n".join(section))
             all_passed = False
     return all_passed, "\n\n".join(failures)
@@ -561,11 +576,10 @@ async def run(feature: str):
         log("Implementation stage already complete — nothing to do.")
         return
 
-    # Snapshot what's dirty before this run touches anything, so the final
-    # commit can tell this stage's own new work apart from unrelated
-    # pre-existing drift (e.g. a stray already-modified file left over from
-    # something else) and leave the latter out. See FOLLOWUP_HARNESS.md Bug 4.
-    baseline_dirty = git.dirty_files()
+    # Snapshot what's dirty before this stage first touched anything, so the
+    # final commit can tell its own work apart from unrelated pre-existing
+    # drift and leave the latter out. See FOLLOWUP_HARNESS.md Bug 4.
+    baseline_dirty = stage_dirty_baseline(spec_dir, "ch-4-implement", git.dirty_files)
 
     constitution = read_file(CONSTITUTION_PATH)
     spec = read_file(spec_dir / "spec.md")

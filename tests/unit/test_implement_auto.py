@@ -191,3 +191,15 @@ class TestCiGate(unittest.IsolatedAsyncioTestCase):
                 )
             fix.assert_awaited_once()
             self.assertEqual(outcome, "All CI checks passed")
+
+
+class TestCiOutputTail(unittest.TestCase):
+    def test_short_output_is_unchanged(self):
+        self.assertEqual(impl_auto._tail("one\ntwo"), "one\ntwo")
+
+    def test_long_output_keeps_the_end_and_says_what_was_cut(self):
+        output = "\n".join(f"line {i}" for i in range(5000))
+        tail = impl_auto._tail(output)
+        self.assertTrue(tail.endswith("line 4999"))
+        self.assertIn("earlier characters omitted", tail)
+        self.assertLessEqual(len(tail.splitlines()), impl_auto._CI_OUTPUT_TAIL_LINES + 1)
