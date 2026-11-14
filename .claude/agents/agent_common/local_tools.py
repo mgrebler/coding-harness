@@ -18,7 +18,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agent_common import files
+from agent_common import docker_guard, files
 
 _DEFAULT_DENY_PATTERNS = [
     r"\brm\s+-rf\s+/(\s|$)",
@@ -222,6 +222,9 @@ def tool_bash(args: dict, sandbox: BashSandboxConfig) -> str:
     for pattern in sandbox.deny_patterns:
         if re.search(pattern, command):
             raise ToolError(f"command rejected by safety denylist (matched pattern: {pattern!r})")
+    docker_block = docker_guard.check(command)
+    if docker_block:
+        raise ToolError(docker_block)
 
     try:
         proc = subprocess.run(  # noqa: S602 — shell=True is required: this tool's contract is

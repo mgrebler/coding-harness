@@ -8,6 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
 from agent_common.driving_agent import (
+    DOCKER_SCOPE_GUARDRAIL,
     FIX_AGENT_GIT_AND_EXTERNAL_SYSTEM_GUARDRAILS,
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
     NO_RECURSION_NOTICE,
@@ -36,7 +37,7 @@ class TestDrivingAgentOptions(unittest.TestCase):
         agents = {"some-agent": object()}
         options = driving_agent_options(allowed_tools=["Read", "Agent"], agents=agents)
         self.assertEqual(options.allowed_tools, ["Read", "Agent"])
-        self.assertIs(options.agents, agents)
+        self.assertEqual(options.agents, agents)
 
     def test_model_omitted_defaults_to_none(self):
         options = driving_agent_options(allowed_tools=["Read"], agents={})
@@ -69,3 +70,34 @@ class TestHumanReviewAttestationGuardrail(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDockerGuard(unittest.TestCase):
+    def _agent(self, prompt="Do the work."):
+        from claude_agent_sdk import AgentDefinition
+
+        return AgentDefinition(description="d", prompt=prompt, tools=["Bash"])
+
+    def test_attaches_docker_guard_as_bash_pre_tool_use_hook(self):
+        from agent_common.docker_guard import sdk_pre_tool_use_hook
+
+        options = driving_agent_options(allowed_tools=["Agent"], agents={})
+        [matcher] = options.hooks["PreToolUse"]
+        self.assertEqual(matcher.matcher, "Bash")
+        self.assertEqual(matcher.hooks, [sdk_pre_tool_use_hook])
+
+    def test_appends_docker_guardrail_to_every_subagent_prompt(self):
+        options = driving_agent_options(
+            allowed_tools=["Agent"], agents={"implement-critic": self._agent()}
+        )
+        prompt = options.agents["implement-critic"].prompt
+        self.assertTrue(prompt.startswith("Do the work."))
+        self.assertTrue(prompt.endswith(DOCKER_SCOPE_GUARDRAIL))
+
+    def test_guardrail_not_appended_twice(self):
+        agent = self._agent("Do the work." + DOCKER_SCOPE_GUARDRAIL)
+        options = driving_agent_options(allowed_tools=["Agent"], agents={"a": agent})
+        self.assertEqual(options.agents["a"].prompt.count(DOCKER_SCOPE_GUARDRAIL), 1)
+
+    def test_guardrail_names_the_incident_command(self):
+        self.assertIn("docker ps -q | xargs docker stop", DOCKER_SCOPE_GUARDRAIL)

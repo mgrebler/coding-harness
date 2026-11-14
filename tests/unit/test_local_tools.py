@@ -236,6 +236,14 @@ class TestToolBash(_TempProjectRoot):
             )
         self.assertTrue(Path(self._tmpdir).exists())
 
+    def test_host_wide_docker_stop_rejected_without_executing(self):
+        with self.assertRaisesRegex(local_tools.ToolError, "unfiltered `docker ps`"):
+            local_tools.tool_bash(
+                {"command": "docker ps -q | xargs -r docker stop; touch ran"},
+                local_tools.BashSandboxConfig(),
+            )
+        self.assertFalse((Path(self._tmpdir) / "ran").exists())
+
     def test_custom_deny_pattern_rejected(self):
         sandbox = local_tools.BashSandboxConfig(deny_patterns=[r"\bnpm\s+publish\b"])
         with self.assertRaises(local_tools.ToolError):

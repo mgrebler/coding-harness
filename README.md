@@ -649,6 +649,8 @@ ruff format .
 
 The hooks in `.claude/settings.json` (via `.claude/hooks/notify.py`) tell you when Claude is waiting on you. They run in this repo and in every installed project. `install.sh` copies `notify.py` as a harness-managed file and merges the hooks into the project's own `.claude/settings.json`. Re-running it replaces only those hook entries, leaving every other setting and hook alone. If the file isn't valid JSON (for example, it has comments), `install.sh` leaves it untouched and says so.
 
+`install.sh` also merges a `PreToolUse` hook (`.claude/agents/agent_common/docker_guard.py`) that blocks Bash commands that would stop or remove every container on the host — the dev container mounts the host's Docker socket, so an unfiltered `docker ps -q | xargs docker stop` takes down other projects' containers too. Pipeline subagents get the same check through `driving_agent_options()`, since they don't load `.claude/settings.json`.
+
 | When | What you get |
 |---|---|
 | Claude finishes a turn | terminal bell |
