@@ -200,6 +200,12 @@ specs/*/pipeline-status.log
 
 # Per-feature record of hosted critics whose endpoint stopped answering
 specs/*/.critic-health.json
+
+# ch-6-validate output: recordings, traces, the session file, and its
+# per-commit marker/escalation — local evidence, never committed (a commit
+# would move HEAD off the deploy that was just validated)
+specs/*/validation/
+specs/*/ch-6-validate*
 GITIGNORE
 )
 
@@ -222,7 +228,8 @@ manage_claude_md() {
 ## Spec-Driven Development
 
 This project follows the coding-harness spec-driven pipeline by default:
-`specify → plan → tasks → test → implement → docs`. New features and non-trivial
+`specify → plan → tasks → test → implement → docs → validate` (validate is opt-in).
+New features and non-trivial
 changes should go through this pipeline (starting with `/ch-specify`, which
 grounds the spec in the existing `docs/` tree when one exists)
 rather than being implemented directly, unless the user explicitly asks to

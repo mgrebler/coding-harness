@@ -5,7 +5,7 @@ whenever it moves to a new step (generating, a critic iteration, a revision, CI)
 Run as a script, this module is the status line: it renders those entries plus
 the stage completion markers as one line, e.g.
 
-    012-foo  plan ✓ │ tasks ✓ │ test ▶ test quality review 2/3 · 14m │ implement · │ docs ⊘
+    012-foo  plan ✓ │ tasks ✓ │ test ▶ test quality review 2/3 · 14m │ implement · │ docs ⊘ │ validate ⊘
 
     pipeline_status.py                         — print the status line
     pipeline_status.py install <settings.json> — set it as the project's statusLine
@@ -22,7 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 LOG_NAME = "pipeline-status.log"
-STAGES = ("plan", "tasks", "test", "implement", "docs")
+STAGES = ("plan", "tasks", "test", "implement", "docs", "validate")
+_OFF_BY_DEFAULT = {"validate"}
 ESCALATED = "escalated"
 PAUSED = "paused: usage limit"
 
@@ -75,14 +76,16 @@ def _disabled_stages(project_dir: Path) -> set[str]:
     try:
         stages = json.loads((project_dir / ".specify/pipeline.json").read_text()).get("stages")
     except (OSError, json.JSONDecodeError, AttributeError):
-        return set()
+        stages = None
     if not isinstance(stages, dict):
-        return set()
-    return {
-        name
-        for name, entry in stages.items()
-        if isinstance(entry, dict) and not entry.get("enabled", True)
-    }
+        stages = {}
+
+    def enabled(name: str) -> bool:
+        default = name not in _OFF_BY_DEFAULT
+        entry = stages.get(name)
+        return entry.get("enabled", default) if isinstance(entry, dict) else default
+
+    return {name for name in STAGES if not enabled(name)}
 
 
 def _alive(pid) -> bool:

@@ -263,22 +263,36 @@ def load_critic_execution_mode(critic_type: str) -> str:
     return mode if mode in ("sequential", "parallel") else "sequential"
 
 
+# Mirrored in pipeline_status.py, which must stay stdlib-only and can't import this.
+STAGES_OFF_BY_DEFAULT = frozenset({"validate"})
+
+
 def is_stage_enabled(stage: str) -> bool:
     """
-    Whether a toggleable pipeline stage ("test" or "docs") is enabled for
-    this project, per the top-level "stages" object in .specify/pipeline.json.
-    Defaults to True (today's always-on behavior) when the config file is
-    missing, has no "stages" key, or has no entry for this specific stage —
-    only an explicit {"enabled": false} turns a stage off.
+    Whether a toggleable pipeline stage ("test", "docs" or "validate") is
+    enabled for this project, per the top-level "stages" object in
+    .specify/pipeline.json. When the config file is missing, has no "stages"
+    key, or has no entry for this specific stage, test and docs default to
+    enabled and validate to disabled — validate can't run without the
+    project-supplied "validation" block, so it is opt-in.
     """
+    default = stage not in STAGES_OFF_BY_DEFAULT
     raw = _load_raw_config()
     stages = raw.get("stages")
     if not isinstance(stages, dict):
-        return True
+        return default
     stage_entry = stages.get(stage)
     if not isinstance(stage_entry, dict):
-        return True
-    return bool(stage_entry.get("enabled", True))
+        return default
+    return bool(stage_entry.get("enabled", default))
+
+
+def load_validation_config() -> dict | None:
+    """The top-level "validation" object from .specify/pipeline.json — the
+    project-supplied deploy/auth contract ch_6_validate_auto.py runs against —
+    or None if it is missing or not an object."""
+    validation = _load_raw_config().get("validation")
+    return validation if isinstance(validation, dict) else None
 
 
 def load_claude_model(critic_type: str) -> str | None:
@@ -359,7 +373,7 @@ def load_local_llm_generation_config(stage: str) -> dict | None:
     """
     Read .specify/pipeline.json and resolve the local-agentic-loop config
     for the given generation stage ("plan"/"tasks"/"test"/"implement"/
-    "docs"), from the top-level "generation" object — a sibling to
+    "docs"/"validate"), from the top-level "generation" object — a sibling to
     "critics", not a variant of it (see agent_common/local_agent_loop.py's
     module docstring for why generation needs its own top-level section).
     One entry covers every agent role for that stage: initial generation,

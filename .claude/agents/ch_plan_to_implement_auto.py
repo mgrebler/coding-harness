@@ -3,8 +3,9 @@
 .claude/agents/ch_plan_to_implement_auto.py
 
 Full-pipeline orchestrator: chains ch-1-plan-auto → ch-2-tasks-auto → ch-3-test-auto →
-ch-4-implement-auto → ch-5-docs-auto for a feature branch without stopping for review
-between stages.
+ch-4-implement-auto → ch-5-docs-auto → ch-6-validate-auto for a feature branch without
+stopping for review between stages. ch-6-validate-auto is opt-in and, when enabled, is
+the only stage that pushes (the feature branch, never forced) and opens a draft PR.
 
 Usage:
   python .claude/agents/ch_plan_to_implement_auto.py
@@ -25,6 +26,9 @@ Resume behaviour:
   Test stage done:      ch-3-test-quality-review-result-*.json with status PASS
   Implement stage done: ch-4-implement-code-quality-review-result-*.json with status PASS
   Docs stage done:      ch-5-docs-critic-result-*.json with status PASS
+  Validate stage:       always delegated to ch_6_validate_auto.py, which resumes per
+                        commit itself — a completion marker from an earlier commit
+                        doesn't prove the current HEAD was validated.
 
   Each sub-script also has its own internal resume guards for mid-stage
   interruptions (e.g. a crash during critic iteration 2).
@@ -33,7 +37,7 @@ Relationship to manual (human-in-the-loop) workflow:
   Both workflows gate purely on these artifacts — there are no approval
   marker files or git hooks involved in either. The only difference is that
   the manual workflow runs one stage at a time so a human can review the
-  artifact between stages, while this orchestrator runs all five in sequence
+  artifact between stages, while this orchestrator runs them all in sequence
   unattended.
 
 Pre-flight:
@@ -70,6 +74,8 @@ class Stage(NamedTuple):
     name: str
     passing_prefix: str | None
     toggleable: bool = False
+    self_resuming: bool = False
+    escalation_file: str | None = None
 
     @property
     def marker(self) -> str:
@@ -81,7 +87,7 @@ class Stage(NamedTuple):
 
     @property
     def escalation(self) -> str:
-        return f"ch-{self.number}-{self.name}-critic-escalation.md"
+        return self.escalation_file or f"ch-{self.number}-{self.name}-critic-escalation.md"
 
 
 # implement has no passing_prefix: its on-both-pass path runs CI checks (and a
@@ -94,6 +100,14 @@ STAGES = (
     Stage(3, "test", "ch-3-test-quality-review-result", toggleable=True),
     Stage(4, "implement", None),
     Stage(5, "docs", "ch-5-docs-critic-result", toggleable=True),
+    Stage(
+        6,
+        "validate",
+        None,
+        toggleable=True,
+        self_resuming=True,
+        escalation_file="ch-6-validate-escalation.md",
+    ),
 )
 TOTAL_STAGES = len(STAGES)
 
@@ -103,8 +117,12 @@ def _run_stage(spec_dir: Path, feature: str, stage: Stage) -> None:
     skip_reason = _stage_skip_reason(stage.number, stage.name) if stage.toggleable else None
     if skip_reason:
         log(skip_reason)
-    elif stage_is_complete(spec_dir, stage.marker) or (
-        stage.passing_prefix and find_passing_iteration(spec_dir, stage.passing_prefix) is not None
+    elif not stage.self_resuming and (
+        stage_is_complete(spec_dir, stage.marker)
+        or (
+            stage.passing_prefix
+            and find_passing_iteration(spec_dir, stage.passing_prefix) is not None
+        )
     ):
         log(f"{label}: already complete — skipping.")
     else:

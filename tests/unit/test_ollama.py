@@ -1991,6 +1991,29 @@ class TestIsStageEnabled(_ConfigDirTestCase):
         self._write_config({"stages": {"test": "not-a-dict"}})
         self.assertTrue(ollama.is_stage_enabled("test"))
 
+    def test_validate_defaults_false(self):
+        self.assertFalse(ollama.is_stage_enabled("validate"))
+        self._write_config({"stages": {"validate": {}}})
+        self.assertFalse(ollama.is_stage_enabled("validate"))
+
+    def test_validate_explicit_true_enables(self):
+        self._write_config({"stages": {"validate": {"enabled": True}}})
+        self.assertTrue(ollama.is_stage_enabled("validate"))
+
+
+class TestLoadValidationConfig(_ConfigDirTestCase):
+    def test_missing_returns_none(self):
+        self._write_config({"stages": {}})
+        self.assertIsNone(ollama.load_validation_config())
+
+    def test_non_dict_returns_none(self):
+        self._write_config({"validation": "nope"})
+        self.assertIsNone(ollama.load_validation_config())
+
+    def test_returns_block(self):
+        self._write_config({"validation": {"deploy_command": "x"}})
+        self.assertEqual(ollama.load_validation_config(), {"deploy_command": "x"})
+
 
 if __name__ == "__main__":
     unittest.main()
