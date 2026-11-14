@@ -27,6 +27,7 @@ _SECTION_RE = re.compile(r"(?m)^##\s+(.+?)\s*$")
 _SOURCE_ISSUE_RE = re.compile(
     r"(?im)^\s*(?:\*\*Source Issue\*\*:\s*#(\d+)|Source:\s*GitHub issue\s+#(\d+))"
 )
+_SOURCED_FROM_RE = re.compile(r"(?i)\bSourced from GitHub issue\s+#(\d+)")
 
 
 @dataclass(frozen=True)
@@ -48,13 +49,19 @@ def _acceptance_scenarios(spec: str) -> list[Scenario]:
         heading = _ACCEPTANCE_HEADING_RE.search(body)
         if not heading:
             continue
+        numbered: list[tuple[str, str]] = []
         for line in body[heading.end() :].splitlines():
             if not line.strip():
                 continue
             match = _NUMBERED_RE.match(line)
-            if not match:
+            if match:
+                numbered.append((match[1], match[2].strip()))
+            elif numbered and line[0].isspace():
+                number, text = numbered[-1]
+                numbered[-1] = (number, f"{text} {line.strip()}")
+            else:
                 break
-            scenarios.append(Scenario(f"US{story[1]}-AS{match[1]}", match[2].strip()))
+        scenarios += [Scenario(f"US{story[1]}-AS{n}", text) for n, text in numbered]
     return scenarios
 
 
@@ -74,9 +81,12 @@ def extract_scenarios(spec: str, quickstart: str | None) -> list[Scenario]:
 def source_issue(spec: str) -> int | None:
     """The GitHub issue a spec was created from, per the `**Source Issue**: #N`
     header line ch-specify-from-issue writes, or the older `Source: GitHub
-    issue #N` trailer specs written before that line existed still carry."""
-    match = _SOURCE_ISSUE_RE.search(spec)
-    return int(match[1] or match[2]) if match else None
+    issue #N` trailer or mid-line `(Sourced from GitHub issue #N)` that specs
+    written before that line existed still carry."""
+    if match := _SOURCE_ISSUE_RE.search(spec):
+        return int(match[1] or match[2])
+    match = _SOURCED_FROM_RE.search(spec)
+    return int(match[1]) if match else None
 
 
 def video_path(run_dir: Path, scenario_id: str) -> Path:

@@ -194,13 +194,51 @@ class TestEnsureBrowser(_ProjectCase):
             self._ensure(install_rc=1)
 
 
-class TestWriteScopeHook(unittest.TestCase):
-    def test_only_run_dir_is_writable(self):
-        hook = va._write_scope_hook(Path("/runs/run"))
-        allowed = asyncio.run(hook({"tool_input": {"file_path": "/runs/run/report.json"}}, 1, None))
-        denied = asyncio.run(hook({"tool_input": {"file_path": "/workspace/src/a.ts"}}, 1, None))
-        self.assertEqual(allowed, {})
-        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+class TestRunDirScope(unittest.TestCase):
+    def test_only_run_dir_is_readable_or_writable(self):
+        hook = va._run_dir_scope_hook(Path("/runs/run"))
+        for path, decision in (
+            ("/runs/run/report.json", None),
+            ("/runs/run/../../workspace/prisma/.env.validation", "deny"),
+            ("/workspace/src/a.ts", "deny"),
+        ):
+            with self.subTest(path):
+                result = asyncio.run(hook({"tool_input": {"file_path": path}}, 1, None))
+                self.assertEqual(
+                    result.get("hookSpecificOutput", {}).get("permissionDecision"), decision
+                )
+
+    def test_agent_gets_no_repo_search_tools_and_scoped_reads(self):
+        captured = {}
+
+        def fake_query(prompt, options):
+            captured["options"] = options
+
+        async def fake_stream(_):
+            return None
+
+        with (
+            patch.object(va, "query", side_effect=fake_query),
+            patch.object(va, "stream_query", side_effect=fake_stream),
+        ):
+            asyncio.run(va.run_validation_agent("i", "t", {}, {}, Path("/runs/run")))
+        options = captured["options"]
+        self.assertEqual(sorted(options.tools), ["Read", "Write"])
+        self.assertNotIn("Glob", options.allowed_tools)
+        [matcher] = options.hooks["PreToolUse"]
+        self.assertEqual(matcher.matcher, "Read|Write")
+
+
+class TestAgentNotes(unittest.TestCase):
+    def _instructions(self, notes):
+        return va.agent_instructions([], "spec", "qs", "", "https://p", Path("/r"), notes)
+
+    def test_notes_are_included_only_when_set(self):
+        self.assertIn(
+            "--- PROJECT NOTES ---\nUse at most 2 imports.",
+            self._instructions("Use at most 2 imports.\n"),
+        )
+        self.assertNotIn("PROJECT NOTES", self._instructions(""))
 
 
 class TestRun(_ProjectCase):

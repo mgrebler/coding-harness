@@ -633,7 +633,7 @@ For the commit at HEAD, `ch_6_validate_auto.py`:
    server (headless, isolated, navigation limited to the preview's origin). It records one video
    and trace per scenario and writes one verdict per scenario: `PASS`, `FAIL`, `BLOCKED` (with a
    reason), or — for quickstart sections that only make sense in a local checkout —
-   `NOT_APPLICABLE` (with a reason). It has no Bash and can only write inside the run directory.
+   `NOT_APPLICABLE` (with a reason). It has no Bash and can only read and write inside the run directory.
 6. Checks the report: every scenario covered once, and a recording on disk for every PASS/FAIL.
    An incomplete report gets one retry; still incomplete escalates.
 7. Posts the report as a PR comment (once per commit). Any FAIL/BLOCKED writes
@@ -656,7 +656,8 @@ the same commit, delete its `validation/<sha12>/` directory.
     "auth_command": "node scripts/validation-login.mjs",
     "allowed_origins": [],
     "playwright_mcp_version": "0.0.84",
-    "max_turns": 300
+    "max_turns": 300,
+    "agent_notes": "Each job-URL import costs a paid scraping call: use at most 2."
   }
 }
 ```
@@ -669,6 +670,7 @@ the same commit, delete its `validation/<sha12>/` directory.
 | `allowed_origins` | no | Extra origins the browser may load besides the preview's own (e.g. an auth provider). |
 | `playwright_mcp_version` | no | Pins `@playwright/mcp`. |
 | `max_turns` | no (300) | Turn budget for the validation agent. |
+| `agent_notes` | no | Project-specific guidance added to the agent's instructions, e.g. limits on actions that cost money, or scenarios that can't run in a plain browser and should be `BLOCKED`. |
 
 The validation agent always runs on Claude (it needs MCP tools and vision): `generation.validate`
 must be `"default"` or a `provider: "claude"` entry.

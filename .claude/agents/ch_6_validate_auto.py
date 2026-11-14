@@ -251,7 +251,7 @@ def mcp_server(config: dict, base_url: str, storage_state: Path, run_dir: Path) 
     }
 
 
-def _write_scope_hook(run_dir: Path):
+def _run_dir_scope_hook(run_dir: Path):
     root = run_dir.resolve()
 
     async def hook(input_data: dict, tool_use_id, context) -> dict:
@@ -262,7 +262,7 @@ def _write_scope_hook(run_dir: Path):
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": f"The validation agent may only write under {root}.",
+                "permissionDecisionReason": f"The validation agent may only read or write under {root}.",
             }
         }
 
@@ -281,9 +281,13 @@ def agent_instructions(
     manual_tasks: str,
     base_url: str,
     run_dir: Path,
+    agent_notes: str = "",
 ) -> str:
     run_path = run_dir.resolve()
     scenario_list = "\n".join(f"- {s.id}: {s.text}" for s in scenarios)
+    project_notes = (
+        f"--- PROJECT NOTES ---\n{agent_notes.strip()}\n\n" if agent_notes.strip() else ""
+    )
     return f"""You are the Validation Agent for a spec-kit project. You validate a feature on a
 deployed, non-production preview of the app by driving a real browser, the way a careful human
 tester would, and you record evidence a human will review.
@@ -330,14 +334,14 @@ interruption) in exactly this shape:
   "reason": "<required for BLOCKED/NOT_APPLICABLE>",
   "evidence": ["<absolute path of each screenshot/trace file you produced>", ...]}}]}}
 
-Rules:
+{project_notes}Rules:
 - This is a preview environment, but treat its data with care: create only what a scenario
   needs, name anything you create with a "[validation]" prefix, and never delete or modify
   data you did not create. Never log out, delete the account, or change its credentials.
 - Stay on the preview's origin; other origins are blocked.
 - Never report PASS for something you did not observe. An honest FAIL or BLOCKED is useful;
   a wrong PASS hides a bug from the human reviewer.
-- You do not fix anything. You only write files under {run_path}.
+- You do not fix anything. You only read and write files under {run_path}.
 {HUMAN_REVIEW_ATTESTATION_GUARDRAIL}
 """
 
@@ -347,13 +351,17 @@ async def run_validation_agent(
 ) -> None:
     options = ClaudeAgentOptions(
         system_prompt=instructions,
-        tools=["Read", "Write", "Glob", "Grep"],
-        allowed_tools=["Read", "Write", "Glob", "Grep", "mcp__playwright"],
+        tools=["Read", "Write"],
+        allowed_tools=["Read", "Write", "mcp__playwright"],
         mcp_servers={"playwright": mcp},
         setting_sources=[],
         model=ollama.load_claude_generation_model("validate"),
         max_turns=config.get("max_turns", DEFAULT_MAX_TURNS),
-        hooks={"PreToolUse": [HookMatcher(matcher="Write", hooks=[_write_scope_hook(run_dir)])]},
+        # The spec and quickstart are already in the prompt, so the agent never needs the repo;
+        # keeping it out stops a hostile preview page steering it into reading local secrets.
+        hooks={
+            "PreToolUse": [HookMatcher(matcher="Read|Write", hooks=[_run_dir_scope_hook(run_dir)])]
+        },
     )
     await stream_query(query(prompt=task, options=options))
 
@@ -431,6 +439,7 @@ async def produce_report(
         _manual_tasks(read_optional(spec_dir / "tasks.md", "")),
         base_url,
         run_dir,
+        config.get("agent_notes", ""),
     )
     if not report_path.exists():
         pipeline_status.step("validating")

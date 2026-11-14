@@ -64,6 +64,30 @@ class TestExtractScenarios(unittest.TestCase):
         ids = [s.id for s in vr.extract_scenarios(SPEC, None)]
         self.assertNotIn("QS-1", ids)
 
+    def test_wrapped_scenarios_are_joined_and_do_not_end_the_list(self):
+        spec = """### User Story 1 - Found via (Priority: P1)
+
+**Acceptance Scenarios**:
+
+1. **Given** a new job, **When** the job seeker selects "SEEK" and
+   saves, **Then** the detail view shows "SEEK".
+2. **Given** a new job, **When** the job seeker selects "Agency" and saves,
+   **Then** the detail view shows that value, distinct from jobs
+   the job seeker found themselves.
+3. **Given** an existing job, **When** it is edited, **Then** the value is saved.
+
+---
+Trailing prose that is not a scenario.
+"""
+        scenarios = {s.id: s.text for s in vr.extract_scenarios(spec, None)}
+        self.assertEqual(list(scenarios), ["US1-AS1", "US1-AS2", "US1-AS3"])
+        self.assertEqual(
+            scenarios["US1-AS2"],
+            '**Given** a new job, **When** the job seeker selects "Agency" and saves, '
+            "**Then** the detail view shows that value, distinct from jobs "
+            "the job seeker found themselves.",
+        )
+
 
 class TestSourceIssue(unittest.TestCase):
     def test_header_line(self):
@@ -71,6 +95,13 @@ class TestSourceIssue(unittest.TestCase):
 
     def test_legacy_source_trailer(self):
         self.assertEqual(vr.source_issue("Title\n---\nSource: GitHub issue #7 — https://x"), 7)
+
+    def test_sourced_from_mid_line(self):
+        spec = '**Input**: User description: "Rename it. (Sourced from GitHub issue #240)"'
+        self.assertEqual(vr.source_issue(spec), 240)
+
+    def test_header_line_wins_over_sourced_from(self):
+        self.assertEqual(vr.source_issue(f"{SPEC}\n(Sourced from GitHub issue #9)"), 42)
 
     def test_none(self):
         self.assertIsNone(vr.source_issue("# Feature Specification: X\n"))
