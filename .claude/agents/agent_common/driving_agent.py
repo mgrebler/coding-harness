@@ -16,7 +16,11 @@ doesn't join is killed once the SDK's background-wait ceiling hits,
 silently truncating the delegated work.
 """
 
-from claude_agent_sdk import ClaudeAgentOptions
+import dataclasses
+
+from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, HookMatcher
+
+from agent_common.docker_guard import sdk_pre_tool_use_hook
 
 NO_RECURSION_NOTICE = (
     "\n\nDo NOT invoke any `ch-*-auto` skill, and do NOT run "
@@ -72,6 +76,28 @@ separate dispatch filing an unauthorized live GitHub issue — neither fix-agent
 said anything about commit-history integrity or external-system access before that."""
 
 
+DOCKER_SCOPE_GUARDRAIL = (
+    "\n\n- The Docker socket is the host's: `docker ps` lists every container on the "
+    "machine, including other projects, their databases, and the dev container you are "
+    "running in. Stop or remove only containers you created yourself, by explicit name or "
+    "with `docker ps --filter name=...`/`--filter label=...`. Never run "
+    "`docker ps -q | xargs docker stop`, `docker stop $(docker ps -q)`, any `docker ... "
+    "prune`, or `docker compose down`/`stop` on the workspace's own compose project. A "
+    "PreToolUse hook blocks these; if one is blocked, re-run it scoped to your own "
+    "containers rather than working around the hook."
+)
+"""Appended to every subagent prompt by driving_agent_options(). Added after a
+sprognoggin implement-critic, clearing stale test databases, ran
+`docker ps -q | xargs -r docker stop` and stopped every container on the host,
+including other projects' dev containers and its own."""
+
+
+def _with_docker_guardrail(agent):
+    if not isinstance(agent, AgentDefinition) or DOCKER_SCOPE_GUARDRAIL in agent.prompt:
+        return agent
+    return dataclasses.replace(agent, prompt=agent.prompt + DOCKER_SCOPE_GUARDRAIL)
+
+
 def driving_agent_options(
     allowed_tools: list[str], agents: dict, model: str | None = None
 ) -> ClaudeAgentOptions:
@@ -86,10 +112,15 @@ def driving_agent_options(
     None (the default) reproduces today's behavior exactly — the SDK's own
     default for ClaudeAgentOptions.model is already None, meaning "inherit
     whatever model the invoking session already runs under."
+
+    Because setting_sources=[] also drops the project's .claude/settings.json
+    hooks, the Docker guard is attached here programmatically; SDK hooks fire
+    for the delegated subagent's tool calls too.
     """
     return ClaudeAgentOptions(
         allowed_tools=allowed_tools,
-        agents=agents,
+        agents={name: _with_docker_guardrail(agent) for name, agent in agents.items()},
         setting_sources=[],
         model=model,
+        hooks={"PreToolUse": [HookMatcher(matcher="Bash", hooks=[sdk_pre_tool_use_hook])]},
     )

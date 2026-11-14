@@ -41,8 +41,9 @@
 #   MANAGED SECTION REFRESHED EVERY RUN (rest of the file stays project-owned):
 #     .gitignore
 #     CLAUDE.md
-#     .claude/settings.json — only notify.py's hook entries and the pipeline statusLine
-#       (set only if the project has none of its own); other keys and hooks kept
+#     .claude/settings.json — only notify.py's hook entries, the docker_guard.py
+#       PreToolUse hook, and the pipeline statusLine (set only if the project has
+#       none of its own); other keys and hooks kept
 #
 #   NEVER TOUCHED BY THIS SCRIPT (agent-maintained, continuously updated by the
 #   pipeline itself — not copied, not seeded, not gitignored; created and
@@ -227,6 +228,16 @@ grounds the spec in the existing `docs/` tree when one exists)
 rather than being implemented directly, unless the user explicitly asks to
 skip it. Full governance rules are in `.specify/memory/constitution.md`.
 
+## Docker on this host
+
+The dev container mounts the host's Docker socket, so `docker ps` lists every
+container on the machine — other projects, their databases, and the dev container
+you are running in. Stop or remove only containers you created, by explicit name
+or with `docker ps --filter name=...`. Never run `docker ps -q | xargs docker stop`,
+`docker stop $(docker ps -q)`, `docker ... prune`, or `docker compose down` on this
+project's own compose file. A PreToolUse hook
+(`.claude/agents/agent_common/docker_guard.py`) blocks these.
+
 Managed by coding-harness/install.sh — do not edit this section manually.
 Re-run install.sh after updating the harness to keep this section current.
 CLAUDEMD
@@ -242,17 +253,18 @@ CLAUDEMD
 # and hook it has.
 merge_claude_settings() {
   if [[ "$DRY_RUN" == "true" ]]; then
-    log "  MERGE .claude/settings.json: notification hooks, pipeline status line"
+    log "  MERGE .claude/settings.json: notification hooks, docker guard hook, pipeline status line"
     return
   fi
 
   if ! command -v python3 >/dev/null 2>&1; then
-    log "  SKIP .claude/settings.json: python3 not found, notification hooks and status line not merged"
+    log "  SKIP .claude/settings.json: python3 not found, notification hooks, docker guard hook and status line not merged"
     return
   fi
 
   local settings="$TARGET_DIR/.claude/settings.json"
   log "  $(python3 "$SOURCE_DIR/.claude/hooks/notify.py" install "$settings")"
+  log "  $(python3 "$SOURCE_DIR/.claude/agents/agent_common/docker_guard.py" install "$settings")"
   log "  $(python3 "$SOURCE_DIR/.claude/agents/agent_common/pipeline_status.py" install "$settings")"
 }
 
