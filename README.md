@@ -694,9 +694,11 @@ output) should handle the same cases the shipped helper does:
 
 ### Project prerequisites
 
-- The dev container must run headless Chromium: install Playwright's browsers and their OS
-  dependencies (`npx playwright install --with-deps chromium`) in the project's
-  `.devcontainer/Dockerfile`. The harness base image deliberately omits them.
+- The dev container must be built from a current `coding-harness-base` image, which carries
+  Chromium's OS libraries. The browser build itself is downloaded by the stage on first use
+  (about 120 MB, matched to the pinned `@playwright/mcp`), so nothing is needed in the project's
+  own Dockerfile. To keep that download across container restarts, enable the
+  `playwright_cache` volume in `docker-compose.yml`.
 - `gh` must be authenticated (`gh auth login`).
 - The preview must not share production data the agent could damage. The agent is told to create
   only what a scenario needs, prefix it with `[validation]`, and never modify data it didn't

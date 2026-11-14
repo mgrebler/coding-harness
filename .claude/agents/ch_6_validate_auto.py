@@ -191,16 +191,55 @@ def login(config: dict, base_url: str, run_dir: Path) -> Path:
     return storage_state
 
 
+def mcp_version(config: dict) -> str:
+    return config.get("playwright_mcp_version", PLAYWRIGHT_MCP_VERSION)
+
+
+def _browser_dir() -> Path:
+    return Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or Path.home() / ".cache/ms-playwright")
+
+
+def _missing_browser_libs() -> list[str]:
+    shells = sorted(_browser_dir().glob("chromium_headless_shell-*/*/chrome-headless-shell"))
+    if not shells:
+        return []
+    ldd = subprocess.run(["ldd", str(shells[-1])], capture_output=True, text=True)
+    return [line.split()[0] for line in ldd.stdout.splitlines() if "not found" in line]
+
+
+def ensure_browser(config: dict) -> None:
+    """Download the Chromium build the pinned MCP server's own Playwright
+    expects — a project's e2e browsers are built for its own Playwright
+    version and rarely match. A no-op once present (cached in
+    ~/.cache/ms-playwright). Chromium's OS libraries need root, so they come
+    from the harness base image instead; check them here so a stale image
+    fails with a clear message rather than an all-BLOCKED report."""
+    version = mcp_version(config)
+    log(f"Ensuring Chromium for @playwright/mcp@{version}...")
+    result = subprocess.run(
+        ["npx", "-y", "-p", f"@playwright/mcp@{version}", "playwright", "install", "chromium"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _fail(f"Chromium download failed: {result.stderr.strip()[-500:]}")
+    if missing := _missing_browser_libs():
+        _fail(
+            f"Chromium can't start — missing OS libraries: {', '.join(missing)}. Rebuild the "
+            "dev container from the current coding-harness base image, which installs them."
+        )
+
+
 def mcp_server(config: dict, base_url: str, storage_state: Path, run_dir: Path) -> dict:
     parsed = urlparse(base_url)
     origins = [f"{parsed.scheme}://{parsed.netloc}", *config.get("allowed_origins", [])]
-    version = config.get("playwright_mcp_version", PLAYWRIGHT_MCP_VERSION)
     return {
         "type": "stdio",
         "command": "npx",
         "args": [
             "-y",
-            f"@playwright/mcp@{version}",
+            f"@playwright/mcp@{mcp_version(config)}",
+            "--browser=chromium",
             "--headless",
             "--isolated",
             "--caps=devtools",
@@ -380,6 +419,8 @@ async def produce_report(
     report, problems = checked_report(report_path, scenarios, run_dir)
     if report is not None and not problems:
         return report
+    pipeline_status.step("preparing browser")
+    ensure_browser(config)
     pipeline_status.step("logging in")
     storage_state = login(config, base_url, run_dir)
     mcp = mcp_server(config, base_url, storage_state, run_dir)

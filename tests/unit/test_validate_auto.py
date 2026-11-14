@@ -153,6 +153,45 @@ class TestMcpServer(unittest.TestCase):
         self.assertIn(f"@playwright/mcp@{va.PLAYWRIGHT_MCP_VERSION}", args)
         self.assertIn("--allowed-origins=https://p.example;https://auth.example", args)
         self.assertIn("--storage-state=/s.json", args)
+        self.assertIn("--browser=chromium", args)
+
+
+class TestEnsureBrowser(_ProjectCase):
+    def _ensure(self, install_rc=0, ldd_out=""):
+        shell = (
+            self.root
+            / "browsers/chromium_headless_shell-1/chrome-headless-shell-linux64/chrome-headless-shell"
+        )
+        shell.parent.mkdir(parents=True)
+        shell.write_text("")
+
+        def run(cmd, **kwargs):
+            out = ldd_out if cmd[0] == "ldd" else ""
+            return subprocess.CompletedProcess(cmd, install_rc, out, "boom")
+
+        with (
+            patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": str(self.root / "browsers")}),
+            patch.object(va.subprocess, "run", side_effect=run) as mock_run,
+            patch.object(va, "log"),
+        ):
+            va.ensure_browser({})
+        return mock_run
+
+    def test_installs_the_mcp_servers_own_playwright_build(self):
+        install = self._ensure().call_args_list[0][0][0]
+        self.assertEqual(
+            install,
+            ["npx", "-y", "-p", f"@playwright/mcp@{va.PLAYWRIGHT_MCP_VERSION}", "playwright",
+             "install", "chromium"],
+        )  # fmt: skip
+
+    def test_missing_os_libraries_fail_clearly(self):
+        with self.assertRaises(SystemExit):
+            self._ensure(ldd_out="\tlibnss3.so => not found\n\tlibc.so.6 => /lib/libc.so.6\n")
+
+    def test_failed_download_fails(self):
+        with self.assertRaises(SystemExit):
+            self._ensure(install_rc=1)
 
 
 class TestWriteScopeHook(unittest.TestCase):
@@ -192,6 +231,7 @@ class TestRun(_ProjectCase):
             patch.object(va.github_pr, "push_branch") as push,
             patch.object(va.github_pr, "ensure_draft_pr", return_value=pr) as ensure_pr,
             patch.object(va, "deploy", return_value="https://p.example"),
+            patch.object(va, "ensure_browser"),
             patch.object(va, "login", return_value=Path("s.json")),
             patch.object(va, "run_validation_agent", side_effect=agent),
             patch.object(va.github_pr, "post_comment_once", return_value=True) as comment,

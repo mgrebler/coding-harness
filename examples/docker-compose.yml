@@ -25,8 +25,9 @@ services:
       - ~/.ssh:/home/node/.ssh:ro
       - ~/.claude.json:/home/node/.claude.json
       - ~/.claude:/home/node/.claude
-      # PROJECT-SPECIFIC: Add a named volume here if your project uses Playwright
-      # and you want to cache browser binaries across container restarts:
+      # PROJECT-SPECIFIC: Add a named volume here if your project uses Playwright,
+      # or enables the harness's validate stage (/ch-6-validate-auto), and you want
+      # to cache browser binaries across container restarts:
       # - playwright_cache:/home/node/.cache/ms-playwright
 
     working_dir: /workspace
