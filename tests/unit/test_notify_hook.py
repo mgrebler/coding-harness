@@ -1,5 +1,6 @@
 """Unit tests for .claude/hooks/notify.py, the waiting-for-you notification hook."""
 
+import copy
 import importlib.util
 import json
 import os
@@ -11,6 +12,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 REPO = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(REPO / ".claude/agents"))
+from agent_common import docker_guard  # noqa: E402
+
 SCRIPT = REPO / ".claude/hooks/notify.py"
 _spec = importlib.util.spec_from_file_location("notify_hook", SCRIPT)
 notify = importlib.util.module_from_spec(_spec)
@@ -119,7 +123,8 @@ class TestInstall(unittest.TestCase):
 
     def test_repo_settings_are_generated_from_hooks(self):
         settings = json.loads((REPO / ".claude/settings.json").read_text())
-        self.assertEqual(settings["hooks"], notify.HOOKS)
+        expected = docker_guard.merge_hook({"hooks": copy.deepcopy(notify.HOOKS)})
+        self.assertEqual(settings, expected)
 
     def test_creates_settings_when_absent(self):
         self.assertTrue(notify.install(self.settings).startswith("MERGE"))
