@@ -22,6 +22,14 @@ RUN pip3 install claude-agent-sdk uv --break-system-packages
 
 RUN npm install -g pnpm @anthropic-ai/claude-code
 
+# OS libraries for the headless Chromium that ch-6-validate-auto's Playwright MCP
+# server drives. Only the libraries: the browser build itself is downloaded at
+# runtime to match the pinned MCP version (see ensure_browser in
+# ch_6_validate_auto.py). Keep this playwright version in step with that pin's.
+RUN apt-get update && \
+    npx -y playwright@1.65.0-alpha-2026-10-30 install-deps chromium && \
+    rm -rf /var/lib/apt/lists/* /root/.npm
+
 RUN mkdir -p /home/node/.local/bin && \
     ln -s /usr/local/bin/claude /home/node/.local/bin/claude && \
     chown -R node:node /home/node/.local

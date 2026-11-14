@@ -1,6 +1,6 @@
 # coding-harness
 
-coding-harness builds on [GitHub's SpecKit](https://github.com/github/spec-kit) spec-driven flow — specify → plan → tasks → implement — and adds autonomous agents that drive each stage, plus a strict test-first split between writing tests and writing implementation code, and a final stage that keeps a persistent user/maintainer documentation set current: `specify → ch-1-plan-auto → ch-2-tasks-auto → ch-3-test-auto → ch-4-implement-auto → ch-5-docs-auto`.
+coding-harness builds on [GitHub's SpecKit](https://github.com/github/spec-kit) spec-driven flow — specify → plan → tasks → implement — and adds autonomous agents that drive each stage, plus a strict test-first split between writing tests and writing implementation code, and a final stage that keeps a persistent user/maintainer documentation set current: `specify → ch-1-plan-auto → ch-2-tasks-auto → ch-3-test-auto → ch-4-implement-auto → ch-5-docs-auto`, optionally followed by `ch-6-validate-auto`, which validates the feature on a deployed preview and records evidence for the PR reviewer.
 
 **Why this matters:** agentic development is fast, but code that "looks right" can quietly drift from your architecture, skip tests, or break conventions. coding-harness keeps agents fast *and* maintainable by gating every stage behind critic agents grounded in documents your team owns — `constitution.md`, `architecture.md`, `test-principles.md`, and more. A plan must pass an architecture review before tasks are generated; tests and implementation must pass a quality review before they're considered done. Humans remain the only ones who can merge to `main`.
 
@@ -71,7 +71,7 @@ git subtree pull --prefix=.coding-harness <harness-repo-url> main
 Every feature follows the same pipeline:
 
 ```
-specify → plan → tasks → test → implement → docs → PR
+specify → plan → tasks → test → implement → docs → [validate] → PR
 ```
 
 Two modes are supported:
@@ -150,7 +150,16 @@ Review the code changes and verify CI passes locally. Then:
 
 ### Step 6 — Review the documentation
 
-Review the changes under `docs/`. Then open a PR. **The merge is always a human action.**
+Review the changes under `docs/`. Then open a PR — or, if the project has deployed validation
+enabled (see § Deployed Validation), run:
+
+```
+/ch-6-validate-auto
+```
+
+which pushes the branch, opens a draft PR, and posts a validation report to it once the preview
+is deployed. Review the recordings, then mark the PR ready for review. **The merge is always a
+human action.**
 
 ---
 
@@ -173,7 +182,7 @@ feature onward.
 
 ## Fully Automatic Mode
 
-After specifying the feature, run the entire plan → tasks → test → implement → docs pipeline unattended:
+After specifying the feature, run the entire plan → tasks → test → implement → docs (→ validate, when enabled) pipeline unattended:
 
 ```
 /ch-specify <feature description>
@@ -186,7 +195,7 @@ Review and edit `specs/NNN-feature/spec.md` if needed, then:
 /ch-plan-to-implement-auto
 ```
 
-This chains five stages — plan, tasks, test, implement, docs — with built-in critic loops at each stage.
+This chains the stages — plan, tasks, test, implement, docs, and validate when enabled — with built-in critic loops at each authoring stage.
 
 The pipeline stops for you in three situations:
 
@@ -208,6 +217,7 @@ The pipeline stops for you in three situations:
 | `/ch-3-test-auto` | `/ch-3-test` | test critic → test-quality-review |
 | `/ch-4-implement-auto` | `/speckit-implement` | implement critic → implement-quality-review |
 | `/ch-5-docs-auto` | (none — docs has no plain-generation counterpart) | docs critic |
+| `/ch-6-validate-auto` | (none — opt-in; drives a recorded browser on the deployed preview) | deterministic report check; FAIL/BLOCKED escalates |
 | `/ch-plan-to-implement-auto` | all of the above | all of the above, chained |
 
 The plain `/speckit-specify`, `/speckit-plan`, `/speckit-tasks`, `/speckit-implement`, and `/ch-3-test` commands generate a single artifact with **no critic loop** — use them only if you want to hand-edit before any automated critique runs, not as the default path. `/speckit-specify` also skips the `docs/`-grounding step `/ch-specify` adds.
@@ -302,7 +312,11 @@ artifact. Set the toggle *before* generating `tasks.md` for a given feature; fli
 mid-feature, after `[TEST]` tasks already exist, leaves them permanently unchecked.
 
 Disabling `docs` simply skips `/ch-5-docs-auto` (and the documentation gate, §20) —
-no ripple into any other stage, since docs runs last.
+no ripple into any other stage.
+
+`validate` is the exception to opt-out: it defaults to **disabled**, because it needs the
+project-supplied `validation` block described in § Deployed Validation. Set
+`"validate": { "enabled": true }` once that block is in place.
 
 Two ways to control the Ollama context window (`num_ctx`), settable at the
 top level or per-critic like any other field above:
@@ -596,9 +610,108 @@ reasoning-leakage caveat from the critic section above applies here too.
 
 ---
 
+## Deployed Validation (`/ch-6-validate-auto`, Optional)
+
+The last, opt-in stage checks the feature where users will see it: on a deployed, non-production
+preview of this exact commit. An agent drives a real browser through the spec and records every
+scenario so a human can watch what was actually tested before marking the PR ready for review.
+
+For the commit at HEAD, `ch_6_validate_auto.py`:
+
+1. Pushes the feature branch (never forced) and finds or opens its **draft** PR against `main`.
+   If the spec came from an issue (`/ch-specify-from-issue` writes a `**Source Issue**: #N`
+   header line), the PR body gets `Closes #N`.
+2. Runs the project's `deploy_command`, which must make sure *this commit* is deployed and print
+   its base URL as the last line of stdout.
+3. Runs the project's `auth_command`, which must write a Playwright
+   [storage-state](https://playwright.dev/docs/auth) file so the browser starts logged in. The
+   agent never sees credentials.
+4. Builds the scenario list deterministically: every user story's acceptance scenarios
+   (`US<n>-AS<m>`), every success criterion (`SC-NNN`), and every `##` section of `quickstart.md`
+   (`QS-<n>`).
+5. Runs a Claude validation agent with the [Playwright MCP](https://github.com/microsoft/playwright-mcp)
+   server (headless, isolated, navigation limited to the preview's origin). It records one video
+   and trace per scenario and writes one verdict per scenario: `PASS`, `FAIL`, `BLOCKED` (with a
+   reason), or — for quickstart sections that only make sense in a local checkout —
+   `NOT_APPLICABLE` (with a reason). It has no Bash and can only read and write inside the run directory.
+6. Checks the report: every scenario covered once, and a recording on disk for every PASS/FAIL.
+   An incomplete report gets one retry; still incomplete escalates.
+7. Posts the report as a PR comment (once per commit). Any FAIL/BLOCKED writes
+   `specs/NNN-feature/ch-6-validate-escalation.md` and exits non-zero.
+
+The stage is **report-only**: it never fixes code, never commits, and never merges. Everything it
+writes is gitignored and local to the machine that ran it — recordings, traces, the session file
+and the report live in `specs/NNN-feature/validation/<sha12>/`. Each commit is validated once:
+re-running on an already-passed commit is a no-op, and a new commit starts fresh. To re-validate
+the same commit, delete its `validation/<sha12>/` directory.
+
+### Configuration
+
+```json
+{
+  "stages": { "validate": { "enabled": true } },
+  "validation": {
+    "deploy_command": "python .claude/agents/agent_common/github_deployment_url.py --environment Preview",
+    "timeout_minutes": 20,
+    "auth_command": "node scripts/validation-login.mjs",
+    "allowed_origins": [],
+    "playwright_mcp_version": "0.0.84",
+    "max_turns": 300,
+    "agent_notes": "Each job-URL import costs a paid scraping call: use at most 2."
+  }
+}
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `deploy_command` | yes | Shell command run with `VALIDATION_SHA`, `VALIDATION_BRANCH`, `VALIDATION_PR_NUMBER` set. Exit 0 and print the deployment's base URL as the last stdout line; exit 3 if the deploy was superseded by a newer commit; any other non-zero exit is a deploy failure. |
+| `timeout_minutes` | no (20) | Limit on `deploy_command`. |
+| `auth_command` | yes | Shell command run with `VALIDATION_BASE_URL` and `VALIDATION_STORAGE_STATE` set; must write a Playwright storage-state JSON file to `$VALIDATION_STORAGE_STATE`. Typically logs a dedicated test account in. |
+| `allowed_origins` | no | Extra origins the browser may load besides the preview's own (e.g. an auth provider). |
+| `playwright_mcp_version` | no | Pins `@playwright/mcp`. |
+| `max_turns` | no (300) | Turn budget for the validation agent. |
+| `agent_notes` | no | Project-specific guidance added to the agent's instructions, e.g. limits on actions that cost money, or scenarios that can't run in a plain browser and should be `BLOCKED`. |
+
+The validation agent always runs on Claude (it needs MCP tools and vision): `generation.validate`
+must be `"default"` or a `provider: "claude"` entry.
+
+### Writing a `deploy_command`
+
+Push and PR creation happen *before* `deploy_command` runs, so deploys triggered by a push (e.g.
+Vercel) or by a `pull_request` event have already started — for those the command only needs to
+wait. The shipped `github_deployment_url.py` does exactly that for any deploy recorded as a GitHub
+Deployment: Vercel's GitHub integration records one per preview, and a GitHub Actions job records
+one when it declares `environment: { name: ..., url: ... }`. It matches deployments for
+`$VALIDATION_SHA` whose environment contains `--environment` (never anything containing
+"production"), and prints the newest success status's `environment_url` (or `target_url`).
+
+A custom command (e.g. one that dispatches a workflow, or reads a URL from a CloudFormation
+output) should handle the same cases the shipped helper does:
+
+- **No deployment yet** — keep polling until the timeout; don't fail.
+- **Never deployed** — a PR-triggered workflow that skips drafts (`if: ... draft == false`) never
+  deploys the validation stage's draft PR. Deploy drafts too, or trigger on a label.
+- **Superseded** — if the deploy for this commit was cancelled or failed because the branch moved
+  on, exit 3, not 1.
+
+### Project prerequisites
+
+- The dev container must be built from a current `coding-harness-base` image, which carries
+  Chromium's OS libraries. The browser build itself is downloaded by the stage on first use
+  (about 120 MB, matched to the pinned `@playwright/mcp`), so nothing is needed in the project's
+  own Dockerfile. To keep that download across container restarts, enable the
+  `playwright_cache` volume in `docker-compose.yml`.
+- `gh` must be authenticated (`gh auth login`).
+- The preview must not share production data the agent could damage. The agent is told to create
+  only what a scenario needs, prefix it with `[validation]`, and never modify data it didn't
+  create — but use a dedicated test account regardless.
+
+---
+
 ## Key Rules
 
 - **No agent merges to `main`** — the merge is always a human action after PR review and CI pass.
+- **Only the validate stage touches GitHub** — when enabled, `ch-6-validate-auto`'s orchestrator (never an agent) pushes the feature branch without force, opens a *draft* PR against `main`, and posts one report comment per commit. A human marks the PR ready for review.
 - **TDD is mandatory** — failing tests must be written before implementation code, when the test stage is enabled for the project (see § Pipeline Configuration → stage toggles; enabled by default).
 - **One feature at a time** — each feature has its own branch and `specs/NNN-feature/` directory.
 
@@ -688,7 +801,7 @@ The push contains only the project name and Claude's one-line notification text,
 While a `ch-*-auto` stage or `/ch-plan-to-implement-auto` is running, the Claude Code status line shows where it is:
 
 ```
-012-foo  plan ✓ │ tasks ✓ │ test ▶ test quality review 2/3 · 14m │ implement · │ docs ⊘
+012-foo  plan ✓ │ tasks ✓ │ test ▶ test quality review 2/3 · 14m │ implement · │ docs ⊘ │ validate ⊘
 ```
 
 | Symbol | Meaning |

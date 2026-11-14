@@ -87,6 +87,13 @@ You **MUST** consider the user input before proceeding (if not empty).
 
    Always re-read `.claude/skills/ch-specify/SKILL.md` (and, in turn, `.claude/skills/speckit-specify/SKILL.md`) fresh rather than relying on a cached memory of their structure, so this delegation stays correct even if those files' steps are renumbered or changed later.
 
+   Once the delegated flow has written `SPEC_FILE`, record the source issue in its header: insert
+   the line `**Source Issue**: #<number> (<url>)` directly after the `**Input**:` line (or, if there
+   is no such line, after the last `**...**:` header line under the title), matching the
+   surrounding header lines' trailing-whitespace style. Add it only once — if the spec already
+   has a `**Source Issue**:` line, update it instead. `ch-6-validate-auto` reads this line to add
+   `Closes #<number>` to the feature's PR.
+
 7. **Report completion.** After the delegated flow reports completion (`SPECIFY_FEATURE_DIRECTORY`, `SPEC_FILE`, checklist summary), replace its generic "readiness for next phase" line (which points at `/speckit-clarify` or `/speckit-plan`) with next steps for the `ch-` automated pipeline instead — this command is part of that family, not the manual one:
    ```
    Spec is ready for planning. Run /ch-1-plan-auto to generate and critic-review the plan

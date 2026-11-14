@@ -305,7 +305,7 @@ The following are out of scope for v1 but the architecture must not make them im
 | Tasks Agent | Produce `tasks.md` from approved `plan.md` and supporting docs. No code. |
 | Test Agent | Read `test-principles.md`. Write failing test(s) for assigned [TEST] tasks. Confirm red state. Record failing output. No implementation code. No modification of the source directories declared in §5. |
 | Implementation Agent | Read `code-quality-principles.md`. Load red-output artifact from paired [TEST] task. Write implementation to pass failing tests. Refactor under green. No new test files. No adding or modifying test cases. Modifying test setup (mocks, fixtures, helpers, `setup.ts`) is permitted when the implementation requires additional test infrastructure not established during the test phase. No spec, plan, or architecture changes. |
-| Verification Agent | Report pass/fail and defects against spec. No fixes. |
+| Verification Agent | Validate this feature on a deployed, non-production preview (§22, when enabled): drive a browser through every acceptance scenario, success criterion and quickstart section, record each, and report a per-scenario verdict with evidence. No fixes, no commits, no Bash. Its orchestrator — never the agent — may push the feature branch (never forced), open a draft PR against `main`, and post the report as a PR comment; it never merges or marks the PR ready for review. |
 | Refactor Agent | Structural cleanup and drift correction only. Read `architecture.md` and report drift. No new behaviour, no contract changes, no self-directed architectural corrections. |
 | Documentation Agent | Read `documentation-principles.md`. Read the existing `docs/` tree (if present), this feature's `spec.md`/`plan.md`/`tasks.md`, and the shipped diff. Merge this feature's shipped behaviour into `docs/` — add or revise files in the correct Diátaxis category, remove or rewrite obsolete ones. No code, spec, plan, or task changes. |
 
@@ -389,3 +389,14 @@ In addition to being the docs stage's output, `docs/` also serves as grounding i
 - The Plan Critic additionally validates `plan.md` against `docs/` (if present): it flags a plan whose technical approach conflicts with documented current behaviour for functionality the spec did not declare as changing. It does not flag intentional, spec-acknowledged changes.
 
 This is advisory grounding context, not a gate — there is no automated critic for the specify stage, and the plan critic's docs-consistency check above is additive to its existing rules, not a new standalone gate. `docs/` is not read by the Test or Implementation Agents: mid-feature, `docs/` still reflects pre-feature state by design (§20), so comparing in-flight work against it would produce false-positive contradictions for the very feature being built.
+
+---
+
+## 22. Validation Gate
+
+When `stages.validate.enabled` is `true` in `.specify/pipeline.json` (default `false`), a feature's PR is not ready for review until:
+
+1. `specs/$FEATURE/ch-6-validate-auto-complete` names the PR's head commit — every scenario passed on that commit's preview; and
+2. A human has reviewed that commit's recordings and marked the PR ready for review.
+
+A FAIL or BLOCKED scenario is resolved by a new commit, which is validated from scratch, never by editing the report. A validation agent that reports PASS for a scenario it did not observe has violated this constitution.

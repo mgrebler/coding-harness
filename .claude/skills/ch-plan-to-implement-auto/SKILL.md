@@ -1,6 +1,6 @@
 ---
 name: ch-plan-to-implement-auto
-description: Runs the full plan → tasks → test → implement → docs pipeline for the current feature branch unattended, without stopping for review between stages. Chains ch_1_plan_auto.py, ch_2_tasks_auto.py, ch_3_test_auto.py, ch_4_implement_auto.py, and ch_5_docs_auto.py sequentially. Resume-safe — re-running after any interruption continues from the first incomplete stage.
+description: Runs the full plan → tasks → test → implement → docs → validate pipeline for the current feature branch unattended, without stopping for review between stages. Chains ch_1_plan_auto.py, ch_2_tasks_auto.py, ch_3_test_auto.py, ch_4_implement_auto.py, ch_5_docs_auto.py, and (when enabled) ch_6_validate_auto.py sequentially. Resume-safe — re-running after any interruption continues from the first incomplete stage.
 user-invocable: true
 ---
 
@@ -72,6 +72,13 @@ Runs five stages in sequence. Each stage must pass before the next begins.
 - Runs iterative docs critic review (up to 3 iterations)
 - On PASS: triggers auto-commit via the git extension
 
+**Stage 6 — Validate** (`ch_6_validate_auto.py`, opt-in via `stages.validate.enabled`):
+- Pushes the feature branch (never forced) and opens or reuses its draft PR against `main`
+- Waits for the project's `deploy_command` to report this commit's preview URL
+- Has an agent drive a recorded browser through every acceptance scenario, success criterion, and quickstart section
+- Posts the report as a PR comment; recordings stay local under `specs/<feature>/validation/<sha>/`
+- Report-only: never fixes, commits, merges, or marks the PR ready for review
+
 ---
 
 ## Resume behaviour
@@ -87,6 +94,7 @@ files each sub-script produces:
 | Test | `specs/<feature>/ch-3-test-quality-review-result-*.json` |
 | Implement | `specs/<feature>/ch-4-implement-code-quality-review-result-*.json` |
 | Docs | `specs/<feature>/ch-5-docs-critic-result-*.json` |
+| Validate | always re-run; `ch_6_validate_auto.py` skips a commit whose `ch-6-validate-auto-complete` names the current HEAD |
 
 ---
 
@@ -102,6 +110,7 @@ and logs which escalation file to review:
 | Test | `specs/<feature>/ch-3-test-critic-escalation.md` |
 | Implement | `specs/<feature>/ch-4-implement-critic-escalation.md` |
 | Docs | `specs/<feature>/ch-5-docs-critic-escalation.md` |
+| Validate | `specs/<feature>/ch-6-validate-escalation.md` |
 
 Fix the issues described in the escalation file, then re-run this skill to
 resume from the failed stage.
@@ -114,7 +123,7 @@ Both workflows gate purely on the artifacts above — there are no approval
 marker files or git hooks in either. The only difference is that the
 human-in-the-loop workflow runs one stage at a time, via the individual
 `/ch-N-*-auto` skills, so you can review the artifact between stages,
-while this skill runs all five stages in sequence unattended.
+while this skill runs all the stages in sequence unattended.
 
 ---
 
@@ -122,4 +131,5 @@ while this skill runs all five stages in sequence unattended.
 
 - Does not replace human review — use the individual skills if you want to
   review plan.md or tasks.md before proceeding
-- Does not push to remote or open a pull request
+- Does not push to remote or open a pull request, except stage 6 when it is
+  enabled (feature branch only, draft PR only — never a merge)

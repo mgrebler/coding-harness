@@ -18,7 +18,7 @@ class TestCheckStageResult(unittest.TestCase):
         with patch.object(ptia, "log") as mock_log:
             ptia._check_stage_result(0, 1, "plan", Path("ch-1-plan-critic-escalation.md"))
 
-        mock_log.assert_called_once_with("Stage 1/5 (plan): PASSED.")
+        mock_log.assert_called_once_with("Stage 1/6 (plan): PASSED.")
 
     def test_generic_failure_logs_escalation_hint_and_exits_1(self):
         with tempfile.TemporaryDirectory() as d:
@@ -29,7 +29,7 @@ class TestCheckStageResult(unittest.TestCase):
 
         self.assertEqual(cm.exception.code, 1)
         mock_log.assert_called_once_with(
-            "Stage 2/5 (tasks): FAILED. Review ch-2-tasks-critic-escalation.md and re-run."
+            "Stage 2/6 (tasks): FAILED. Review ch-2-tasks-critic-escalation.md and re-run."
         )
 
     def test_failure_without_escalation_file_points_at_the_log(self):
@@ -72,7 +72,7 @@ class TestCheckStageResult(unittest.TestCase):
 
         self.assertEqual(cm.exception.code, 1)
         mock_log.assert_called_once_with(
-            "Stage 5/5 (docs): FAILED. Review ch-5-docs-critic-escalation.md and re-run."
+            "Stage 5/6 (docs): FAILED. Review ch-5-docs-critic-escalation.md and re-run."
         )
 
 
@@ -90,7 +90,7 @@ class TestStageSkipReason(unittest.TestCase):
             reason = ptia._stage_skip_reason(3, "test")
 
         self.assertIsNotNone(reason)
-        self.assertIn("Stage 3/5 (test)", reason)
+        self.assertIn("Stage 3/6 (test)", reason)
         self.assertIn("disabled", reason)
         self.assertIn("pipeline.json", reason)
 
@@ -98,11 +98,7 @@ class TestStageSkipReason(unittest.TestCase):
         with patch.object(ptia, "is_stage_enabled", return_value=False):
             reason = ptia._stage_skip_reason(5, "docs")
 
-        self.assertIn("Stage 5/5 (docs)", reason)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertIn("Stage 5/6 (docs)", reason)
 
 
 class TestRunStage(unittest.TestCase):
@@ -133,3 +129,18 @@ class TestRunStage(unittest.TestCase):
     def test_disabled_toggleable_stage_is_skipped(self):
         with patch.object(ptia, "is_stage_enabled", return_value=False):
             self._run(ptia.STAGES[4]).assert_not_called()
+
+    def test_validate_always_delegates_to_its_own_per_commit_resume(self):
+        validate = ptia.STAGES[5]
+        with patch.object(ptia, "is_stage_enabled", return_value=True):
+            run = self._run(validate, ["ch-6-validate-auto-complete"])
+        run.assert_called_once_with(
+            ["python", ".claude/agents/ch_6_validate_auto.py", "--feature", "001-feat"]
+        )
+
+    def test_validate_names_its_own_escalation_file(self):
+        self.assertEqual(ptia.STAGES[5].escalation, "ch-6-validate-escalation.md")
+
+
+if __name__ == "__main__":
+    unittest.main()

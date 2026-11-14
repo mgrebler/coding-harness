@@ -88,7 +88,7 @@ class TestRender(_ProjectCase):
         self.assertEqual(
             self._render(),
             "012-foo  plan ✓ │ tasks ✓ │ test ▶ test quality review 2/3 · 14m"
-            " │ implement · │ docs ·",
+            " │ implement · │ docs · │ validate ⊘",
         )
 
     def test_latest_entry_per_stage_wins(self):
@@ -129,6 +129,15 @@ class TestRender(_ProjectCase):
         rendered = self._render()
         self.assertIn("docs ⊘", rendered)
         self.assertIn("test ·", rendered)
+
+    def test_validate_is_disabled_unless_enabled(self):
+        self._complete("ch-1-plan")
+        self.assertIn("validate ⊘", self._render())
+        (self.project / ".specify").mkdir()
+        (self.project / ".specify/pipeline.json").write_text(
+            json.dumps({"stages": {"validate": {"enabled": True}}})
+        )
+        self.assertIn("validate ·", self._render())
 
     def test_corrupt_lines_are_ignored(self):
         (self.spec_dir / pipeline_status.LOG_NAME).write_text("not json\n[1]\n")
@@ -206,7 +215,7 @@ class TestScript(_ProjectCase):
         )
         self.assertEqual(
             result.stdout,
-            "012-foo  plan ✓ │ tasks · │ test · │ implement · │ docs ·\n",
+            "012-foo  plan ✓ │ tasks · │ test · │ implement · │ docs · │ validate ⊘\n",
         )
 
 

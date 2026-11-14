@@ -30,10 +30,10 @@ git subtree pull --prefix=.coding-harness <harness-repo-url> main
 The harness enforces a strict spec-driven pipeline:
 
 ```
-specify → plan → tasks → test → implement → human PR review + merge
+specify → plan → tasks → test → implement → docs → [validate] → human PR review + merge
 ```
 
-Each stage produces a markdown artifact in `specs/NNN-feature/` within the target project. Humans review each stage's artifact, then manually run the next stage's command. No agent ever merges to `main`.
+Each stage produces a markdown artifact in `specs/NNN-feature/` within the target project. Humans review each stage's artifact, then manually run the next stage's command. No agent ever merges to `main`. The opt-in validate stage (`ch_6_validate_auto.py`) is the only one that touches GitHub: its orchestrator code — never the agent — pushes the feature branch without force, opens a draft PR, and posts a per-commit report comment after a browser agent records each spec scenario on the deployed preview. Its output is gitignored and never committed, since a commit would move HEAD off the deploy it validated.
 
 See README.md for the full pipeline walkthrough, docker setup, and command reference.
 
@@ -68,7 +68,7 @@ No comments that merely restate what the code already says — rely on naming an
 
 ### Key Directories
 
-**`.claude/agents/`** — Python orchestrators that run autonomous multi-stage pipelines. Each stage has a `ch-N-stage-auto.py` (end-to-end with critic loop) and a `ch_N_stage_critic.py` (builds critic prompts), numbered by pipeline order (`1`=plan, `2`=tasks, `3`=test, `4`=implement). These are invoked manually via slash commands, or chained automatically by the fully-automatic pipeline. The `agent_common/` package provides shared utilities, split by concern (`console`, `git`, `files`, `resume_state`, `ollama`, `critic_loop`).
+**`.claude/agents/`** — Python orchestrators that run autonomous multi-stage pipelines. Each stage has a `ch-N-stage-auto.py` (end-to-end with critic loop) and a `ch_N_stage_critic.py` (builds critic prompts), numbered by pipeline order (`1`=plan, `2`=tasks, `3`=test, `4`=implement, `5`=docs). `ch_6_validate_auto.py` has no critic module: its report is checked deterministically by `agent_common/validation_report.py`. These are invoked manually via slash commands, or chained automatically by the fully-automatic pipeline. The `agent_common/` package provides shared utilities, split by concern (`console`, `git`, `files`, `resume_state`, `ollama`, `critic_loop`).
 
 **`.claude/skills/`** — User-facing slash commands. Each is a directory with a `SKILL.md` prompt. Skills write artifacts to disk or invoke agent pipelines directly.
 
@@ -78,7 +78,7 @@ No comments that merely restate what the code already says — rely on naming an
 
 **`.specify/extensions/git/`** — Optional module for sequential/timestamp branch numbering and auto-commit hooks. Config: `.specify/extensions/git/git-config.yml` — every `after_<stage>` event a `ch-*-auto` script commits on (`after_plan`, `after_tasks`, `after_test`, `after_implement`, `after_docs`) needs an `enabled: true` entry there, or that stage's final commit is skipped. Hooks only fire because `.specify/extensions.yml` registers them.
 
-**`.devcontainer/`** — Docker-based dev environment with Node 22, Python 3, Docker-in-Docker, and GitHub CLI. `Dockerfile` here is the source for the published `ghcr.io/mgrebler/coding-harness-base` image (built by `.github/workflows/publish-base-image.yml` on every change) and is also what the repo's own root `docker-compose.yml` builds, so `claude` can be run in a container while developing the harness itself. It intentionally omits project-specific runtime deps (e.g. Playwright) — those belong in each installed project's own `.devcontainer/Dockerfile`, which is a thin `FROM ghcr.io/.../coding-harness-base:latest` template (see `examples/.devcontainer/Dockerfile`).
+**`.devcontainer/`** — Docker-based dev environment with Node 22, Python 3, Docker-in-Docker, and GitHub CLI. `Dockerfile` here is the source for the published `ghcr.io/mgrebler/coding-harness-base` image (built by `.github/workflows/publish-base-image.yml` on every change) and is also what the repo's own root `docker-compose.yml` builds, so `claude` can be run in a container while developing the harness itself. It intentionally omits project-specific runtime deps (e.g. a project's own Playwright test browsers) — those belong in each installed project's own `.devcontainer/Dockerfile`. The one exception is Chromium's OS libraries, installed for the harness's own validate stage (they need root, so they can't be added at runtime); the matching browser build is downloaded at runtime by `ch_6_validate_auto.py`'s `ensure_browser`, keyed to the pinned `@playwright/mcp` version, so keep the Dockerfile's `playwright@` version in step with that pin. The project Dockerfile is a thin `FROM ghcr.io/.../coding-harness-base:latest` template (see `examples/.devcontainer/Dockerfile`).
 
 **`examples/`** — Templates for project-specific files that `install.sh` copies on first install (constitution annotated with `[PROJECT: ...]` placeholders, docker-compose with `<project-name>` placeholder, `.devcontainer/Dockerfile` that extends the published base image, etc.).
 
