@@ -40,8 +40,10 @@ Wait for the script to complete and relay its output to the user.
    `gh` authenticated, validation generation provider is Claude)
 3. Pushes the feature branch (never forced) and finds or opens its **draft** PR against `main`,
    adding `Closes #N` when the spec came from an issue
-4. Runs the project's `deploy_command`, which prints this commit's preview URL
-5. Runs the project's `auth_command`, which writes a logged-in Playwright session file
+4. Runs the project's `deploy_command`, which prints this commit's preview URL — inside the
+   project's `lock_command`/`unlock_command`, when set, for a shared environment
+5. Runs the project's `auth_command`, which writes a logged-in Playwright session file, then
+   the optional `seed_command`, which creates data a browser can't (e.g. an inbound email)
 6. Has a validation agent drive a recorded browser (Playwright MCP) through every acceptance
    scenario, success criterion and quickstart section, writing one verdict per scenario
 7. Checks the report deterministically (every scenario covered, recordings on disk), retrying

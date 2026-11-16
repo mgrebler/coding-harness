@@ -95,6 +95,11 @@ class TestPreflight(_ProjectCase):
         with self.assertRaises(SystemExit):
             self._preflight()
 
+    def test_lock_without_unlock_blocks(self):
+        self._config({"validation": {**CONFIG, "lock_command": "lock"}})
+        with self.assertRaises(SystemExit):
+            self._preflight()
+
     def test_docs_incomplete_blocks_unless_disabled(self):
         (self.spec_dir / "ch-5-docs-auto-complete").unlink()
         with self.assertRaises(SystemExit):
@@ -113,16 +118,23 @@ class TestPreflight(_ProjectCase):
             self._preflight()
 
 
+LOCKED = {**CONFIG, "lock_command": "lock", "unlock_command": "unlock"}
+
+
+def _done(returncode=0, stdout=""):
+    return subprocess.CompletedProcess([], returncode, stdout, None)
+
+
 class TestDeploy(_ProjectCase):
-    def _deploy(self, returncode=0, stdout="building\nhttps://p.example\n"):
+    def _deploy(self, returncode=0, stdout="building\nhttps://p.example\n", config=CONFIG):
         run_dir = self.spec_dir / "validation" / SHA[:12]
         run_dir.mkdir(parents=True, exist_ok=True)
-        result = subprocess.CompletedProcess([], returncode, stdout, None)
+        env = va.hook_env(FEATURE, SHA, FEATURE, 5, self.spec_dir, run_dir)
         with (
-            patch.object(va.subprocess, "run", return_value=result) as run,
+            patch.object(va.subprocess, "run", return_value=_done(returncode, stdout)) as run,
             patch.object(va, "log"),
         ):
-            url = va.deploy(CONFIG, run_dir, SHA, FEATURE, 5)
+            url = va.deploy(config, env, run_dir)
         return url, run
 
     def test_last_line_is_url_and_env_is_set(self):
@@ -133,6 +145,7 @@ class TestDeploy(_ProjectCase):
             (env["VALIDATION_SHA"], env["VALIDATION_BRANCH"], env["VALIDATION_PR_NUMBER"]),
             (SHA, FEATURE, "5"),
         )
+        self.assertTrue(Path(env["VALIDATION_RUN_DIR"]).is_absolute())
 
     def test_url_is_cached_for_resume(self):
         self._deploy()
@@ -140,10 +153,83 @@ class TestDeploy(_ProjectCase):
         self.assertEqual(url, "https://p.example")
         run.assert_not_called()
 
+    def test_shared_environment_is_redeployed_on_resume(self):
+        self._deploy(config=LOCKED)
+        _, run = self._deploy(stdout="https://dev.example\n", config=LOCKED)
+        run.assert_called_once()
+
     def test_failures(self):
         for code, stdout in ((va.SUPERSEDED_EXIT_CODE, ""), (1, ""), (0, "not a url\n")):
             with self.subTest(code=code, stdout=stdout), self.assertRaises(SystemExit):
                 self._deploy(code, stdout)
+
+
+class TestEnvironmentLock(unittest.TestCase):
+    def _hold(self, config=LOCKED, lock_rc=0, unlock_rc=0, body=lambda: None):
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            return _done(lock_rc if cmd == "lock" else unlock_rc)
+
+        with patch.object(va.subprocess, "run", side_effect=run), patch.object(va, "log"):
+            try:
+                with va.environment_lock(config, {}):
+                    calls.append("body")
+                    body()
+                outcome = None
+            except SystemExit as e:
+                outcome = e.code
+        return calls, outcome
+
+    def test_unconfigured_is_a_no_op(self):
+        self.assertEqual(self._hold(config=CONFIG), (["body"], None))
+
+    def test_released_after_success(self):
+        self.assertEqual(self._hold(), (["lock", "body", "unlock"], None))
+
+    def test_released_when_the_body_fails(self):
+        def fail():
+            raise SystemExit(1)
+
+        self.assertEqual(self._hold(body=fail), (["lock", "body", "unlock"], 1))
+
+    def test_failed_lock_skips_body_and_unlock(self):
+        self.assertEqual(self._hold(lock_rc=1), (["lock"], 1))
+
+    def test_failed_unlock_after_success_fails_the_run(self):
+        self.assertEqual(self._hold(unlock_rc=1), (["lock", "body", "unlock"], 1))
+
+
+class TestSeed(_ProjectCase):
+    def _seed(self, config, result=None):
+        with (
+            patch.object(va.subprocess, "run", return_value=result) as run,
+            patch.object(va, "log"),
+        ):
+            return va.seed(config, {"VALIDATION_SHA": SHA}, "https://p.example"), run
+
+    def test_unconfigured_runs_nothing(self):
+        seeded, run = self._seed(CONFIG)
+        self.assertEqual(seeded, "")
+        run.assert_not_called()
+
+    def test_output_describes_the_seeded_data(self):
+        seeded, run = self._seed({**CONFIG, "seed_command": "seed"}, _done(0, "Sent 2 emails\n"))
+        self.assertEqual(seeded, "Sent 2 emails")
+        self.assertEqual(run.call_args.kwargs["env"]["VALIDATION_BASE_URL"], "https://p.example")
+
+    def test_failure_fails(self):
+        with self.assertRaises(SystemExit):
+            self._seed({**CONFIG, "seed_command": "seed"}, _done(1))
+
+    def test_seeded_data_reaches_the_agent_only_when_present(self):
+        def instructions(seeded):
+            return va.agent_instructions([], "spec", "qs", "", "https://p", Path("/r"), "", seeded)
+
+        self.assertIn("--- DATA SEEDED FOR THIS RUN ---", instructions("Sent 2 emails"))
+        self.assertIn("Sent 2 emails", instructions("Sent 2 emails"))
+        self.assertNotIn("SEEDED", instructions(""))
 
 
 class TestMcpServer(unittest.TestCase):
@@ -264,10 +350,10 @@ class TestRun(_ProjectCase):
 
         return agent, calls
 
-    def _run(self, agent):
+    def _run(self, agent, config=CONFIG):
         pr = {"number": 5, "url": "https://gh/pr/5", "body": "", "baseRefName": "main"}
         with (
-            patch.object(va, "preflight", return_value=CONFIG),
+            patch.object(va, "preflight", return_value=config),
             patch.object(
                 va, "_git", side_effect=lambda *a: SHA if a == ("rev-parse", "HEAD") else FEATURE
             ),
@@ -276,7 +362,7 @@ class TestRun(_ProjectCase):
             patch.object(va, "run_description_agent", side_effect=_describe),
             patch.object(va, "branch_changes", return_value=""),
             patch.object(va.github_pr, "ensure_draft_pr", return_value=pr) as ensure_pr,
-            patch.object(va, "deploy", return_value="https://p.example"),
+            patch.object(va, "deploy", return_value="https://p.example") as deploy,
             patch.object(va, "ensure_browser"),
             patch.object(va, "login", return_value=Path("s.json")),
             patch.object(va, "run_validation_agent", side_effect=agent),
@@ -288,7 +374,33 @@ class TestRun(_ProjectCase):
                 exited = None
             except SystemExit as e:
                 exited = e.code
+        self.deploy = deploy
         return exited, push, ensure_pr, comment
+
+    def test_finished_report_is_posted_without_redeploying(self):
+        run_dir = self.spec_dir / "validation" / SHA[:12]
+        run_dir.mkdir(parents=True)
+        (run_dir / "base-url").write_text("https://p.example\n")
+        (run_dir / "US1-AS1.webm").write_bytes(b"x")
+        report = {"scenarios": [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok"}]}
+        (run_dir / "report.json").write_text(json.dumps(report))
+        agent, calls = self._agent_writing()
+        with patch.object(va.subprocess, "run") as hooks:
+            exited, _, _, comment = self._run(agent, config=LOCKED)
+        self.assertIsNone(exited)
+        self.deploy.assert_not_called()
+        hooks.assert_not_called()
+        self.assertEqual(calls, [])
+        comment.assert_called_once()
+
+    def test_shared_environment_is_locked_around_deploy_and_validation(self):
+        passing = {
+            "scenarios": [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok", "record": 1}]
+        }
+        agent, _ = self._agent_writing(passing)
+        with patch.object(va.subprocess, "run", return_value=_done()) as hooks:
+            self.assertIsNone(self._run(agent, config=LOCKED)[0])
+        self.assertEqual([c.args[0] for c in hooks.call_args_list], ["lock", "unlock"])
 
     def test_all_pass_marks_complete_without_committing(self):
         passing = {
