@@ -72,6 +72,7 @@ AGENT_NAME = "ch-6-validate-auto"
 STAGE = "ch-6-validate"
 ESCALATION_FILENAME = "ch-6-validate-escalation.md"
 PLAYWRIGHT_MCP_VERSION = "0.0.84"
+RUN_CODE_TOOL = "mcp__playwright__browser_run_code_unsafe"
 DEFAULT_TIMEOUT_MINUTES = 20
 AUTH_TIMEOUT_S = 300
 SEED_TIMEOUT_S = 15 * 60
@@ -407,18 +408,52 @@ def ensure_browser(config: dict) -> None:
         )
 
 
+MCP_ENV_ALLOWLIST = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "TMPDIR",
+    "PLAYWRIGHT_BROWSERS_PATH",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+)
+
+
+def _mcp_env() -> list[str]:
+    return [
+        f"{key}={value}"
+        for key, value in os.environ.items()
+        if key in MCP_ENV_ALLOWLIST or key.lower().startswith("npm_config_")
+    ]
+
+
 def mcp_server(config: dict, base_url: str, storage_state: Path, run_dir: Path) -> dict:
+    """The browser server starts in the run dir with --ignore-roots, which confines
+    its file tools (e.g. browser_file_upload) to that dir instead of the checkout,
+    and with only the environment npx and Chromium need, not the harness's AWS,
+    GitHub or database credentials."""
     parsed = urlparse(base_url)
     origins = [f"{parsed.scheme}://{parsed.netloc}", *config.get("allowed_origins", [])]
     return {
         "type": "stdio",
-        "command": "npx",
+        "command": "env",
         "args": [
+            "-i",
+            "-C",
+            str(run_dir.resolve()),
+            *_mcp_env(),
+            "npx",
             "-y",
             f"@playwright/mcp@{mcp_version(config)}",
             "--browser=chromium",
             "--headless",
             "--isolated",
+            "--ignore-roots",
             "--caps=devtools",
             "--viewport-size=1280x720",
             f"--storage-state={storage_state}",
@@ -499,8 +534,8 @@ must show something they need to see, and nothing they have already seen:
 
 1. Setup. If scenarios need data that doesn't exist yet, create all of it first, on camera:
    `browser_start_video` with filename `{run_path}/setup-<n>.webm`, then
-   `browser_video_show_actions`. Create the data through the UI, or with a script you save
-   under {run_path} and list as evidence. Then browse to where the app shows that data (the
+   `browser_video_show_actions`. Create the data through the UI, or with `browser_evaluate`
+   in the page (save the code under {run_path} and list it as evidence). Then browse to where the app shows that data (the
    lists and detail pages the checks will be computed from) so the video shows it.
    `browser_stop_video`, then `browser_close`. Add a step to the report's "setup" list.
 2. Group the scenarios. Scenarios that check the same screen in the same data state share
@@ -512,9 +547,9 @@ must show something they need to see, and nothing they have already seen:
    a. `browser_video_chapter` with the scenario id as title.
    b. Perform the scenario as a user would, starting from {base_url} — through the UI, not by
       guessing URLs, unless the scenario itself is about a URL.
-   c. Check each expected outcome on its own: scroll the element into view and highlight it
-      (Playwright's `locator.highlight()`), then take a screenshot (filename
-      `{run_path}/<id>-<n>.png`). Never check outcomes by reading the whole page in one
+   c. Check each expected outcome on its own: scroll the element into view, highlight it with
+      `browser_highlight`, take a screenshot (filename `{run_path}/<id>-<n>.png`), then
+      `browser_hide_highlight`. Never check outcomes by reading the whole page in one
       script — the recording then shows nothing of what you checked.
    End the group with `browser_stop_tracing`, then `browser_stop_video`, then
    `browser_close`, so the next group starts from a fresh browser.
@@ -559,6 +594,8 @@ async def run_validation_agent(
         system_prompt=_system_prompt_file(run_dir, "agent-prompt.md", instructions),
         tools=["Read", "Write"],
         allowed_tools=["Read", "Write", "mcp__playwright"],
+        # Runs Node code in the MCP server process, outside every other limit here.
+        disallowed_tools=[RUN_CODE_TOOL],
         mcp_servers={"playwright": mcp},
         setting_sources=[],
         model=ollama.load_claude_generation_model("validate"),
