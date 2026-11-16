@@ -621,6 +621,12 @@ For the commit at HEAD, `ch_6_validate_auto.py`:
 1. Pushes the feature branch (never forced) and finds or opens its **draft** PR against `main`.
    If the spec came from an issue (`/ch-specify-from-issue` writes a `**Source Issue**: #N`
    header line), the PR body gets `Closes #N`.
+   A Claude agent (no tools but writing one file in the run directory) writes the PR description
+   from `spec.md`, `plan.md`, the `[TEST]` tasks and the branch's `docs/` diff: summary, what
+   users get, how it works, decisions worth a look, testing, and follow-ups. Later commits
+   regenerate it while it still carries its hidden
+   `<!-- ch-6-validate-auto:generated-description -->` marker; delete the marker when you edit
+   the description and it is left alone from then on. A PR a human opened is never re-described.
 2. Runs the project's `deploy_command`, which must make sure *this commit* is deployed and print
    its base URL as the last line of stdout.
 3. Runs the project's `auth_command`, which must write a Playwright
@@ -630,12 +636,16 @@ For the commit at HEAD, `ch_6_validate_auto.py`:
    (`US<n>-AS<m>`), every success criterion (`SC-NNN`), and every `##` section of `quickstart.md`
    (`QS-<n>`).
 5. Runs a Claude validation agent with the [Playwright MCP](https://github.com/microsoft/playwright-mcp)
-   server (headless, isolated, navigation limited to the preview's origin). It records one video
-   and trace per scenario and writes one verdict per scenario: `PASS`, `FAIL`, `BLOCKED` (with a
+   server (headless, isolated, navigation limited to the preview's origin). Any test data it needs
+   it creates first, in a recorded `setup-<n>.webm` that ends by browsing to where the app shows
+   that data. Scenarios that check the same screen in the same data state share one video and
+   trace, with a chapter per scenario id; it highlights each element it checks before
+   screenshotting it. It writes one verdict per scenario: `PASS`, `FAIL`, `BLOCKED` (with a
    reason), or — for quickstart sections that only make sense in a local checkout —
    `NOT_APPLICABLE` (with a reason). It has no Bash and can only read and write inside the run directory.
-6. Checks the report: every scenario covered once, and a recording on disk for every PASS/FAIL.
-   An incomplete report gets one retry; still incomplete escalates.
+6. Checks the report: every scenario covered once, a recording on disk for every PASS/FAIL (its
+   own `<id>.webm`, or the shared video its `recording` field names), and a recording and
+   description for every setup step. An incomplete report gets one retry; still incomplete escalates.
 7. Posts the report as a PR comment (once per commit). Any FAIL/BLOCKED writes
    `specs/NNN-feature/ch-6-validate-escalation.md` and exits non-zero.
 
@@ -711,7 +721,7 @@ output) should handle the same cases the shipped helper does:
 ## Key Rules
 
 - **No agent merges to `main`** — the merge is always a human action after PR review and CI pass.
-- **Only the validate stage touches GitHub** — when enabled, `ch-6-validate-auto`'s orchestrator (never an agent) pushes the feature branch without force, opens a *draft* PR against `main`, and posts one report comment per commit. A human marks the PR ready for review.
+- **Only the validate stage touches GitHub** — when enabled, `ch-6-validate-auto`'s orchestrator (never an agent) pushes the feature branch without force, opens a *draft* PR against `main` with an agent-written description, and posts one report comment per commit. A human marks the PR ready for review.
 - **TDD is mandatory** — failing tests must be written before implementation code, when the test stage is enabled for the project (see § Pipeline Configuration → stage toggles; enabled by default).
 - **One feature at a time** — each feature has its own branch and `specs/NNN-feature/` directory.
 

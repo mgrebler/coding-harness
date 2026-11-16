@@ -13,7 +13,10 @@ Usage:
 
 What this stage does, for the commit at HEAD:
   1. Pushes the feature branch (never forced) and finds or opens its draft PR
-     against main, with `Closes #N` when the spec came from an issue.
+     against main, with `Closes #N` when the spec came from an issue. A Claude
+     agent writes the PR description from spec.md, plan.md and the docs/ diff;
+     it is regenerated on later commits until a human takes it over by
+     removing its marker.
   2. Runs the project's validation.deploy_command, which makes sure this
      commit is deployed to a non-production environment and prints its URL.
   3. Runs the project's validation.auth_command, which writes a Playwright
@@ -46,11 +49,12 @@ from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, query
 
 from agent_common import github_pr, ollama, pipeline_status
 from agent_common import validation_report as vr
-from agent_common.console import make_logger, setup_log_file, stream_query
+from agent_common.console import SessionLimitError, make_logger, setup_log_file, stream_query
 from agent_common.critic_loop import run_cli
 from agent_common.driving_agent import HUMAN_REVIEW_ATTESTATION_GUARDRAIL
 from agent_common.files import read_file, read_optional, require_spec_files, write_file
-from agent_common.git import dirty_files
+from agent_common.followup import FOLLOWUP_FILENAME
+from agent_common.git import branch_changes, dirty_files
 from agent_common.github_deployment_url import SUPERSEDED_EXIT_CODE
 from agent_common.resume_state import clear_stage_complete, stage_is_complete
 
@@ -61,6 +65,8 @@ PLAYWRIGHT_MCP_VERSION = "0.0.84"
 DEFAULT_TIMEOUT_MINUTES = 20
 AUTH_TIMEOUT_S = 300
 DEFAULT_MAX_TURNS = 300
+DESCRIPTION_MAX_TURNS = 10
+DOCS_DIFF_LIMIT = 60_000
 log = make_logger(AGENT_NAME)
 
 
@@ -123,12 +129,107 @@ def pr_title(spec: str, feature: str) -> str:
     return feature
 
 
-def pr_body(feature: str) -> str:
+def description_instructions(
+    feature: str,
+    spec: str,
+    plan: str,
+    test_tasks: str,
+    docs_diff: str,
+    followup: str | None,
+    body_path: Path,
+) -> str:
+    if len(docs_diff) > DOCS_DIFF_LIMIT:
+        docs_diff = docs_diff[:DOCS_DIFF_LIMIT] + "\n[... docs diff truncated ...]"
+    followup_rule = (
+        f"Link `{followup}` and name its most important concerns in a sentence or two."
+        if followup
+        else 'Write "None".'
+    )
+    return f"""You write the pull request description for feature `{feature}` of a spec-kit
+project. A reviewer reads it to learn what the feature does and why, before reading the code.
+
+--- SPEC ---
+{spec}
+
+--- PLAN ---
+{plan}
+
+--- [TEST] TASKS ---
+{test_tasks}
+
+--- FILES CHANGED ON THIS BRANCH ---
+{branch_changes("--stat")}
+
+--- DOCS DIFF (the shipped behaviour, as merged into the project's docs/) ---
+{docs_diff or "(none)"}
+
+Write the description as GitHub markdown to `{body_path.resolve()}`, with these sections:
+- `## Summary`: two or three sentences on the problem and what this PR does about it.
+- `## What users get`: the user-visible changes, from the user stories and the docs diff.
+- `## How it works`: the approach from the plan — the main components and data flow, naming
+  the important files. Not a file-by-file changelog.
+- `## Decisions worth a look`: choices a reviewer may want to question — resolved
+  clarifications, trade-offs and deviations recorded in the plan. Skip the section if
+  there are none.
+- `## Testing`: what the automated tests cover, from the [TEST] tasks. Say that deployed
+  validation of this commit is reported in a PR comment; don't predict its result.
+- `## Follow-ups`: {followup_rule}
+
+Rules:
+- Describe only what the spec, plan, tasks and diffs above support; don't invent behaviour.
+- Be concise: a reviewer should read it in two minutes. No title heading — the PR has one.
+- Write nothing but that one file.
+"""
+
+
+async def run_description_agent(instructions: str, run_dir: Path) -> None:
+    options = ClaudeAgentOptions(
+        system_prompt=instructions,
+        tools=["Write"],
+        allowed_tools=["Write"],
+        setting_sources=[],
+        model=ollama.load_claude_generation_model("validate"),
+        max_turns=DESCRIPTION_MAX_TURNS,
+        hooks={"PreToolUse": [HookMatcher(matcher="Write", hooks=[_run_dir_scope_hook(run_dir)])]},
+    )
+    await stream_query(query(prompt="Write the PR description.", options=options))
+
+
+async def pr_body(feature: str, spec_dir: Path, spec: str, run_dir: Path) -> str:
+    """The generated description, reused on resume of the same commit. Generation
+    failing is logged, not fatal: the PR gets a stub that the next run replaces."""
+    body_path = run_dir / "pr-body.md"
+    if not body_path.exists():
+        followup = spec_dir / FOLLOWUP_FILENAME
+        instructions = description_instructions(
+            feature,
+            spec,
+            read_optional(spec_dir / "plan.md", "(none)"),
+            "\n".join(
+                line.strip()
+                for line in read_optional(spec_dir / "tasks.md", "").splitlines()
+                if "[TEST]" in line
+            )
+            or "(none)",
+            branch_changes("--", "docs/"),
+            followup.as_posix() if followup.exists() else None,
+            body_path,
+        )
+        try:
+            await run_description_agent(instructions, run_dir)
+        except SessionLimitError:
+            raise
+        except Exception as e:
+            log(f"WARNING: PR description agent failed ({e}); using a stub.")
+    description = read_optional(body_path, "").strip() or (
+        f"Feature `{feature}` — see `specs/{feature}/spec.md`. (The description could not "
+        "be generated; the next ch-6-validate-auto run retries.)"
+    )
     return (
-        f"Feature `{feature}` — see `specs/{feature}/spec.md`.\n\n"
-        "Opened as a draft by ch-6-validate-auto so this branch gets a preview deploy "
-        "for automated validation. A human marks it ready for review after reviewing the "
-        "validation recordings; no agent merges it."
+        f"{description}\n\n---\n"
+        "_Draft opened by ch-6-validate-auto for a preview deploy; the validation report for "
+        "each commit is in the comments. Delete the marker below to stop this description "
+        f"being regenerated on later commits._\n{github_pr.GENERATED_MARKER}"
     )
 
 
@@ -262,7 +363,7 @@ def _run_dir_scope_hook(run_dir: Path):
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": f"The validation agent may only read or write under {root}.",
+                "permissionDecisionReason": f"This agent may only read or write under {root}.",
             }
         }
 
@@ -307,15 +408,30 @@ The browser already holds a logged-in session for a test account.
 --- SCENARIOS YOU MUST REPORT ON (exactly these ids, each exactly once) ---
 {scenario_list}
 
-For EACH scenario, in order:
-1. `browser_start_video` with filename `{run_path}/<id>.webm`, then `browser_video_chapter`
-   with the scenario id as title, then `browser_video_show_actions`.
-2. `browser_start_tracing`.
-3. Navigate from {base_url} and perform the scenario as a user would — through the UI, not by
-   guessing URLs, unless the scenario itself is about a URL. Take a screenshot (filename
-   `{run_path}/<id>-<n>.png`) at each point where you check an expected outcome.
-4. `browser_stop_tracing`, then `browser_stop_video`, then `browser_close`, so the next
-   scenario gets its own recording.
+A human watches your recordings to decide whether to trust your verdicts, so every video
+must show something they need to see, and nothing they have already seen:
+
+1. Setup. If scenarios need data that doesn't exist yet, create all of it first, on camera:
+   `browser_start_video` with filename `{run_path}/setup-<n>.webm`, then
+   `browser_video_show_actions`. Create the data through the UI, or with a script you save
+   under {run_path} and list as evidence. Then browse to where the app shows that data (the
+   lists and detail pages the checks will be computed from) so the video shows it.
+   `browser_stop_video`, then `browser_close`. Add a step to the report's "setup" list.
+2. Group the scenarios. Scenarios that check the same screen in the same data state share
+   one recording; a scenario that changes data, or needs a different starting point, gets
+   its own. A success criterion that restates acceptance scenarios goes in their group.
+3. For each group: `browser_start_video` with filename `{run_path}/<first id in the
+   group>.webm`, then `browser_video_show_actions`, then `browser_start_tracing`. Then, for
+   each scenario in the group, in order:
+   a. `browser_video_chapter` with the scenario id as title.
+   b. Perform the scenario as a user would, starting from {base_url} — through the UI, not by
+      guessing URLs, unless the scenario itself is about a URL.
+   c. Check each expected outcome on its own: scroll the element into view and highlight it
+      (Playwright's `locator.highlight()`), then take a screenshot (filename
+      `{run_path}/<id>-<n>.png`). Never check outcomes by reading the whole page in one
+      script — the recording then shows nothing of what you checked.
+   End the group with `browser_stop_tracing`, then `browser_stop_video`, then
+   `browser_close`, so the next group starts from a fresh browser.
 
 Verdicts:
 - PASS: you observed every expected outcome yourself, in the browser.
@@ -329,10 +445,14 @@ Verdicts:
 
 Write `{run_path}/report.json` (update it after every scenario, so progress survives an
 interruption) in exactly this shape:
-{{"scenarios": [{{"id": "<id>", "verdict": "PASS|FAIL|BLOCKED|NOT_APPLICABLE",
+{{"setup": [{{"recording": "setup-<n>.webm", "created": "<the data you created, and how>",
+  "evidence": ["<absolute path of each setup script>", ...]}}],
+ "scenarios": [{{"id": "<id>", "verdict": "PASS|FAIL|BLOCKED|NOT_APPLICABLE",
+  "recording": "<file name of the video this scenario is a chapter of>",
   "steps": ["<what you did>", ...], "observed": "<what you saw>",
   "reason": "<required for BLOCKED/NOT_APPLICABLE>",
   "evidence": ["<absolute path of each screenshot/trace file you produced>", ...]}}]}}
+Leave "setup" empty if you created no data.
 
 {project_notes}Rules:
 - This is a preview environment, but treat its data with care: create only what a scenario
@@ -391,14 +511,17 @@ def escalate(spec_dir: Path, feature: str, sha: str, title: str, body: str) -> N
     sys.exit(1)
 
 
-def open_pr(spec: str, feature: str, branch: str) -> dict:
+async def open_pr(spec: str, feature: str, branch: str, spec_dir: Path, run_dir: Path) -> dict:
     try:
         pipeline_status.step("pushing branch")
         github_pr.push_branch()
+        existing = github_pr.find_pr(branch)
+        body = ""
+        if existing is None or github_pr.harness_owns_body(existing["body"]):
+            pipeline_status.step("describing PR")
+            body = await pr_body(feature, spec_dir, spec, run_dir)
         pipeline_status.step("opening draft PR")
-        pr = github_pr.ensure_draft_pr(
-            branch, pr_title(spec, feature), pr_body(feature), vr.source_issue(spec)
-        )
+        pr = github_pr.ensure_draft_pr(branch, pr_title(spec, feature), body, vr.source_issue(spec))
     except github_pr.GitHubError as e:
         _fail(str(e))
     log(f"PR: {pr['url']}")
@@ -498,7 +621,7 @@ async def run(feature: str):
         _fail("spec.md has no acceptance scenarios or success criteria to validate.")
     log(f"{len(scenarios)} scenario(s) to validate: {', '.join(s.id for s in scenarios)}")
 
-    pr = open_pr(spec, feature, branch)
+    pr = await open_pr(spec, feature, branch, spec_dir, run_dir)
     pipeline_status.step("waiting for deploy")
     base_url = deploy(config, run_dir, sha, branch, pr["number"])
     log(f"Deployed: {base_url}")

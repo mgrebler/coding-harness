@@ -33,7 +33,7 @@ The harness enforces a strict spec-driven pipeline:
 specify → plan → tasks → test → implement → docs → [validate] → human PR review + merge
 ```
 
-Each stage produces a markdown artifact in `specs/NNN-feature/` within the target project. Humans review each stage's artifact, then manually run the next stage's command. No agent ever merges to `main`. The opt-in validate stage (`ch_6_validate_auto.py`) is the only one that touches GitHub: its orchestrator code — never the agent — pushes the feature branch without force, opens a draft PR, and posts a per-commit report comment after a browser agent records each spec scenario on the deployed preview. Its output is gitignored and never committed, since a commit would move HEAD off the deploy it validated.
+Each stage produces a markdown artifact in `specs/NNN-feature/` within the target project. Humans review each stage's artifact, then manually run the next stage's command. No agent ever merges to `main`. The opt-in validate stage (`ch_6_validate_auto.py`) is the only one that touches GitHub: its orchestrator code — never the agent — pushes the feature branch without force, opens a draft PR with a description an agent writes from the spec, plan and docs diff, and posts a per-commit report comment after a browser agent records each spec scenario on the deployed preview. Its output is gitignored and never committed, since a commit would move HEAD off the deploy it validated.
 
 See README.md for the full pipeline walkthrough, docker setup, and command reference.
 

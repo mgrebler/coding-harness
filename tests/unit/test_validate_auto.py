@@ -1,6 +1,7 @@
 """Unit tests for ch_6_validate_auto.py with git/gh/deploy/auth and the
 validation agent mocked: opt-in gating, preflight, the deploy_command
-contract, per-commit resume, the one-retry report check, and escalation.
+contract, the generated PR description, per-commit resume, the one-retry
+report check, and escalation.
 No LLM calls, no browser."""
 
 import asyncio
@@ -27,6 +28,10 @@ SPEC = """# Feature Specification: Saved searches
 1. **Given** a search, **When** I save it, **Then** it is listed
 """
 CONFIG = {"deploy_command": "deploy", "auth_command": "login"}
+
+
+async def _describe(instructions, run_dir):
+    (run_dir / "pr-body.md").write_text("## Summary\nSaves searches.\n")
 
 
 class _ProjectCase(unittest.TestCase):
@@ -267,6 +272,9 @@ class TestRun(_ProjectCase):
                 va, "_git", side_effect=lambda *a: SHA if a == ("rev-parse", "HEAD") else FEATURE
             ),
             patch.object(va.github_pr, "push_branch") as push,
+            patch.object(va.github_pr, "find_pr", return_value=None),
+            patch.object(va, "run_description_agent", side_effect=_describe),
+            patch.object(va, "branch_changes", return_value=""),
             patch.object(va.github_pr, "ensure_draft_pr", return_value=pr) as ensure_pr,
             patch.object(va, "deploy", return_value="https://p.example"),
             patch.object(va, "ensure_browser"),
@@ -291,6 +299,9 @@ class TestRun(_ProjectCase):
         self.assertIsNone(exited)
         push.assert_called_once()
         self.assertEqual(ensure_pr.call_args[0][1], "Saved searches")
+        body = ensure_pr.call_args[0][2]
+        self.assertTrue(body.startswith("## Summary\nSaves searches."))
+        self.assertTrue(body.endswith(va.github_pr.GENERATED_MARKER))
         self.assertIn(f"sha: {SHA}", (self.spec_dir / "ch-6-validate-auto-complete").read_text())
         self.assertEqual(len(calls), 1)
         comment.assert_called_once()
@@ -329,6 +340,93 @@ class TestRun(_ProjectCase):
         self.assertEqual(len(calls), 2)
         comment.assert_not_called()
         self.assertIn("Report Invalid", (self.spec_dir / va.ESCALATION_FILENAME).read_text())
+
+
+class TestPrDescription(_ProjectCase):
+    def setUp(self):
+        super().setUp()
+        self.run_dir = self.spec_dir / "validation" / SHA[:12]
+        self.run_dir.mkdir(parents=True)
+
+    def _body(self, agent, changes=lambda *a: ""):
+        with (
+            patch.object(va, "run_description_agent", side_effect=agent) as describe,
+            patch.object(va, "branch_changes", side_effect=changes),
+            patch.object(va, "log"),
+        ):
+            body = asyncio.run(va.pr_body(FEATURE, self.spec_dir, SPEC, self.run_dir))
+        return body, describe
+
+    def test_generated_once_per_commit(self):
+        body, _ = self._body(_describe)
+        self.assertIn("Saves searches.", body)
+        self.assertIn("ch-6-validate-auto", body)
+        again, describe = self._body(_describe)
+        self.assertEqual(again, body)
+        describe.assert_not_called()
+
+    def test_agent_failure_falls_back_to_a_regenerable_stub(self):
+        async def broken(instructions, run_dir):
+            raise RuntimeError("boom")
+
+        body, _ = self._body(broken)
+        self.assertIn(f"specs/{FEATURE}/spec.md", body)
+        self.assertTrue(va.github_pr.harness_owns_body(body))
+        self.assertFalse((self.run_dir / "pr-body.md").exists())
+
+    def test_session_limit_is_not_swallowed(self):
+        async def limited(instructions, run_dir):
+            raise va.SessionLimitError("limit")
+
+        with self.assertRaises(va.SessionLimitError):
+            self._body(limited)
+
+    def test_instructions_carry_artifacts_and_followup_link(self):
+        (self.spec_dir / "plan.md").write_text("PLAN TEXT")
+        (self.spec_dir / "tasks.md").write_text("- [ ] T1 [TEST] covers save\n- [ ] T2 [IMPL] x\n")
+        (self.spec_dir / va.FOLLOWUP_FILENAME).write_text("concerns")
+        captured = {}
+
+        async def capture(instructions, run_dir):
+            captured["i"] = instructions
+
+        self._body(capture, changes=lambda *a: f"DIFF{a}")
+        instructions = captured["i"]
+        for expected in ("PLAN TEXT", "T1 [TEST] covers save", "DIFF('--', 'docs/')"):
+            self.assertIn(expected, instructions)
+        self.assertNotIn("T2 [IMPL]", instructions)
+        self.assertIn(f"`specs/{FEATURE}/{va.FOLLOWUP_FILENAME}`", instructions)
+
+    def test_human_owned_pr_is_not_redescribed(self):
+        pr = {"number": 3, "url": "u", "body": "Written by a human", "baseRefName": "main"}
+        with (
+            patch.object(va.github_pr, "push_branch"),
+            patch.object(va.github_pr, "find_pr", return_value=pr),
+            patch.object(va.github_pr, "ensure_draft_pr", return_value=pr),
+            patch.object(va, "run_description_agent") as describe,
+            patch.object(va, "log"),
+        ):
+            asyncio.run(va.open_pr(SPEC, FEATURE, FEATURE, self.spec_dir, self.run_dir))
+        describe.assert_not_called()
+
+    def test_description_agent_can_only_write_in_the_run_dir(self):
+        captured = {}
+
+        def fake_query(prompt, options):
+            captured["options"] = options
+
+        async def fake_stream(_):
+            return None
+
+        with (
+            patch.object(va, "query", side_effect=fake_query),
+            patch.object(va, "stream_query", side_effect=fake_stream),
+        ):
+            asyncio.run(va.run_description_agent("i", Path("/runs/run")))
+        options = captured["options"]
+        self.assertEqual(options.tools, ["Write"])
+        [matcher] = options.hooks["PreToolUse"]
+        self.assertEqual(matcher.matcher, "Write")
 
 
 class TestPrTitle(unittest.TestCase):

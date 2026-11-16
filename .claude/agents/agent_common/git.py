@@ -100,6 +100,16 @@ def branch_diff(path: str) -> str | None:
     return result.stdout
 
 
+def branch_changes(*args: str) -> str:
+    """`git diff <args>` of this branch's commits against its merge-base with main."""
+    result = subprocess.run(
+        ["git", "diff", _merge_base(resolve_base_ref()), "HEAD", *args],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
+
+
 def _merge_base(base_ref: str) -> str:
     result = subprocess.run(["git", "merge-base", base_ref, "HEAD"], capture_output=True, text=True)
     return result.stdout.strip() or base_ref
