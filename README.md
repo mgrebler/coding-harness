@@ -628,10 +628,13 @@ For the commit at HEAD, `ch_6_validate_auto.py`:
    `<!-- ch-6-validate-auto:generated-description -->` marker; delete the marker when you edit
    the description and it is left alone from then on. A PR a human opened is never re-described.
 2. Runs the project's `deploy_command`, which must make sure *this commit* is deployed and print
-   its base URL as the last line of stdout.
+   its base URL as the last line of stdout. A project with one shared environment wraps this
+   and steps 3–6 in its `lock_command`/`unlock_command` (see § Shared environments).
 3. Runs the project's `auth_command`, which must write a Playwright
    [storage-state](https://playwright.dev/docs/auth) file so the browser starts logged in. The
-   agent never sees credentials.
+   agent never sees credentials. Then runs the optional `seed_command`, for data the agent can't
+   create through a browser (e.g. an inbound email); its stdout, describing what it created, is
+   given to the agent.
 4. Builds the scenario list deterministically: every user story's acceptance scenarios
    (`US<n>-AS<m>`), every success criterion (`SC-NNN`), and every `##` section of `quickstart.md`
    (`QS-<n>`).
@@ -653,7 +656,9 @@ The stage is **report-only**: it never fixes code, never commits, and never merg
 writes is gitignored and local to the machine that ran it — recordings, traces, the session file
 and the report live in `specs/NNN-feature/validation/<sha12>/`. Each commit is validated once:
 re-running on an already-passed commit is a no-op, and a new commit starts fresh. To re-validate
-the same commit, delete its `validation/<sha12>/` directory.
+the same commit, delete its `validation/<sha12>/` directory. A resumed run reuses a finished
+report and, unless a `lock_command` is set, the cached deploy URL; `auth_command` and
+`seed_command` may run again, so they should reuse what they recorded in `$VALIDATION_RUN_DIR`.
 
 ### Configuration
 
@@ -674,13 +679,20 @@ the same commit, delete its `validation/<sha12>/` directory.
 
 | Key | Required | Meaning |
 |---|---|---|
-| `deploy_command` | yes | Shell command run with `VALIDATION_SHA`, `VALIDATION_BRANCH`, `VALIDATION_PR_NUMBER` set. Exit 0 and print the deployment's base URL as the last stdout line; exit 3 if the deploy was superseded by a newer commit; any other non-zero exit is a deploy failure. |
+| `deploy_command` | yes | Shell command. Exit 0 and print the deployment's base URL as the last stdout line; exit 3 if the deploy was superseded by a newer commit; any other non-zero exit is a deploy failure. |
 | `timeout_minutes` | no (20) | Limit on `deploy_command`. |
-| `auth_command` | yes | Shell command run with `VALIDATION_BASE_URL` and `VALIDATION_STORAGE_STATE` set; must write a Playwright storage-state JSON file to `$VALIDATION_STORAGE_STATE`. Typically logs a dedicated test account in. |
+| `auth_command` | yes | Shell command, also given `VALIDATION_BASE_URL` and `VALIDATION_STORAGE_STATE`; must write a Playwright storage-state JSON file to `$VALIDATION_STORAGE_STATE`. Typically logs a dedicated test account in. |
+| `seed_command` | no | Shell command run after `auth_command`, also given `VALIDATION_BASE_URL`; creates data for the logged-in account that a browser can't (an inbound email, a webhook, a queue message) and prints what it created, which the agent is given. Limit 15 minutes. |
+| `lock_command` / `unlock_command` | no (set both or neither) | For a shared environment: `lock_command` must block until the environment is held for this run (non-zero exit fails the stage); `unlock_command` releases it, and runs however the run ends. See § Shared environments. |
+| `lock_timeout_minutes` | no (120) | Limit on `lock_command`, including time spent waiting for another run. |
 | `allowed_origins` | no | Extra origins the browser may load besides the preview's own (e.g. an auth provider). |
 | `playwright_mcp_version` | no | Pins `@playwright/mcp`. |
 | `max_turns` | no (300) | Turn budget for the validation agent. |
 | `agent_notes` | no | Project-specific guidance added to the agent's instructions, e.g. limits on actions that cost money, or scenarios that can't run in a plain browser and should be `BLOCKED`. |
+
+Every command runs from the project root with `VALIDATION_FEATURE`, `VALIDATION_SHA`,
+`VALIDATION_BRANCH`, `VALIDATION_PR_NUMBER`, `VALIDATION_SPEC_DIR` and `VALIDATION_RUN_DIR`
+(absolute paths) set. The agent sees none of their output except `seed_command`'s stdout.
 
 The validation agent always runs on Claude (it needs MCP tools and vision): `generation.validate`
 must be `"default"` or a `provider: "claude"` entry.
@@ -703,6 +715,22 @@ output) should handle the same cases the shipped helper does:
   deploys the validation stage's draft PR. Deploy drafts too, or trigger on a label.
 - **Superseded** — if the deploy for this commit was cancelled or failed because the branch moved
   on, exit 3, not 1.
+
+### Shared environments
+
+When every branch deploys to the same environment, two validations at once would overwrite each
+other's deploy. `lock_command` and `unlock_command` hold the environment from the deploy until
+the agent has finished (posting the report happens after release). Where the lock lives is the
+project's choice — an S3 object, a DynamoDB item, a git ref — as long as:
+
+- `lock_command` takes it atomically, waits while another run holds it, and records who holds it
+  (`$VALIDATION_BRANCH`, `$VALIDATION_SHA`) so a human can tell.
+- Anything else that deploys there (e.g. a deploy-on-merge workflow) waits for it too.
+- It can be cleared by hand: `unlock_command` runs on failures and Ctrl-C, but not if the
+  process is killed outright. Consider an expiry.
+
+Under a lock the cached deploy URL is never reused, since the environment may hold another
+branch's deploy by the time a run resumes.
 
 ### Project prerequisites
 

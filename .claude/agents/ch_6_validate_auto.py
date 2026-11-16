@@ -19,8 +19,13 @@ What this stage does, for the commit at HEAD:
      removing its marker.
   2. Runs the project's validation.deploy_command, which makes sure this
      commit is deployed to a non-production environment and prints its URL.
+     A project with one shared environment also sets lock_command and
+     unlock_command, which hold the environment from the deploy until the
+     agent finishes; unlock_command runs however that ends.
   3. Runs the project's validation.auth_command, which writes a Playwright
-     storage-state file so the agent starts logged in without seeing creds.
+     storage-state file so the agent starts logged in without seeing creds,
+     then the optional seed_command, which creates data the agent can't
+     create through a browser (e.g. an inbound email) and describes it.
   4. Has a Claude agent drive a recorded browser (Playwright MCP) through
      every acceptance scenario, success criterion, and quickstart section,
      writing one verdict per scenario to report.json.
@@ -34,14 +39,19 @@ validated), and never merges or marks the PR ready for review.
 Resume behaviour:
   All output lives in specs/$FEATURE/validation/<sha12>/, so each commit is
   validated once. Re-running on an already-passed commit exits immediately;
-  re-running on the same commit after an interruption reuses the cached
-  deploy URL and any report.json already written; a new commit starts fresh.
+  re-running on the same commit after an interruption reuses any report.json
+  already written, and the cached deploy URL unless a lock_command is set (a
+  shared environment may hold another deploy by then); a new commit starts
+  fresh. auth_command and seed_command may run again on a resume, so they
+  should reuse whatever they recorded in $VALIDATION_RUN_DIR.
   To re-validate the same commit from scratch, delete its validation dir.
 """
 
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -64,6 +74,9 @@ ESCALATION_FILENAME = "ch-6-validate-escalation.md"
 PLAYWRIGHT_MCP_VERSION = "0.0.84"
 DEFAULT_TIMEOUT_MINUTES = 20
 AUTH_TIMEOUT_S = 300
+SEED_TIMEOUT_S = 15 * 60
+DEFAULT_LOCK_TIMEOUT_MINUTES = 120
+UNLOCK_TIMEOUT_S = 300
 DEFAULT_MAX_TURNS = 300
 DESCRIPTION_MAX_TURNS = 10
 DOCS_DIFF_LIMIT = 60_000
@@ -85,6 +98,8 @@ def preflight(spec_dir: Path) -> dict:
     missing = [k for k in ("deploy_command", "auth_command") if not config.get(k)]
     if missing:
         _fail(f"validation config is missing: {', '.join(missing)}.")
+    if bool(config.get("lock_command")) != bool(config.get("unlock_command")):
+        _fail("validation config must set lock_command and unlock_command together.")
     if not stage_is_complete(spec_dir, "ch-4-implement"):
         _fail("ch-4-implement has not completed for this feature. Run it first.")
     if ollama.is_stage_enabled("docs") and not stage_is_complete(spec_dir, "ch-5-docs"):
@@ -182,9 +197,17 @@ Rules:
 """
 
 
+def _system_prompt_file(run_dir: Path, name: str, instructions: str) -> dict:
+    """The SDK passes a string system prompt to the CLI as one argument, which Linux
+    caps at 128 KiB (MAX_ARG_STRLEN); a large feature's spec, plan and diffs exceed it."""
+    path = run_dir / name
+    write_file(path, instructions)
+    return {"type": "file", "path": str(path.resolve())}
+
+
 async def run_description_agent(instructions: str, run_dir: Path) -> None:
     options = ClaudeAgentOptions(
-        system_prompt=instructions,
+        system_prompt=_system_prompt_file(run_dir, "pr-description-prompt.md", instructions),
         tools=["Write"],
         allowed_tools=["Write"],
         setting_sources=[],
@@ -233,35 +256,86 @@ async def pr_body(feature: str, spec_dir: Path, spec: str, run_dir: Path) -> str
     )
 
 
-def deploy(config: dict, run_dir: Path, sha: str, branch: str, pr_number: int) -> str:
-    """Base URL of this commit's deployment, via the project's deploy_command —
-    cached in run_dir so a resumed run doesn't wait on it again."""
-    cached = run_dir / "base-url"
-    if cached.exists():
-        return cached.read_text(encoding="utf-8").strip()
-    timeout_minutes = config.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES)
-    env = {
+def hook_env(
+    feature: str, sha: str, branch: str, pr_number: int, spec_dir: Path, run_dir: Path
+) -> dict:
+    """The environment every project command (deploy, lock, auth, seed) runs with."""
+    return {
         **os.environ,
+        "VALIDATION_FEATURE": feature,
         "VALIDATION_SHA": sha,
         "VALIDATION_BRANCH": branch,
         "VALIDATION_PR_NUMBER": str(pr_number),
+        "VALIDATION_SPEC_DIR": str(spec_dir.resolve()),
+        "VALIDATION_RUN_DIR": str(run_dir.resolve()),
     }
-    log(f"Running deploy_command (timeout {timeout_minutes} min): {config['deploy_command']}")
+
+
+def run_hook(
+    config: dict, key: str, env: dict, timeout_s: float, capture: bool = False
+) -> subprocess.CompletedProcess:
+    log(f"Running {key}: {config[key]}")
     try:
-        result = subprocess.run(  # noqa: S602 — deploy_command is a project-authored shell command
-            config["deploy_command"],
+        return subprocess.run(  # noqa: S602 — a project-authored shell command from pipeline.json
+            config[key],
             shell=True,
             env=env,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.PIPE if capture else None,
             text=True,
-            timeout=timeout_minutes * 60,
+            timeout=timeout_s,
         )
     except subprocess.TimeoutExpired:
-        _fail(f"deploy_command did not finish within {timeout_minutes} minutes.")
+        _fail(f"{key} did not finish within {timeout_s / 60:g} minutes.")
+
+
+@contextmanager
+def environment_lock(config: dict, env: dict) -> Iterator[None]:
+    """Hold the project's shared environment, via lock_command/unlock_command,
+    for the duration of the block. A no-op when no lock_command is set."""
+    if not config.get("lock_command"):
+        yield
+        return
+    pipeline_status.step("waiting for environment lock")
+    timeout_minutes = config.get("lock_timeout_minutes", DEFAULT_LOCK_TIMEOUT_MINUTES)
+    if (code := run_hook(config, "lock_command", env, timeout_minutes * 60).returncode) != 0:
+        _fail(f"lock_command exited {code}; the shared environment was not locked.")
+    try:
+        yield
+    except BaseException:
+        _release_environment(config, env)
+        raise
+    if not _release_environment(config, env):
+        _fail("unlock_command failed, so the shared environment is still locked.")
+
+
+def _release_environment(config: dict, env: dict) -> bool:
+    try:
+        code = subprocess.run(  # noqa: S602 — a project-authored shell command from pipeline.json
+            config["unlock_command"], shell=True, env=env, timeout=UNLOCK_TIMEOUT_S
+        ).returncode
+    except subprocess.TimeoutExpired:
+        code = None
+    if code != 0:
+        log(
+            f"ERROR: unlock_command did not succeed (exit {code}). Release the shared "
+            "environment by hand, or no other branch can validate."
+        )
+    return code == 0
+
+
+def deploy(config: dict, env: dict, run_dir: Path) -> str:
+    """Base URL of this commit's deployment, via the project's deploy_command —
+    cached in run_dir so a resumed run doesn't wait on it again, except for a
+    locked shared environment, whose contents may have changed since."""
+    cached = run_dir / "base-url"
+    if cached.exists() and not config.get("lock_command"):
+        return cached.read_text(encoding="utf-8").strip()
+    timeout_minutes = config.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES)
+    result = run_hook(config, "deploy_command", env, timeout_minutes * 60, capture=True)
     if result.returncode == SUPERSEDED_EXIT_CODE:
         _fail(
-            f"the deployment of {sha[:12]} was superseded by a newer commit on {branch}. "
-            "Pull it and re-run to validate the new head."
+            f"the deployment of {env['VALIDATION_SHA'][:12]} was superseded by a newer commit "
+            f"on {env['VALIDATION_BRANCH']}. Pull it and re-run to validate the new head."
         )
     if result.returncode != 0:
         _fail(f"deploy_command exited {result.returncode}; see its output above.")
@@ -273,23 +347,25 @@ def deploy(config: dict, run_dir: Path, sha: str, branch: str, pr_number: int) -
     return url
 
 
-def login(config: dict, base_url: str, run_dir: Path) -> Path:
+def login(config: dict, env: dict, base_url: str, run_dir: Path) -> Path:
     storage_state = (run_dir / "storage-state.json").resolve()
-    env = {
-        **os.environ,
-        "VALIDATION_BASE_URL": base_url,
-        "VALIDATION_STORAGE_STATE": str(storage_state),
-    }
-    log(f"Running auth_command: {config['auth_command']}")
-    try:
-        result = subprocess.run(  # noqa: S602 — auth_command is a project-authored shell command
-            config["auth_command"], shell=True, env=env, timeout=AUTH_TIMEOUT_S
-        )
-    except subprocess.TimeoutExpired:
-        _fail(f"auth_command did not finish within {AUTH_TIMEOUT_S}s.")
+    env = {**env, "VALIDATION_BASE_URL": base_url, "VALIDATION_STORAGE_STATE": str(storage_state)}
+    result = run_hook(config, "auth_command", env, AUTH_TIMEOUT_S)
     if result.returncode != 0 or not storage_state.exists():
         _fail(f"auth_command exited {result.returncode} without writing {storage_state}.")
     return storage_state
+
+
+def seed(config: dict, env: dict, base_url: str) -> str:
+    """What the project's seed_command created for the logged-in test account,
+    in its own words (its stdout), for the agent to validate against."""
+    if not config.get("seed_command"):
+        return ""
+    env = {**env, "VALIDATION_BASE_URL": base_url}
+    result = run_hook(config, "seed_command", env, SEED_TIMEOUT_S, capture=True)
+    if result.returncode != 0:
+        _fail(f"seed_command exited {result.returncode}; see its output above.")
+    return result.stdout.strip()
 
 
 def mcp_version(config: dict) -> str:
@@ -383,11 +459,21 @@ def agent_instructions(
     base_url: str,
     run_dir: Path,
     agent_notes: str = "",
+    seeded: str = "",
 ) -> str:
     run_path = run_dir.resolve()
     scenario_list = "\n".join(f"- {s.id}: {s.text}" for s in scenarios)
     project_notes = (
         f"--- PROJECT NOTES ---\n{agent_notes.strip()}\n\n" if agent_notes.strip() else ""
+    )
+    seeded_data = (
+        "--- DATA SEEDED FOR THIS RUN ---\n"
+        "Before you started, the project created this for the test account, through means a "
+        "browser doesn't have. Use it for the scenarios it fits instead of creating your own, "
+        "and show it in a setup recording (step 1) before the scenarios that rely on it.\n"
+        f"{seeded.strip()}\n\n"
+        if seeded.strip()
+        else ""
     )
     return f"""You are the Validation Agent for a spec-kit project. You validate a feature on a
 deployed, non-production preview of the app by driving a real browser, the way a careful human
@@ -396,7 +482,7 @@ tester would, and you record evidence a human will review.
 The preview is at: {base_url}
 The browser already holds a logged-in session for a test account.
 
---- SPEC ---
+{seeded_data}--- SPEC ---
 {spec}
 
 --- QUICKSTART ---
@@ -470,7 +556,7 @@ async def run_validation_agent(
     instructions: str, task: str, config: dict, mcp: dict, run_dir: Path
 ) -> None:
     options = ClaudeAgentOptions(
-        system_prompt=instructions,
+        system_prompt=_system_prompt_file(run_dir, "agent-prompt.md", instructions),
         tools=["Read", "Write"],
         allowed_tools=["Read", "Write", "mcp__playwright"],
         mcp_servers={"playwright": mcp},
@@ -533,8 +619,14 @@ async def open_pr(spec: str, feature: str, branch: str, spec_dir: Path, run_dir:
     return pr
 
 
+def finished_report(run_dir: Path, scenarios: list[vr.Scenario]) -> dict | None:
+    report, problems = checked_report(run_dir / "report.json", scenarios, run_dir)
+    return report if report is not None and not problems else None
+
+
 async def produce_report(
     config: dict,
+    env: dict,
     spec_dir: Path,
     feature: str,
     sha: str,
@@ -544,16 +636,16 @@ async def produce_report(
     base_url: str,
     run_dir: Path,
 ) -> dict:
-    """A report.json that passes check_report — reused as-is on resume, else
-    produced by the validation agent with one retry for an incomplete report."""
+    """A report.json that passes check_report, produced by the validation agent
+    with one retry for an incomplete report."""
     report_path = run_dir / "report.json"
     report, problems = checked_report(report_path, scenarios, run_dir)
-    if report is not None and not problems:
-        return report
     pipeline_status.step("preparing browser")
     ensure_browser(config)
     pipeline_status.step("logging in")
-    storage_state = login(config, base_url, run_dir)
+    storage_state = login(config, env, base_url, run_dir)
+    pipeline_status.step("seeding data")
+    seeded = seed(config, env, base_url)
     mcp = mcp_server(config, base_url, storage_state, run_dir)
     instructions = agent_instructions(
         scenarios,
@@ -563,6 +655,7 @@ async def produce_report(
         base_url,
         run_dir,
         config.get("agent_notes", ""),
+        seeded,
     )
     if not report_path.exists():
         pipeline_status.step("validating")
@@ -589,6 +682,16 @@ async def produce_report(
             "can't be used as evidence:\n\n" + "\n".join(f"- {p}" for p in problems),
         )
     return report
+
+
+def verdict_counts(report: dict) -> str:
+    """The authoritative tally, logged because the agent's own closing summary can miscount."""
+    counts: dict[str, int] = {}
+    for entry in report["scenarios"]:
+        counts[entry["verdict"]] = counts.get(entry["verdict"], 0) + 1
+    return f"{len(report['scenarios'])} scenario(s): " + ", ".join(
+        f"{n} {verdict}" for verdict, n in sorted(counts.items())
+    )
 
 
 async def run(feature: str):
@@ -622,13 +725,19 @@ async def run(feature: str):
     log(f"{len(scenarios)} scenario(s) to validate: {', '.join(s.id for s in scenarios)}")
 
     pr = await open_pr(spec, feature, branch, spec_dir, run_dir)
-    pipeline_status.step("waiting for deploy")
-    base_url = deploy(config, run_dir, sha, branch, pr["number"])
-    log(f"Deployed: {base_url}")
-    report = await produce_report(
-        config, spec_dir, feature, sha, spec, quickstart, scenarios, base_url, run_dir
-    )
+    if report := finished_report(run_dir, scenarios):
+        base_url = (run_dir / "base-url").read_text(encoding="utf-8").strip()
+    else:
+        env = hook_env(feature, sha, branch, pr["number"], spec_dir, run_dir)
+        with environment_lock(config, env):
+            pipeline_status.step("waiting for deploy")
+            base_url = deploy(config, env, run_dir)
+            log(f"Deployed: {base_url}")
+            report = await produce_report(
+                config, env, spec_dir, feature, sha, spec, quickstart, scenarios, base_url, run_dir
+            )
 
+    log(f"Verdicts from report.json: {verdict_counts(report)}")
     markdown = vr.render_markdown(report, scenarios, sha, base_url, run_dir)
     write_file(run_dir / "report.md", markdown)
     pipeline_status.step("posting report")
