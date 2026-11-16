@@ -197,9 +197,17 @@ Rules:
 """
 
 
+def _system_prompt_file(run_dir: Path, name: str, instructions: str) -> dict:
+    """The SDK passes a string system prompt to the CLI as one argument, which Linux
+    caps at 128 KiB (MAX_ARG_STRLEN); a large feature's spec, plan and diffs exceed it."""
+    path = run_dir / name
+    write_file(path, instructions)
+    return {"type": "file", "path": str(path.resolve())}
+
+
 async def run_description_agent(instructions: str, run_dir: Path) -> None:
     options = ClaudeAgentOptions(
-        system_prompt=instructions,
+        system_prompt=_system_prompt_file(run_dir, "pr-description-prompt.md", instructions),
         tools=["Write"],
         allowed_tools=["Write"],
         setting_sources=[],
@@ -548,7 +556,7 @@ async def run_validation_agent(
     instructions: str, task: str, config: dict, mcp: dict, run_dir: Path
 ) -> None:
     options = ClaudeAgentOptions(
-        system_prompt=instructions,
+        system_prompt=_system_prompt_file(run_dir, "agent-prompt.md", instructions),
         tools=["Read", "Write"],
         allowed_tools=["Read", "Write", "mcp__playwright"],
         mcp_servers={"playwright": mcp},
@@ -676,6 +684,16 @@ async def produce_report(
     return report
 
 
+def verdict_counts(report: dict) -> str:
+    """The authoritative tally, logged because the agent's own closing summary can miscount."""
+    counts: dict[str, int] = {}
+    for entry in report["scenarios"]:
+        counts[entry["verdict"]] = counts.get(entry["verdict"], 0) + 1
+    return f"{len(report['scenarios'])} scenario(s): " + ", ".join(
+        f"{n} {verdict}" for verdict, n in sorted(counts.items())
+    )
+
+
 async def run(feature: str):
     spec_dir = Path(f"specs/{feature}")
     setup_log_file(spec_dir / f"{AGENT_NAME}.log")
@@ -719,6 +737,7 @@ async def run(feature: str):
                 config, env, spec_dir, feature, sha, spec, quickstart, scenarios, base_url, run_dir
             )
 
+    log(f"Verdicts from report.json: {verdict_counts(report)}")
     markdown = vr.render_markdown(report, scenarios, sha, base_url, run_dir)
     write_file(run_dir / "report.md", markdown)
     pipeline_status.step("posting report")

@@ -309,15 +309,25 @@ class TestRunDirScope(unittest.TestCase):
             return None
 
         with (
+            tempfile.TemporaryDirectory() as tmp,
             patch.object(va, "query", side_effect=fake_query),
             patch.object(va, "stream_query", side_effect=fake_stream),
         ):
-            asyncio.run(va.run_validation_agent("i", "t", {}, {}, Path("/runs/run")))
-        options = captured["options"]
-        self.assertEqual(sorted(options.tools), ["Read", "Write"])
-        self.assertNotIn("Glob", options.allowed_tools)
-        [matcher] = options.hooks["PreToolUse"]
-        self.assertEqual(matcher.matcher, "Read|Write")
+            asyncio.run(va.run_validation_agent("i" * 200_000, "t", {}, {}, Path(tmp)))
+            options = captured["options"]
+            self.assertEqual(sorted(options.tools), ["Read", "Write"])
+            self.assertNotIn("Glob", options.allowed_tools)
+            [matcher] = options.hooks["PreToolUse"]
+            self.assertEqual(matcher.matcher, "Read|Write")
+            self.assertEqual(options.system_prompt["type"], "file")
+            self.assertEqual(Path(options.system_prompt["path"]).read_text(), "i" * 200_000)
+
+
+class TestVerdictCounts(unittest.TestCase):
+    def test_tallies_report_json(self):
+        verdicts = ["PASS", "PASS", "FAIL", "BLOCKED"]
+        report = {"scenarios": [{"id": f"S{i}", "verdict": v} for i, v in enumerate(verdicts)]}
+        self.assertEqual(va.verdict_counts(report), "4 scenario(s): 1 BLOCKED, 1 FAIL, 2 PASS")
 
 
 class TestAgentNotes(unittest.TestCase):
@@ -531,14 +541,18 @@ class TestPrDescription(_ProjectCase):
             return None
 
         with (
+            tempfile.TemporaryDirectory() as tmp,
             patch.object(va, "query", side_effect=fake_query),
             patch.object(va, "stream_query", side_effect=fake_stream),
         ):
-            asyncio.run(va.run_description_agent("i", Path("/runs/run")))
-        options = captured["options"]
-        self.assertEqual(options.tools, ["Write"])
-        [matcher] = options.hooks["PreToolUse"]
-        self.assertEqual(matcher.matcher, "Write")
+            asyncio.run(va.run_description_agent("i" * 200_000, Path(tmp)))
+            options = captured["options"]
+            self.assertEqual(options.tools, ["Write"])
+            [matcher] = options.hooks["PreToolUse"]
+            self.assertEqual(matcher.matcher, "Write")
+            # Over Linux's 128 KiB single-argument limit, so it must not go on the command line.
+            self.assertEqual(options.system_prompt["type"], "file")
+            self.assertEqual(Path(options.system_prompt["path"]).read_text(), "i" * 200_000)
 
 
 class TestPrTitle(unittest.TestCase):
