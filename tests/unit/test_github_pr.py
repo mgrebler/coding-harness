@@ -1,6 +1,6 @@
 """Unit tests for agent_common/github_pr.py with git/gh mocked: the draft PR is
 created against main with the issue-closing keyword, an existing PR gains the
-keyword only when missing, and a report comment is posted once per commit."""
+keyword only when missing, its body is replaced only while the harness owns it, and a report comment is posted once per commit."""
 
 import json
 import subprocess
@@ -72,6 +72,22 @@ class TestEnsureDraftPr(unittest.TestCase):
         gh = _FakeGh(pr={"number": 3, "url": "u", "body": "Fixes #42", "baseRefName": "main"})
         with patch.object(github_pr, "_run", gh):
             github_pr.ensure_draft_pr("012-x", "Title", "Body", 42)
+        self.assertEqual(gh.commands(["gh", "pr", "edit"]), [])
+
+    def test_harness_owned_body_is_replaced_keeping_keyword(self):
+        for old in (f"Old\n{github_pr.GENERATED_MARKER}", f"x {github_pr.LEGACY_PLACEHOLDER} y"):
+            with self.subTest(old):
+                gh = _FakeGh(pr={"number": 3, "url": "u", "body": old, "baseRefName": "main"})
+                with patch.object(github_pr, "_run", gh):
+                    github_pr.ensure_draft_pr("012-x", "Title", "New", 42)
+                [(_, body)] = gh.commands(["gh", "pr", "edit"])
+                self.assertEqual(body, "New\n\nCloses #42")
+
+    def test_unchanged_harness_body_is_not_edited(self):
+        body = f"Same\n{github_pr.GENERATED_MARKER}"
+        gh = _FakeGh(pr={"number": 3, "url": "u", "body": body, "baseRefName": "main"})
+        with patch.object(github_pr, "_run", gh):
+            github_pr.ensure_draft_pr("012-x", "Title", body, None)
         self.assertEqual(gh.commands(["gh", "pr", "edit"]), [])
 
     def test_view_failure_other_than_no_pr_raises(self):

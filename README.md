@@ -621,6 +621,12 @@ For the commit at HEAD, `ch_6_validate_auto.py`:
 1. Pushes the feature branch (never forced) and finds or opens its **draft** PR against `main`.
    If the spec came from an issue (`/ch-specify-from-issue` writes a `**Source Issue**: #N`
    header line), the PR body gets `Closes #N`.
+   A Claude agent (no tools but writing one file in the run directory) writes the PR description
+   from `spec.md`, `plan.md`, the `[TEST]` tasks and the branch's `docs/` diff: summary, what
+   users get, how it works, decisions worth a look, testing, and follow-ups. Later commits
+   regenerate it while it still carries its hidden
+   `<!-- ch-6-validate-auto:generated-description -->` marker; delete the marker when you edit
+   the description and it is left alone from then on. A PR a human opened is never re-described.
 2. Runs the project's `deploy_command`, which must make sure *this commit* is deployed and print
    its base URL as the last line of stdout.
 3. Runs the project's `auth_command`, which must write a Playwright
@@ -711,7 +717,7 @@ output) should handle the same cases the shipped helper does:
 ## Key Rules
 
 - **No agent merges to `main`** — the merge is always a human action after PR review and CI pass.
-- **Only the validate stage touches GitHub** — when enabled, `ch-6-validate-auto`'s orchestrator (never an agent) pushes the feature branch without force, opens a *draft* PR against `main`, and posts one report comment per commit. A human marks the PR ready for review.
+- **Only the validate stage touches GitHub** — when enabled, `ch-6-validate-auto`'s orchestrator (never an agent) pushes the feature branch without force, opens a *draft* PR against `main` with an agent-written description, and posts one report comment per commit. A human marks the PR ready for review.
 - **TDD is mandatory** — failing tests must be written before implementation code, when the test stage is enabled for the project (see § Pipeline Configuration → stage toggles; enabled by default).
 - **One feature at a time** — each feature has its own branch and `specs/NNN-feature/` directory.
 
