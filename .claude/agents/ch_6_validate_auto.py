@@ -544,6 +544,9 @@ Leave "setup" empty if you created no data.
 - This is a preview environment, but treat its data with care: create only what a scenario
   needs, name anything you create with a "[validation]" prefix, and never delete or modify
   data you did not create. Never log out, delete the account, or change its credentials.
+- Create data at the pace a single user would: one request at a time, never in parallel. A
+  preview's database and functions are small and shared, and its errors may alert people. If
+  a request fails, retry it after a pause rather than speeding up.
 - Stay on the preview's origin; other origins are blocked.
 - Never report PASS for something you did not observe. An honest FAIL or BLOCKED is useful;
   a wrong PASS hides a bug from the human reviewer.
