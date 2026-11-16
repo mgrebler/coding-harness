@@ -645,7 +645,11 @@ For the commit at HEAD, `ch_6_validate_auto.py`:
    trace, with a chapter per scenario id; it highlights each element it checks before
    screenshotting it. It writes one verdict per scenario: `PASS`, `FAIL`, `BLOCKED` (with a
    reason), or — for quickstart sections that only make sense in a local checkout —
-   `NOT_APPLICABLE` (with a reason). It has no Bash and can only read and write inside the run directory.
+   `NOT_APPLICABLE` (with a reason). It has no Bash and can only read and write inside the run
+   directory. The browser server is held to the same limits: its code-running tool
+   (`browser_run_code_unsafe`) is denied, it starts in the run directory with `--ignore-roots`
+   so its file tools (e.g. uploads) can't reach the checkout, and it gets only the environment
+   npx and Chromium need, none of the harness's AWS, GitHub or database credentials.
 6. Checks the report: every scenario covered once, a recording on disk for every PASS/FAIL (its
    own `<id>.webm`, or the shared video its `recording` field names), and a recording and
    description for every setup step. An incomplete report gets one retry; still incomplete escalates.

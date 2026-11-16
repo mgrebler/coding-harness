@@ -246,6 +246,19 @@ class TestMcpServer(unittest.TestCase):
         self.assertIn("--storage-state=/s.json", args)
         self.assertIn("--browser=chromium", args)
 
+    def test_confined_to_run_dir_without_credentials(self):
+        env = {"PATH": "/bin", "HOME": "/h", "npm_config_cache": "/c", "AWS_SECRET_ACCESS_KEY": "s"}
+        env |= {"GH_TOKEN": "t", "VALIDATION_DATABASE_URL": "postgres://u:p@h/d"}
+        with patch.dict(os.environ, env, clear=True):
+            server = va.mcp_server({}, "https://p.example", Path("/s.json"), Path("/run"))
+        self.assertEqual(server["command"], "env")
+        args = server["args"]
+        self.assertEqual(args[:3], ["-i", "-C", "/run"])
+        self.assertEqual(
+            args[3 : args.index("npx")], ["PATH=/bin", "HOME=/h", "npm_config_cache=/c"]
+        )
+        self.assertIn("--ignore-roots", args)
+
 
 class TestEnsureBrowser(_ProjectCase):
     def _ensure(self, install_rc=0, ldd_out=""):
@@ -317,6 +330,7 @@ class TestRunDirScope(unittest.TestCase):
             options = captured["options"]
             self.assertEqual(sorted(options.tools), ["Read", "Write"])
             self.assertNotIn("Glob", options.allowed_tools)
+            self.assertEqual(options.disallowed_tools, ["mcp__playwright__browser_run_code_unsafe"])
             [matcher] = options.hooks["PreToolUse"]
             self.assertEqual(matcher.matcher, "Read|Write")
             self.assertEqual(options.system_prompt["type"], "file")
