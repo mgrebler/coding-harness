@@ -89,8 +89,27 @@ def source_issue(spec: str) -> int | None:
     return int(match[1]) if match else None
 
 
-def video_path(run_dir: Path, scenario_id: str) -> Path:
-    return run_dir / f"{scenario_id}.webm"
+def recording_name(entry: dict) -> str:
+    """The video an entry's evidence is in: its own `recording`, which several
+    scenarios checking the same screen in the same data state may share, or
+    `<id>.webm` by default."""
+    return entry.get("recording") or f"{entry.get('id')}.webm"
+
+
+def _recording_problem(label: str, entry: dict, run_dir: Path) -> str | None:
+    name = recording_name(entry)
+    if not isinstance(name, str) or Path(name).name != name or not name.endswith(".webm"):
+        return f"{label}: recording {name!r} must be a .webm file name in the run directory"
+    if not (run_dir / name).exists():
+        return f"{label}: no recording at {run_dir / name}"
+    return None
+
+
+def _evidence_problems(label: str, entry: dict) -> list[str]:
+    evidence = entry.get("evidence", [])
+    if not isinstance(evidence, list):
+        return [f"{label}: 'evidence' must be a list of file paths"]
+    return [f"{label}: evidence file {e} does not exist" for e in evidence if not Path(e).exists()]
 
 
 def load_report(path: Path) -> tuple[dict | None, str | None]:
@@ -107,9 +126,10 @@ def load_report(path: Path) -> tuple[dict | None, str | None]:
 
 def check_report(report: dict, scenarios: list[Scenario], run_dir: Path) -> list[str]:
     """Problems that make report unusable as evidence — empty when every
-    scenario has exactly one well-formed entry and its evidence exists."""
+    scenario has exactly one well-formed entry, every setup step is recorded,
+    and all of their evidence exists."""
     expected = {s.id: s for s in scenarios}
-    problems = []
+    problems = _setup_problems(report.get("setup", []), run_dir)
     seen = set()
     for entry in report["scenarios"]:
         if not isinstance(entry, dict):
@@ -128,6 +148,23 @@ def check_report(report: dict, scenarios: list[Scenario], run_dir: Path) -> list
     return problems
 
 
+def _setup_problems(setup, run_dir: Path) -> list[str]:
+    if not isinstance(setup, list):
+        return ["'setup' must be a list of setup steps"]
+    problems = []
+    for n, step in enumerate(setup, 1):
+        label = f"setup step {n}"
+        if not isinstance(step, dict) or not step.get("recording"):
+            problems.append(f"{label}: needs a 'recording'")
+            continue
+        if not str(step.get("created", "")).strip():
+            problems.append(f"{label}: needs a 'created' description of the data")
+        if problem := _recording_problem(label, step, run_dir):
+            problems.append(problem)
+        problems += _evidence_problems(label, step)
+    return problems
+
+
 def _entry_problems(entry: dict, scenario: Scenario, run_dir: Path) -> list[str]:
     sid = scenario.id
     verdict = entry.get("verdict")
@@ -140,15 +177,9 @@ def _entry_problems(entry: dict, scenario: Scenario, run_dir: Path) -> list[str]
     if not str(entry.get("observed", "")).strip() and verdict in (PASS, FAIL):
         return [f"{sid}: a {verdict} verdict needs a non-empty 'observed' description"]
     problems = []
-    if verdict in (PASS, FAIL) and not video_path(run_dir, sid).exists():
-        problems.append(f"{sid}: no recording at {video_path(run_dir, sid)}")
-    evidence = entry.get("evidence", [])
-    if not isinstance(evidence, list):
-        return [*problems, f"{sid}: 'evidence' must be a list of file paths"]
-    problems += [
-        f"{sid}: evidence file {e} does not exist" for e in evidence if not Path(e).exists()
-    ]
-    return problems
+    if verdict in (PASS, FAIL) and (problem := _recording_problem(sid, entry, run_dir)):
+        problems.append(problem)
+    return problems + _evidence_problems(sid, entry)
 
 
 def needs_attention(report: dict) -> list[dict]:
@@ -169,15 +200,22 @@ def render_markdown(
     for scenario in scenarios:
         entry = entries[scenario.id]
         detail = entry.get("reason") or entry.get("observed", "")
-        recording = video_path(run_dir, scenario.id)
+        recording = run_dir / recording_name(entry)
         rows.append(
             f"| {scenario.id} | {entry['verdict']} | {_cell(scenario.text)} | {_cell(detail)} "
             f"| {f'`{recording}`' if recording.exists() else '—'} |"
         )
+    setup = "".join(
+        f"- `{run_dir / step['recording']}`: {_cell(step['created'])}\n"
+        for step in report.get("setup", [])
+    )
+    if setup:
+        setup = f"Test data the agent created, recorded before the checks:\n\n{setup}\n"
     return (
         f"{comment_marker(sha)}\n"
         f"## Deployed validation — `{sha[:12]}`\n\n"
         f"Validated against {base_url} by ch-6-validate-auto: **{summary}**.\n\n"
+        f"{setup}"
         "| Scenario | Verdict | Expected | Observed / reason | Recording |\n"
         "|---|---|---|---|---|\n" + "\n".join(rows) + "\n\n"
         f"Recordings and traces are local to the machine that ran the stage, under "

@@ -117,7 +117,7 @@ class TestCheckReport(unittest.TestCase):
         self.tmp.cleanup()
 
     def _record(self, sid):
-        vr.video_path(self.run_dir, sid).write_bytes(b"webm")
+        (self.run_dir / f"{sid}.webm").write_bytes(b"webm")
 
     def _check(self, *entries):
         return vr.check_report({"scenarios": list(entries)}, self.scenarios, self.run_dir)
@@ -168,6 +168,51 @@ class TestCheckReport(unittest.TestCase):
         )
         self.assertEqual(problems, ["US1-AS1: evidence file /nope.png does not exist"])
 
+    def test_scenarios_can_share_a_recording(self):
+        self.scenarios.append(vr.Scenario("SC-001", "b"))
+        (self.run_dir / "insights.webm").write_bytes(b"webm")
+        shared = {"verdict": "PASS", "observed": "ok", "recording": "insights.webm"}
+        problems = self._check(
+            {"id": "US1-AS1", **shared},
+            {"id": "SC-001", **shared},
+            {"id": "QS-1", "verdict": "NOT_APPLICABLE", "reason": "x"},
+        )
+        self.assertEqual(problems, [])
+
+    def test_recording_must_be_a_webm_in_the_run_dir(self):
+        for name in ("../elsewhere.webm", "/abs/x.webm", "notes.txt", 5):
+            with self.subTest(name):
+                problems = self._check(
+                    {"id": "US1-AS1", "verdict": "PASS", "observed": "x", "recording": name},
+                    {"id": "QS-1", "verdict": "NOT_APPLICABLE", "reason": "x"},
+                )
+                self.assertEqual(len(problems), 1)
+                self.assertIn("must be a .webm file name", problems[0])
+
+    def test_setup_steps_need_a_recording_and_a_description(self):
+        self._record("US1-AS1")
+        (self.run_dir / "setup-1.webm").write_bytes(b"webm")
+        rest = (
+            {"id": "US1-AS1", "verdict": "PASS", "observed": "x"},
+            {"id": "QS-1", "verdict": "NOT_APPLICABLE", "reason": "x"},
+        )
+        good = {"recording": "setup-1.webm", "created": "jobs", "evidence": []}
+        report = {"setup": [good], "scenarios": list(rest)}
+        self.assertEqual(vr.check_report(report, self.scenarios, self.run_dir), [])
+        report["setup"] = [
+            {"created": "jobs"},
+            {"recording": "setup-2.webm", "created": " ", "evidence": ["/nope.js"]},
+        ]
+        self.assertEqual(
+            vr.check_report(report, self.scenarios, self.run_dir),
+            [
+                "setup step 1: needs a 'recording'",
+                "setup step 2: needs a 'created' description of the data",
+                f"setup step 2: no recording at {self.run_dir / 'setup-2.webm'}",
+                "setup step 2: evidence file /nope.js does not exist",
+            ],
+        )
+
     def test_duplicate_and_bad_verdict(self):
         problems = self._check(
             {"id": "QS-1", "verdict": "NOT_APPLICABLE", "reason": "x"},
@@ -195,17 +240,20 @@ class TestRenderMarkdown(unittest.TestCase):
     def test_marker_summary_and_rows(self):
         with tempfile.TemporaryDirectory() as d:
             run_dir = Path(d)
-            vr.video_path(run_dir, "US1-AS1").write_bytes(b"x")
+            (run_dir / "US1-AS1.webm").write_bytes(b"x")
+            (run_dir / "setup-1.webm").write_bytes(b"x")
             scenarios = [vr.Scenario("US1-AS1", "a | b"), vr.Scenario("QS-1", "Install")]
             report = {
+                "setup": [{"recording": "setup-1.webm", "created": "two [validation] jobs"}],
                 "scenarios": [
                     {"id": "US1-AS1", "verdict": "FAIL", "observed": "broken\nbadly"},
                     {"id": "QS-1", "verdict": "NOT_APPLICABLE", "reason": "local only"},
-                ]
+                ],
             }
             md = vr.render_markdown(report, scenarios, "a" * 40, "https://p.example", run_dir)
         self.assertTrue(md.startswith(vr.comment_marker("a" * 40)))
         self.assertIn("1 FAIL, 1 NOT_APPLICABLE", md)
+        self.assertIn(f"- `{run_dir / 'setup-1.webm'}`: two [validation] jobs", md)
         self.assertIn("| US1-AS1 | FAIL | a \\| b | broken badly |", md)
         self.assertIn("| QS-1 | NOT_APPLICABLE | Install | local only | — |", md)
         self.assertEqual(vr.needs_attention(report), [report["scenarios"][0]])

@@ -636,12 +636,16 @@ For the commit at HEAD, `ch_6_validate_auto.py`:
    (`US<n>-AS<m>`), every success criterion (`SC-NNN`), and every `##` section of `quickstart.md`
    (`QS-<n>`).
 5. Runs a Claude validation agent with the [Playwright MCP](https://github.com/microsoft/playwright-mcp)
-   server (headless, isolated, navigation limited to the preview's origin). It records one video
-   and trace per scenario and writes one verdict per scenario: `PASS`, `FAIL`, `BLOCKED` (with a
+   server (headless, isolated, navigation limited to the preview's origin). Any test data it needs
+   it creates first, in a recorded `setup-<n>.webm` that ends by browsing to where the app shows
+   that data. Scenarios that check the same screen in the same data state share one video and
+   trace, with a chapter per scenario id; it highlights each element it checks before
+   screenshotting it. It writes one verdict per scenario: `PASS`, `FAIL`, `BLOCKED` (with a
    reason), or — for quickstart sections that only make sense in a local checkout —
    `NOT_APPLICABLE` (with a reason). It has no Bash and can only read and write inside the run directory.
-6. Checks the report: every scenario covered once, and a recording on disk for every PASS/FAIL.
-   An incomplete report gets one retry; still incomplete escalates.
+6. Checks the report: every scenario covered once, a recording on disk for every PASS/FAIL (its
+   own `<id>.webm`, or the shared video its `recording` field names), and a recording and
+   description for every setup step. An incomplete report gets one retry; still incomplete escalates.
 7. Posts the report as a PR comment (once per commit). Any FAIL/BLOCKED writes
    `specs/NNN-feature/ch-6-validate-escalation.md` and exits non-zero.
 

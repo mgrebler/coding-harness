@@ -408,15 +408,30 @@ The browser already holds a logged-in session for a test account.
 --- SCENARIOS YOU MUST REPORT ON (exactly these ids, each exactly once) ---
 {scenario_list}
 
-For EACH scenario, in order:
-1. `browser_start_video` with filename `{run_path}/<id>.webm`, then `browser_video_chapter`
-   with the scenario id as title, then `browser_video_show_actions`.
-2. `browser_start_tracing`.
-3. Navigate from {base_url} and perform the scenario as a user would — through the UI, not by
-   guessing URLs, unless the scenario itself is about a URL. Take a screenshot (filename
-   `{run_path}/<id>-<n>.png`) at each point where you check an expected outcome.
-4. `browser_stop_tracing`, then `browser_stop_video`, then `browser_close`, so the next
-   scenario gets its own recording.
+A human watches your recordings to decide whether to trust your verdicts, so every video
+must show something they need to see, and nothing they have already seen:
+
+1. Setup. If scenarios need data that doesn't exist yet, create all of it first, on camera:
+   `browser_start_video` with filename `{run_path}/setup-<n>.webm`, then
+   `browser_video_show_actions`. Create the data through the UI, or with a script you save
+   under {run_path} and list as evidence. Then browse to where the app shows that data (the
+   lists and detail pages the checks will be computed from) so the video shows it.
+   `browser_stop_video`, then `browser_close`. Add a step to the report's "setup" list.
+2. Group the scenarios. Scenarios that check the same screen in the same data state share
+   one recording; a scenario that changes data, or needs a different starting point, gets
+   its own. A success criterion that restates acceptance scenarios goes in their group.
+3. For each group: `browser_start_video` with filename `{run_path}/<first id in the
+   group>.webm`, then `browser_video_show_actions`, then `browser_start_tracing`. Then, for
+   each scenario in the group, in order:
+   a. `browser_video_chapter` with the scenario id as title.
+   b. Perform the scenario as a user would, starting from {base_url} — through the UI, not by
+      guessing URLs, unless the scenario itself is about a URL.
+   c. Check each expected outcome on its own: scroll the element into view and highlight it
+      (Playwright's `locator.highlight()`), then take a screenshot (filename
+      `{run_path}/<id>-<n>.png`). Never check outcomes by reading the whole page in one
+      script — the recording then shows nothing of what you checked.
+   End the group with `browser_stop_tracing`, then `browser_stop_video`, then
+   `browser_close`, so the next group starts from a fresh browser.
 
 Verdicts:
 - PASS: you observed every expected outcome yourself, in the browser.
@@ -430,10 +445,14 @@ Verdicts:
 
 Write `{run_path}/report.json` (update it after every scenario, so progress survives an
 interruption) in exactly this shape:
-{{"scenarios": [{{"id": "<id>", "verdict": "PASS|FAIL|BLOCKED|NOT_APPLICABLE",
+{{"setup": [{{"recording": "setup-<n>.webm", "created": "<the data you created, and how>",
+  "evidence": ["<absolute path of each setup script>", ...]}}],
+ "scenarios": [{{"id": "<id>", "verdict": "PASS|FAIL|BLOCKED|NOT_APPLICABLE",
+  "recording": "<file name of the video this scenario is a chapter of>",
   "steps": ["<what you did>", ...], "observed": "<what you saw>",
   "reason": "<required for BLOCKED/NOT_APPLICABLE>",
   "evidence": ["<absolute path of each screenshot/trace file you produced>", ...]}}]}}
+Leave "setup" empty if you created no data.
 
 {project_notes}Rules:
 - This is a preview environment, but treat its data with care: create only what a scenario
