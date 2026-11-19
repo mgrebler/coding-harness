@@ -42,7 +42,36 @@ class TestRunAutoCommit(unittest.TestCase):
                 os.chdir(cwd)
 
         cmd = run.call_args.args[0]
-        self.assertEqual(cmd[:2], ["bash", ".specify/extensions/git/scripts/bash/auto-commit.sh"])
+        self.assertEqual(cmd[1], ".specify/extensions/git/scripts/bash/auto-commit.sh")
+
+
+class TestBashExecutable(unittest.TestCase):
+    def test_plain_bash_off_windows(self):
+        with patch.object(git.sys, "platform", "linux"):
+            self.assertEqual(git.bash_executable(), "bash")
+
+    def test_git_for_windows_bash_beside_git_cmd(self):
+        """Not System32's bash.exe, which is WSL's launcher."""
+        with tempfile.TemporaryDirectory() as tmp:
+            git_root = Path(tmp) / "Git"
+            (git_root / "cmd").mkdir(parents=True)
+            (git_root / "bin").mkdir()
+            (git_root / "cmd" / "git.exe").touch()
+            (git_root / "bin" / "bash.exe").touch()
+            with (
+                patch.object(git.sys, "platform", "win32"),
+                patch.object(git.shutil, "which", return_value=str(git_root / "cmd" / "git.exe")),
+            ):
+                found = git.bash_executable()
+
+        self.assertEqual(Path(found), (git_root / "bin" / "bash.exe").resolve())
+
+    def test_falls_back_to_bash_when_git_is_not_on_path(self):
+        with (
+            patch.object(git.sys, "platform", "win32"),
+            patch.object(git.shutil, "which", return_value=None),
+        ):
+            self.assertEqual(git.bash_executable(), "bash")
 
 
 class TestRefExists(unittest.TestCase):
