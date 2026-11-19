@@ -26,6 +26,25 @@ def _result(returncode=0, stdout=""):
     return result
 
 
+class TestRunAutoCommit(unittest.TestCase):
+    def test_passes_bash_a_forward_slash_script_path(self):
+        """bash strips backslashes as escapes, so a Windows str(Path) never resolves."""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / ".specify/extensions/git/scripts/bash/auto-commit.sh"
+            script.parent.mkdir(parents=True)
+            script.touch()
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with patch.object(git.subprocess, "run", return_value=_result()) as run:
+                    self.assertTrue(git.run_auto_commit("after_plan", "ch-1-plan-auto"))
+            finally:
+                os.chdir(cwd)
+
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[:2], ["bash", ".specify/extensions/git/scripts/bash/auto-commit.sh"])
+
+
 class TestRefExists(unittest.TestCase):
     def test_true_when_rev_parse_succeeds(self):
         with patch.object(git.subprocess, "run", return_value=_result(returncode=0)):

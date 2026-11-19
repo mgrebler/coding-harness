@@ -46,7 +46,9 @@ def run_auto_commit(event: str, agent_name: str, exclude: list[str] | None = Non
     if not script.exists():
         print(f"[{agent_name}] Warning: auto-commit.sh not found; skipping commit.", flush=True)
         return True
-    cmd = ["bash", str(script), event]
+    # as_posix: on Windows str() gives backslashes, which bash strips as escapes
+    # (".specifyextensionsgitscriptsbashauto-commit.sh: No such file").
+    cmd = ["bash", script.as_posix(), event]
     if exclude:
         for path in exclude:
             print(
