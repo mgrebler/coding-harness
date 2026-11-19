@@ -15,6 +15,7 @@ pre-critic gate, everything else runs in both the quick and full gates.
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 from agent_common.files import CONSTITUTION_PATH
@@ -112,8 +113,22 @@ def _commands_from_constitution(constitution_text: str) -> list[tuple[str, list[
         command = backticks[-1].strip()
         if _is_placeholder(command):
             continue
-        resolved.append((_label_from_bullet(bullet), shlex.split(command)))
+        resolved.append((_label_from_bullet(bullet), split_command(command)))
     return resolved
+
+
+def split_command(command: str) -> list[str]:
+    """shlex.split, except that on Windows a backslash is a path separator, not an
+    escape: POSIX splitting turns `.venv\\Scripts\\python.exe` into
+    `.venvScriptspython.exe` and the check fails with WinError 2 before it runs.
+    Quotes are still honoured — shlex's own posix=False mode would keep them on the
+    token, turning `-c "import x"` into a string-literal no-op that always passes."""
+    if sys.platform != "win32":
+        return shlex.split(command)
+    lexer = shlex.shlex(command, posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    return list(lexer)
 
 
 def _commands_from_readme(readme_text: str) -> list[tuple[str, list[str]]]:
@@ -131,7 +146,7 @@ def _commands_from_readme(readme_text: str) -> list[tuple[str, list[str]]]:
             None,
         )
         if first_line:
-            resolved.append((heading.strip("# ").strip(), shlex.split(first_line)))
+            resolved.append((heading.strip("# ").strip(), split_command(first_line)))
     return resolved
 
 

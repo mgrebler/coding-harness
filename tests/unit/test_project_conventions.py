@@ -30,6 +30,21 @@ class _InTempProject(unittest.TestCase):
         Path("README.md").write_text(text, encoding="utf-8")
 
 
+class TestSplitCommand(unittest.TestCase):
+    _CMD = r'.venv\Scripts\python.exe -c "import a, b" -x "[.]venv"'
+
+    def test_windows_keeps_backslashes_and_strips_quotes(self):
+        with patch.object(pc.sys, "platform", "win32"):
+            self.assertEqual(
+                pc.split_command(self._CMD),
+                [r".venv\Scripts\python.exe", "-c", "import a, b", "-x", "[.]venv"],
+            )
+
+    def test_posix_splitting_is_unchanged_elsewhere(self):
+        with patch.object(pc.sys, "platform", "linux"):
+            self.assertEqual(pc.split_command(r"echo a\ b"), ["echo", "a b"])
+
+
 class TestResolveCiCommands(_InTempProject):
     def test_resolves_explicit_commands_with_project_own_labels(self):
         self._write_constitution(

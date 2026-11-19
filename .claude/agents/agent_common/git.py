@@ -1,8 +1,26 @@
 """Git helpers: branch/feature resolution, changed-file listing, and auto-commit delegation."""
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+
+def bash_executable() -> str:
+    """The bash to run harness shell scripts with. On Windows a bare "bash" is
+    resolved by CreateProcess, which searches System32 before PATH and so starts
+    WSL's bash.exe launcher — failing outright ("Bash/Service/E_UNEXPECTED")
+    when WSL isn't set up. Use Git for Windows' bash, found beside git itself
+    (Git\\cmd\\git.exe or Git\\mingw64\\bin\\git.exe → Git\\bin\\bash.exe)."""
+    if sys.platform != "win32":
+        return "bash"
+    git_exe = shutil.which("git")
+    if git_exe:
+        for root in Path(git_exe).resolve().parents[:3]:
+            candidate = root / "bin" / "bash.exe"
+            if candidate.is_file():
+                return str(candidate)
+    return "bash"
 
 
 def get_feature_from_branch(agent_name: str) -> str:
@@ -46,7 +64,9 @@ def run_auto_commit(event: str, agent_name: str, exclude: list[str] | None = Non
     if not script.exists():
         print(f"[{agent_name}] Warning: auto-commit.sh not found; skipping commit.", flush=True)
         return True
-    cmd = ["bash", str(script), event]
+    # as_posix: on Windows str() gives backslashes, which bash strips as escapes
+    # (".specifyextensionsgitscriptsbashauto-commit.sh: No such file").
+    cmd = [bash_executable(), script.as_posix(), event]
     if exclude:
         for path in exclude:
             print(

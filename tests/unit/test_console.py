@@ -114,6 +114,22 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestTolerateUnencodable(unittest.TestCase):
+    def test_a_cp1252_stream_writes_an_arrow_instead_of_raising(self):
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="cp1252")
+
+        console._tolerate_unencodable(stream)
+        stream.write("→ Read(file)")
+        stream.flush()
+
+        self.assertEqual(raw.getvalue(), b"? Read(file)")
+
+    def test_a_stream_without_reconfigure_is_left_alone(self):
+        stream = io.StringIO()
+        self.assertIs(console._tolerate_unencodable(stream), stream)
+
+
 class TestSafePrint(unittest.TestCase):
     def test_blocking_io_error_restores_blocking_stdio_and_retries(self):
         """specs/086/088: a multi-MB CI dump hit EAGAIN on a non-blocking stdout."""
