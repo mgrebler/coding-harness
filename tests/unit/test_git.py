@@ -33,7 +33,7 @@ class TestRunAutoCommit(unittest.TestCase):
             script = Path(tmp) / ".specify/extensions/git/scripts/bash/auto-commit.sh"
             script.parent.mkdir(parents=True)
             script.touch()
-            cwd = os.getcwd()
+            cwd = Path.cwd()
             os.chdir(tmp)
             try:
                 with patch.object(git.subprocess, "run", return_value=_result()) as run:

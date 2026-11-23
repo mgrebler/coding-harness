@@ -95,10 +95,9 @@ def _tolerate_unencodable(stream: IO) -> IO:
     """On Windows a piped stdout defaults to cp1252, which cannot encode the "→"
     log_sdk_message prints for every tool call — the resulting UnicodeEncodeError
     killed a whole stage mid-run. Replace such characters instead of raising."""
-    try:
+    # AttributeError: not a TextIOWrapper (e.g. a test double), so leave it as it is.
+    with contextlib.suppress(AttributeError, ValueError):
         stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
-    except (AttributeError, ValueError):
-        pass  # not a TextIOWrapper (e.g. a test double): leave it as it is
     return stream
 
 
