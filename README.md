@@ -798,6 +798,37 @@ ruff check .
 ruff format .
 ```
 
+## CI Runner
+
+Which runner the workflows in `.github/workflows/` use is controlled by a single repository
+variable, `CI_RUNNER`, read as `runs-on: ${{ fromJSON(vars.CI_RUNNER) }}`. Switching is one
+command — no workflow-file edit or commit:
+
+- Self-hosted machine (no GitHub-hosted minutes consumed):
+  `gh variable set CI_RUNNER --body '["self-hosted","local-pc"]'`
+- GitHub-hosted runners: `gh variable set CI_RUNNER --body '"ubuntu-latest"'`
+
+`CI_RUNNER` must always be valid JSON — an unset or empty value makes `fromJSON` fail to parse and
+no job will schedule. If the self-hosted machine is offline while `CI_RUNNER` points at it, jobs
+queue indefinitely rather than failing; flip the variable back to `"ubuntu-latest"` to unblock.
+
+Self-hosted runners on a personal-account repository are repository-scoped, so this repo needs its
+own runner instance on the machine, carrying the shared `local-pc` label:
+
+```bash
+TOKEN=$(gh api -X POST repos/mgrebler/coding-harness/actions/runners/registration-token --jq .token)
+mkdir -p ~/projects/actions-runner-coding-harness && cd ~/projects/actions-runner-coding-harness
+# download/extract the actions-runner tarball (or copy bin/externals from an existing runner dir)
+./config.sh --url https://github.com/mgrebler/coding-harness --token "$TOKEN" \
+  --labels local-pc --unattended --name coding-harness-1
+sudo ./svc.sh install && sudo ./svc.sh start   # reboot-surviving service
+gh api repos/mgrebler/coding-harness/actions/runners \
+  --jq '.runners[] | {name, status, labels:[.labels[].name]}'
+```
+
+The runner user must be able to use Docker (`publish-base-image.yml` builds with buildx). One
+instance runs one job at a time; register more (`coding-harness-2`, …) for parallelism.
+
 ---
 
 ## Notifications When Claude Is Waiting

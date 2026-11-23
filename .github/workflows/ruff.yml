@@ -5,9 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Runner is controlled by the repo variable CI_RUNNER — see the comment in tests.yml.
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER) }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/ruff-action@v3
@@ -16,7 +17,7 @@ jobs:
           args: check
 
   format:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER) }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/ruff-action@v3

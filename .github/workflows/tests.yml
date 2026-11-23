@@ -5,9 +5,21 @@ on:
     branches: [main]
   pull_request:
 
+# Which runner every job in this repo's workflows uses is controlled by a single repo variable,
+# CI_RUNNER, via `runs-on: ${{ fromJSON(vars.CI_RUNNER) }}`. No workflow-file edit or commit is
+# needed to switch — just set the variable:
+#
+#   Use the self-hosted local-pc runner (cheaper when GitHub Actions minutes are low):
+#     gh variable set CI_RUNNER --body '["self-hosted","local-pc"]'
+#
+#   Use GitHub-hosted ubuntu-latest runners (when local-pc is offline or minutes are available):
+#     gh variable set CI_RUNNER --body '"ubuntu-latest"'
+#
+# CI_RUNNER must always have a value — `fromJSON(vars.CI_RUNNER)` on an unset/empty variable fails
+# to parse and no job will schedule. See "CI Runner" in README.md.
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
