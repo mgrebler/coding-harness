@@ -26,6 +26,54 @@ def _result(returncode=0, stdout=""):
     return result
 
 
+class TestRunAutoCommit(unittest.TestCase):
+    def test_passes_bash_a_forward_slash_script_path(self):
+        """bash strips backslashes as escapes, so a Windows str(Path) never resolves."""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / ".specify/extensions/git/scripts/bash/auto-commit.sh"
+            script.parent.mkdir(parents=True)
+            script.touch()
+            cwd = Path.cwd()
+            os.chdir(tmp)
+            try:
+                with patch.object(git.subprocess, "run", return_value=_result()) as run:
+                    self.assertTrue(git.run_auto_commit("after_plan", "ch-1-plan-auto"))
+            finally:
+                os.chdir(cwd)
+
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[1], ".specify/extensions/git/scripts/bash/auto-commit.sh")
+
+
+class TestBashExecutable(unittest.TestCase):
+    def test_plain_bash_off_windows(self):
+        with patch.object(git.sys, "platform", "linux"):
+            self.assertEqual(git.bash_executable(), "bash")
+
+    def test_git_for_windows_bash_beside_git_cmd(self):
+        """Not System32's bash.exe, which is WSL's launcher."""
+        with tempfile.TemporaryDirectory() as tmp:
+            git_root = Path(tmp) / "Git"
+            (git_root / "cmd").mkdir(parents=True)
+            (git_root / "bin").mkdir()
+            (git_root / "cmd" / "git.exe").touch()
+            (git_root / "bin" / "bash.exe").touch()
+            with (
+                patch.object(git.sys, "platform", "win32"),
+                patch.object(git.shutil, "which", return_value=str(git_root / "cmd" / "git.exe")),
+            ):
+                found = git.bash_executable()
+
+        self.assertEqual(Path(found), (git_root / "bin" / "bash.exe").resolve())
+
+    def test_falls_back_to_bash_when_git_is_not_on_path(self):
+        with (
+            patch.object(git.sys, "platform", "win32"),
+            patch.object(git.shutil, "which", return_value=None),
+        ):
+            self.assertEqual(git.bash_executable(), "bash")
+
+
 class TestRefExists(unittest.TestCase):
     def test_true_when_rev_parse_succeeds(self):
         with patch.object(git.subprocess, "run", return_value=_result(returncode=0)):

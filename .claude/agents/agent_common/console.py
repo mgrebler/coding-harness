@@ -91,12 +91,24 @@ class _Tee:
         return self._files[0].fileno()
 
 
+def _tolerate_unencodable(stream: IO) -> IO:
+    """On Windows a piped stdout defaults to cp1252, which cannot encode the "→"
+    log_sdk_message prints for every tool call — the resulting UnicodeEncodeError
+    killed a whole stage mid-run. Replace such characters instead of raising."""
+    # AttributeError: not a TextIOWrapper (e.g. a test double), so leave it as it is.
+    with contextlib.suppress(AttributeError, ValueError):
+        stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+    return stream
+
+
 def setup_log_file(path: Path):
     """
     Open *path* in append mode and tee all stdout/stderr to it.
     Call once per script after spec_dir is known.
     A run-separator line is written so successive runs are easy to distinguish.
     """
+    _tolerate_unencodable(sys.__stdout__)
+    _tolerate_unencodable(sys.__stderr__)
     path.parent.mkdir(parents=True, exist_ok=True)
     log_fh = path.open("a", encoding="utf-8")
     ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
