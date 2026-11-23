@@ -128,6 +128,8 @@ def split_command(command: str) -> list[str]:
     lexer = shlex.shlex(command, posix=True)
     lexer.whitespace_split = True
     lexer.escape = ""
+    # shlex.split clears this too; left at "#", an unquoted # would cut the command short.
+    lexer.commenters = ""
     return list(lexer)
 
 

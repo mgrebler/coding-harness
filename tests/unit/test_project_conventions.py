@@ -40,6 +40,12 @@ class TestSplitCommand(unittest.TestCase):
                 [r".venv\Scripts\python.exe", "-c", "import a, b", "-x", "[.]venv"],
             )
 
+    def test_windows_keeps_a_hash_mid_command(self):
+        with patch.object(pc.sys, "platform", "win32"):
+            self.assertEqual(
+                pc.split_command("pytest -k test#1 -q"), ["pytest", "-k", "test#1", "-q"]
+            )
+
     def test_posix_splitting_is_unchanged_elsewhere(self):
         with patch.object(pc.sys, "platform", "linux"):
             self.assertEqual(pc.split_command(r"echo a\ b"), ["echo", "a b"])
