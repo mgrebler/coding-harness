@@ -134,7 +134,7 @@ class TestRunImplementationAgent(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(mock_run.await_count, 2)
             self.assertEqual(result, "- [x] T001 [IMPL] done\n")
 
-    async def test_exits_with_status_1_when_tasks_still_unchecked_after_both_attempts(self):
+    async def test_waits_for_a_human_when_tasks_still_unchecked_after_both_attempts(self):
         with tempfile.TemporaryDirectory() as d:
             spec_dir = Path(d)
             _write_tasks(spec_dir, "- [ ] T001 [IMPL] todo\n")
@@ -153,7 +153,7 @@ class TestRunImplementationAgent(unittest.IsolatedAsyncioTestCase):
                     "quality",
                 )
 
-            self.assertEqual(cm.exception.code, 1)
+            self.assertEqual(cm.exception.code, impl_auto.HUMAN_ACTION_EXIT_CODE)
 
 
 if __name__ == "__main__":

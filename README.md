@@ -713,7 +713,7 @@ report and, unless a `lock_command` is set, the cached deploy URL; `auth_command
 | `lock_timeout_minutes` | no (120) | Limit on `lock_command`, including time spent waiting for another run. |
 | `allowed_origins` | no | Extra origins the browser may load besides the preview's own (e.g. an auth provider). |
 | `playwright_mcp_version` | no | Pins `@playwright/mcp`. |
-| `max_turns` | no (300) | Turn budget for the validation agent. |
+| `max_turns` | no (16 per scenario, at least 300) | Turn budget for the validation agent. Running out ends that pass, not the stage: the agent's saved verdicts are kept and one more pass finishes the missing scenarios. |
 | `agent_notes` | no | Project-specific guidance added to the agent's instructions, e.g. limits on actions that cost money, or scenarios that can't run in a plain browser and should be `BLOCKED`. |
 | `fixtures_dir` | no | Directory, relative to the feature's spec dir, that `seed_command` reads fixtures from. When set, the stage refuses to start (before pushing or deploying) unless it holds at least one file; a feature that needs no fixtures adds a `NONE` file saying why. |
 | `probe_commands` | no | Named commands the operator agent may run, as `{"<name>": {"command": "...", "description": "..."}}`. See § Probe commands. |
@@ -916,7 +916,7 @@ While a `ch-*-auto` stage or `/ch-plan-to-implement-auto` is running, the Claude
 | `✓` | stage complete (its `*-auto-complete` marker exists) |
 | `▶ <step> i/max · 14m` | running: current step, critic iteration or attempt, time on this step |
 | `⚠ escalated` | stage wrote an escalation and is waiting for your `-review.md` |
-| `⏸ paused` | stopped at a Claude usage/session limit; re-run once it resets |
+| `⏸ paused` | hit a Claude usage/session limit; waits for the reset and resumes when it's under 6 hours away, otherwise stops for you to re-run |
 | `✗ stopped at <step>` | the stage's process exited mid-step (CI failure, crash, Ctrl-C) |
 | `⊘` | stage disabled via `.specify/pipeline.json` `stages` |
 | `·` | not started |

@@ -484,6 +484,29 @@ class TestRun(_RunCase):
         self.assertEqual(len(calls), 2)
         self.assertIn("no recording", calls[1])
 
+    def test_running_out_of_turns_keeps_the_report_and_finishes_it(self):
+        """098: the agent hit 300 turns at 14 of 39 scenarios and the partial report was lost."""
+        partial = {"scenarios": []}
+        passing = {
+            "scenarios": [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok", "record": 1}]
+        }
+        write, calls = self._agent_writing(partial, passing)
+
+        async def agent(instructions, task, config, mcp, run_dir):
+            await write(instructions, task, config, mcp, run_dir)
+            if len(calls) == 1:
+                raise va.ResultError("Reached maximum number of turns (300)")
+
+        self.assertIsNone(self._run(agent)[0])
+        self.assertEqual(len(calls), 2)
+        self.assertIn("US1-AS1: missing from report", calls[1])
+
+    def test_turn_budget_scales_with_the_scenarios(self):
+        scenarios = [va.vr.Scenario(f"SC-{n:03}", "x") for n in range(39)]
+        self.assertEqual(va.agent_max_turns(CONFIG, scenarios[:3]), va.DEFAULT_MAX_TURNS)
+        self.assertEqual(va.agent_max_turns(CONFIG, scenarios), 39 * va.TURNS_PER_SCENARIO)
+        self.assertEqual(va.agent_max_turns({**CONFIG, "max_turns": 50}, scenarios), 50)
+
     def test_still_invalid_after_retry_escalates_without_posting(self):
         unrecorded = {"scenarios": [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok"}]}
         agent, calls = self._agent_writing(unrecorded, unrecorded)

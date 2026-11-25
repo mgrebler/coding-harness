@@ -5,10 +5,13 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / ".claude/agents"))
+from claude_agent_sdk import CLIConnectionError, ProcessError
+
 from agent_common import console, critic_loop, git, ollama, pipeline_status, resume_state
 from agent_common.critic_loop import GateSpec
 from agent_common.resume_state import IterationBudget
@@ -862,3 +865,75 @@ class TestConfirmReviewExisting(unittest.TestCase):
                 critic_loop.confirm_review_existing(
                     MagicMock(), "a", spec_dir, "ch-3-test-critic-result", "All [TEST] tasks"
                 )
+
+
+class TestRunCliResumes(unittest.TestCase):
+    """10 usage-limit pauses sat ~17h past their reset; 4 runs died on a one-off SDK crash."""
+
+    def _run_cli(self, *outcomes):
+        outcomes = list(outcomes)
+        calls = []
+
+        async def run_coro(feature):
+            calls.append(feature)
+            outcome = outcomes.pop(0)
+            if outcome is not None:
+                raise outcome
+
+        reset = datetime.now(UTC) + timedelta(hours=1)
+        with (
+            patch.object(sys, "argv", ["x", "--feature", "001-x"]),
+            patch.object(critic_loop.ollama, "check_providers"),
+            patch.object(critic_loop.console, "make_logger", return_value=MagicMock()),
+            patch.object(critic_loop.console, "limit_reset_time", return_value=reset),
+            patch.object(critic_loop.pipeline_status, "step"),
+            patch.object(critic_loop.time, "sleep") as sleep,
+        ):
+            try:
+                critic_loop.run_cli("test-agent", "d", run_coro)
+                code = None
+            except SystemExit as e:
+                code = e.code
+        return code, calls, sleep
+
+    def test_waits_for_the_limit_reset_and_resumes(self):
+        limit = console.SessionLimitError("You've hit your session limit · resets 9:20am (UTC)")
+        code, calls, sleep = self._run_cli(limit, None)
+        self.assertIsNone(code)
+        self.assertEqual(len(calls), 2)
+        self.assertGreater(sleep.call_args[0][0], 3600)
+
+    def test_gives_up_after_three_waits(self):
+        limit = console.SessionLimitError("resets 9:20am (UTC)")
+        code, calls, _ = self._run_cli(limit, limit, limit, limit)
+        self.assertEqual(code, console.USAGE_LIMIT_EXIT_CODE)
+        self.assertEqual(len(calls), 4)
+
+    def test_a_crashed_session_is_rerun_once(self):
+        crash = ProcessError("Command failed with exit code 1", exit_code=1)
+        code, calls, _ = self._run_cli(crash, None)
+        self.assertIsNone(code)
+        self.assertEqual(len(calls), 2)
+        with self.assertRaises(CLIConnectionError):
+            self._run_cli(crash, CLIConnectionError("Failed to write to process stdin"))
+
+
+class TestLimitResetTime(unittest.TestCase):
+    NOW = datetime(2026, 11, 20, 8, 0, tzinfo=UTC)
+
+    def test_next_occurrence_of_the_reset_time(self):
+        self.assertEqual(
+            console.limit_reset_time("session limit · resets 9:20am (UTC)", self.NOW),
+            datetime(2026, 11, 20, 9, 20, tzinfo=UTC),
+        )
+        self.assertEqual(
+            console.limit_reset_time("5-hour limit · resets 1:20am (UTC)", self.NOW),
+            datetime(2026, 11, 21, 1, 20, tzinfo=UTC),
+        )
+        self.assertEqual(
+            console.limit_reset_time("resets 12pm (UTC)", self.NOW),
+            datetime(2026, 11, 20, 12, 0, tzinfo=UTC),
+        )
+
+    def test_no_reset_time_is_none(self):
+        self.assertIsNone(console.limit_reset_time("weekly limit reached", self.NOW))

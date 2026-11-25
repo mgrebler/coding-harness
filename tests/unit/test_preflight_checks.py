@@ -150,6 +150,17 @@ class TestPendingHumanApprovals(unittest.TestCase):
             ["- Constitution §2: add Route 53", "- architecture.md §8: API key at the edge"],
         )
 
+    def test_none_followed_by_notes_or_ratified_amendments_is_nothing_pending(self):
+        """030 listed already-ratified amendments under "No open items."; 098 put
+        informational notes under "None."; both stopped ch-2 as pending."""
+        for lead in ("None.", "**No open items.**"):
+            plan = (
+                f"## Pending Human Approvals\n\n{lead}\n\n### Already ratified\n"
+                "- Amendment 018: login-free link following\n\n## Project Structure\n"
+            )
+            with self.subTest(lead):
+                self.assertEqual(pc.pending_human_approvals(plan), [])
+
     def test_plan_without_the_section_has_nothing_pending(self):
         self.assertEqual(pc.pending_human_approvals("## Summary\n- a\n"), [])
 

@@ -323,6 +323,9 @@ _PENDING_APPROVALS_RE = re.compile(
 )
 
 
+_NONE_PENDING_RE = re.compile(r"(?i)^[*_]*(none|no open items|nothing pending)\b")
+
+
 def pending_human_approvals(plan: str) -> list[str]:
     """The bullets under plan.md's "## Pending Human Approvals" section —
     governance amendments only a human may apply. specs/001, 005 and 006 each
@@ -332,7 +335,12 @@ def pending_human_approvals(plan: str) -> list[str]:
     if not m:
         return []
     body = re.sub(r"<!--.*?-->", "", m.group(1), flags=re.DOTALL)
-    return [line.strip() for line in body.splitlines() if line.strip().startswith(("- ", "* "))]
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    # The plan agent writes "None." and then lists informational notes or
+    # already-ratified amendments beneath it (030, 098); the bullets then aren't pending.
+    if lines and _NONE_PENDING_RE.match(lines[0]):
+        return []
+    return [line for line in lines if line.startswith(("- ", "* "))]
 
 
 # Anchored on the checkbox + task ID starting the (stripped) line, mirroring

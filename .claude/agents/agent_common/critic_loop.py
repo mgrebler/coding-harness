@@ -8,12 +8,13 @@ import asyncio
 import json
 import re
 import sys
+import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-from claude_agent_sdk import AgentDefinition, query
+from claude_agent_sdk import AgentDefinition, CLIConnectionError, ProcessError, query
 
 from agent_common import console, critic_reconcile, files, git, ollama, pipeline_status
 from agent_common import resume_state as rstate
@@ -762,11 +763,19 @@ def confirm_review_existing(
         sys.exit(0)
 
 
+_MAX_LIMIT_WAITS = 3
+_MAX_LIMIT_WAIT = timedelta(hours=6)
+_LIMIT_RESET_MARGIN = timedelta(minutes=2)
+
+
 def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitable]) -> None:
     """
     Shared entrypoint for the async *-auto.py orchestrators: parses --feature
     (falling back to the current git branch), then runs run_coro(feature) via
     asyncio.run. Callers still need `if __name__ == "__main__": run_cli(...)`.
+    On a usage limit with a reset time under 6 hours away it waits for the reset
+    and runs the stage again (up to 3 times); a crashed Claude Code session
+    (CLIConnectionError, ProcessError) gets one re-run.
     """
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
@@ -777,18 +786,36 @@ def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitab
     feature = args.feature or git.get_feature_from_branch(agent_name)
     if stage := re.fullmatch(r"ch-\d+-(\w+)-auto", agent_name):
         pipeline_status.bind(Path("specs") / feature, stage[1])
-    ollama.check_providers(console.make_logger(agent_name))
-    try:
-        asyncio.run(run_coro(feature))
-    except console.SessionLimitError as e:
-        log = console.make_logger(agent_name)
-        log(f"PAUSED — hit a Claude usage/session limit: {e}")
-        pipeline_status.step(pipeline_status.PAUSED)
-        log(
-            "This is not a critic or code failure — re-run this command once the "
-            "limit resets. Progress made so far (commits, result files) is preserved."
-        )
-        sys.exit(console.USAGE_LIMIT_EXIT_CODE)
+    log = console.make_logger(agent_name)
+    ollama.check_providers(log)
+    limit_waits = 0
+    retried_crash = False
+    # Every stage resumes where it stopped, so running it again is how it continues.
+    while True:
+        try:
+            asyncio.run(run_coro(feature))
+            return
+        except console.SessionLimitError as e:
+            log(f"PAUSED — hit a Claude usage/session limit: {e}")
+            pipeline_status.step(pipeline_status.PAUSED)
+            now = datetime.now(UTC)
+            reset = console.limit_reset_time(str(e), now)
+            if reset is None or reset - now > _MAX_LIMIT_WAIT or limit_waits >= _MAX_LIMIT_WAITS:
+                log(
+                    "This is not a critic or code failure — re-run this command once the "
+                    "limit resets. Progress made so far (commits, result files) is preserved."
+                )
+                sys.exit(console.USAGE_LIMIT_EXIT_CODE)
+            limit_waits += 1
+            # Runs used to sit paused long after the limit reset (~17h across 10 pauses).
+            resume_at = reset + _LIMIT_RESET_MARGIN
+            log(f"Waiting until {resume_at:%H:%M} UTC, then resuming. Ctrl-C to stop instead.")
+            time.sleep((resume_at - now).total_seconds())
+        except (CLIConnectionError, ProcessError) as e:
+            if retried_crash:
+                raise
+            retried_crash = True
+            log(f"The Claude Code session crashed ({e}); running the stage again once.")
 
 
 def write_escalation(

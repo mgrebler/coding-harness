@@ -62,7 +62,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
-from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, create_sdk_mcp_server, query, tool
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    HookMatcher,
+    ResultError,
+    create_sdk_mcp_server,
+    query,
+    tool,
+)
 
 from agent_common import github_pr, ollama, pipeline_status
 from agent_common import validation_report as vr
@@ -86,6 +93,8 @@ SEED_TIMEOUT_S = 15 * 60
 DEFAULT_LOCK_TIMEOUT_MINUTES = 120
 UNLOCK_TIMEOUT_S = 300
 DEFAULT_MAX_TURNS = 300
+# 098's 39 upload-heavy scenarios ran out of 300 turns at 14 and finished in 600.
+TURNS_PER_SCENARIO = 16
 DEFAULT_PROBE_MAX_TURNS = 150
 PROBE_TIMEOUT_S = 120
 PROBE_OUTPUT_LIMIT = 20_000
@@ -747,10 +756,11 @@ async def produce_report(
         config.get("agent_notes", ""),
         seeded,
     )
+    config = {**config, "max_turns": agent_max_turns(config, scenarios)}
     if not report_path.exists():
         pipeline_status.step("validating")
         task = f"Validate feature {feature} on {base_url}."
-        await run_validation_agent(instructions, task, config, mcp, run_dir)
+        await _run_until_out_of_turns(instructions, task, config, mcp, run_dir)
         report, problems = checked_report(report_path, scenarios, run_dir)
         _escalate_setup_problem(spec_dir, feature, sha, base_url, report)
     if problems:
@@ -761,7 +771,7 @@ async def produce_report(
             "re-running a scenario (with a fresh recording) where evidence is missing — "
             "and leave correct entries alone:\n- " + "\n- ".join(problems)
         )
-        await run_validation_agent(instructions, task, config, mcp, run_dir)
+        await _run_until_out_of_turns(instructions, task, config, mcp, run_dir)
         report, problems = checked_report(report_path, scenarios, run_dir)
     if problems:
         escalate(
@@ -778,6 +788,25 @@ async def produce_report(
             config, probe_env, spec, seeded, scenarios, run_dir, report
         )
     return report
+
+
+def agent_max_turns(config: dict, scenarios: list[vr.Scenario]) -> int:
+    return config.get("max_turns") or max(DEFAULT_MAX_TURNS, TURNS_PER_SCENARIO * len(scenarios))
+
+
+async def _run_until_out_of_turns(
+    instructions: str, task: str, config: dict, mcp: dict, run_dir: Path
+) -> None:
+    """Run the validation agent; running out of turns ends the run, not the
+    stage, so the verdicts it saved are kept and the next pass finishes the rest."""
+    try:
+        await run_validation_agent(instructions, task, config, mcp, run_dir)
+    except ResultError as e:
+        if "maximum number of turns" not in str(e):
+            raise
+        log(
+            f"The validation agent used all {config['max_turns']} turns; keeping its report so far."
+        )
 
 
 def _escalate_setup_problem(

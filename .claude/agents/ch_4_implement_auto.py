@@ -38,7 +38,7 @@ import sys
 import tempfile
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, NoReturn
 
 from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
@@ -383,7 +383,7 @@ def _run_commands(commands: list[tuple[str, list[str]]]) -> CiRun:
     return CiRun(all_passed, "\n\n".join(failures), environment_failure, tuple(sorted(skipped)))
 
 
-def _wait_for_human(*lines: str) -> None:
+def _wait_for_human(*lines: str) -> NoReturn:
     for line in lines:
         log(line)
     sys.exit(HUMAN_ACTION_EXIT_CODE)
@@ -526,13 +526,17 @@ async def _run_implementation_agent(
             f"WARNING: implementation agent left unchecked tasks after attempt {attempt}/{max_attempts}."
         )
 
-    log(
-        "FAIL: implementation agent did not complete all tasks after "
-        f"{max_attempts} attempts. Proceeding to CI would only fail on the missing "
-        "work with misleading errors — aborting instead. Re-run this script to "
-        "resume from the remaining unchecked tasks."
+    # 051, 062 and 076 each stopped here on a task only a human could settle.
+    _wait_for_human(
+        f"WAITING: the implementation agent left these tasks unchecked after {max_attempts} "
+        "attempts:",
+        *(
+            f"  {line.strip()[:160]}"
+            for line in unchecked_task_lines(tasks, exclude_tag="[MANUAL]")
+        ),
+        "Tag out-of-repo work [MANUAL], remove a task another stage owns, or do the work, "
+        "then re-run this script.",
     )
-    sys.exit(1)
 
 
 async def _run_ci_fix_agent(
