@@ -145,26 +145,24 @@ No [IMPL] task may exist without a paired [TEST] task. No [TEST] task may exist 
 Every task MUST strictly follow this format:
 
 ```text
-- [ ] [TaskID] [TEST|IMPL] [P?] [Story?] Description with file path
+- [ ] [TaskID] [tags] Description with file path
 ```
 
 **Format Components**:
 
 1. **Checkbox**: ALWAYS start with `- [ ]` (markdown checkbox)
 2. **Task ID**: Sequential number (T001, T002, T003...) in execution order
-3. **[TEST] or [IMPL] label**: REQUIRED for all behavioural tasks
-   - `[TEST]` — this task writes failing test(s) only, no implementation
-   - `[IMPL]` — this task writes implementation only, to pass the paired [TEST] task's tests
-   - Setup/infrastructure tasks with no testable behaviour: NO type label (document exemption in description)
-   - `[MANUAL]` instead of a type label for work an agent cannot do inside the repo (human approval, live deploy, real external account, manual verification, evaluation run) — never combined with `[TEST]`/`[IMPL]`
-4. **[P] marker**: Include ONLY if task is parallelizable (different files, no dependencies on incomplete tasks)
-5. **[Story] label**: REQUIRED for user story phase tasks only
-   - Format: [US1], [US2], [US3], etc. (maps to user stories from spec.md); [US1, US2] for one pair serving several stories
-   - Setup phase: NO story label
-   - Foundational phase: NO story label
-   - User Story phases: MUST have story label
-   - Polish phase: NO story label
-6. **Description**: Clear action with exact file path. [IMPL] tasks must reference their paired [TEST] task ID.
+3. **Tags**: exactly this grammar, no others:
+
+- `[TEST]`: the task writes failing tests only, no implementation code.
+- `[IMPL]`: the task writes production code to pass its paired `[TEST]` task's tests and names that task (e.g. "depends on T010"). An `[IMPL]` task with no testable behaviour (a schema migration, infrastructure) says so instead: "no test required — <reason>".
+- No type tag: a task with no testable deliverable of its own — setup, config, orientation, read-and-confirm. The implement stage still does it, and it needs no paired task.
+- `[MANUAL]`, alone and never with `[TEST]` or `[IMPL]`: work an agent cannot do inside the repo — waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist, an evaluation run. Agents never perform or check off `[MANUAL]` tasks, so every such task must carry it, and no task that writes repo files may.
+- `[P]`: the task can run in parallel (different files, no dependency on an incomplete task).
+- `[USn]`: the user story a `[TEST]`/`[IMPL]` task in a user-story phase serves; `[US1, US2]` for one pair serving several. Setup, Foundational and Polish tasks carry none.
+- No other tags. Work another pipeline stage owns (docs, deployed validation) is not a task.
+
+4. **Description**: Clear action with exact file path. [IMPL] tasks must reference their paired [TEST] task ID.
 
 **Examples**:
 

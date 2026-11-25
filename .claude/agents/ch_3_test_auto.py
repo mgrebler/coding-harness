@@ -35,6 +35,7 @@ Resume behaviour:
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -43,7 +44,7 @@ from ch_3_test_quality_critic import build_test_quality_review_prompt
 from claude_agent_sdk import AgentDefinition
 
 from agent_common import local_agent_loop, ollama, pipeline_status
-from agent_common.console import make_logger, setup_log_file
+from agent_common.console import HUMAN_ACTION_EXIT_CODE, make_logger, setup_log_file
 from agent_common.critic_loop import (
     claude_gate,
     confirm_review_existing,
@@ -69,6 +70,8 @@ from agent_common.resume_state import (
 )
 
 AGENT_NAME = "ch-3-test-auto"
+UNDELIVERABLE_FILENAME = "test-undeliverable.md"
+_TASK_ID_RE = re.compile(r"\bT\d+\b")
 CRITIC_RESULT_PREFIX = "ch-3-test-critic-result"
 TEST_QUALITY_RESULT_PREFIX = "ch-3-test-quality-review-result"
 log = make_logger(AGENT_NAME)
@@ -120,6 +123,11 @@ For each [TEST] task (lines containing "[TEST]" and marked "- [ ]"):
 5. Mark the [TEST] task as [x] in tasks.md
 6. Commit: git add <test file> specs/{feature}/tasks.md specs/{feature}/test-results/<TASKID>-red.txt
            git commit -m "test: <TASKID> write failing tests for <description>"
+
+If a [TEST] task cannot be written as a failing test before implementation — it needs the
+finished implementation, a deploy, a live service or an evaluation run — leave it unchecked
+and add a line `- <TASKID>: <why>` to specs/{feature}/{UNDELIVERABLE_FILENAME}. Do not
+retag it; a human decides.
 
 Do NOT touch [IMPL] tasks. Do NOT write any implementation code. Do NOT modify
 any of the source (non-test) directories declared under the constitution's
@@ -306,20 +314,49 @@ async def _run_test_agent_if_needed(
         )
 
         tasks = read_file(spec_dir / "tasks.md")
-        still_unchecked = bool(unchecked_task_lines(tasks, tag="[TEST]", exclude_tag="[MANUAL]"))
-        if not still_unchecked:
+        unchecked = unchecked_task_lines(tasks, tag="[TEST]", exclude_tag="[MANUAL]")
+        if not unchecked:
             return tasks
         log(
-            f"WARNING: test agent left unchecked [TEST] tasks after attempt {attempt}/{max_attempts}."
+            f"WARNING: test agent left {len(unchecked)} unchecked [TEST] task(s) after attempt "
+            f"{attempt}/{max_attempts}."
         )
+        # 072's second attempt re-read the same tasks and declined them again.
+        if _undeliverable_reasons(spec_dir, unchecked) == len(unchecked):
+            break
 
+    unchecked = unchecked_task_lines(tasks, tag="[TEST]", exclude_tag="[MANUAL]")
+    for line in unchecked:
+        log(f"  {line.strip()[:120]}")
+    if _undeliverable_reasons(spec_dir, unchecked):
+        log(
+            f"WAITING: the test agent says the task(s) below can't be written as failing tests "
+            f"before implementation (specs/{feature}/{UNDELIVERABLE_FILENAME}). Retag each one "
+            "in tasks.md: [MANUAL] for out-of-repo work, [IMPL] for work the implement stage "
+            "does, or reword it as a test the test stage can write. Then re-run."
+        )
+        for reason in _read_undeliverable(spec_dir):
+            log(f"  {reason}")
+        sys.exit(HUMAN_ACTION_EXIT_CODE)
     log(
-        "FAIL: test agent did not complete all [TEST] tasks after "
-        f"{max_attempts} attempts. Proceeding to the critic loop would only fail on "
-        "the missing work — aborting instead. Re-run this script to resume from the "
-        "remaining unchecked [TEST] tasks."
+        "FAIL: test agent did not complete the [TEST] tasks above. Proceeding to the critic "
+        "loop would only fail on the missing work — aborting instead. Re-run this script to "
+        "resume from the remaining unchecked [TEST] tasks."
     )
     sys.exit(1)
+
+
+def _read_undeliverable(spec_dir: Path) -> list[str]:
+    path = spec_dir / UNDELIVERABLE_FILENAME
+    if not path.exists():
+        return []
+    return [line.strip() for line in read_file(path).splitlines() if line.strip()]
+
+
+def _undeliverable_reasons(spec_dir: Path, unchecked: list[str]) -> int:
+    """How many of the unchecked task lines the test agent declared undeliverable."""
+    declared = set(_TASK_ID_RE.findall("\n".join(_read_undeliverable(spec_dir))))
+    return sum(1 for line in unchecked if _TASK_ID_RE.search(line).group() in declared)
 
 
 async def run(feature: str):

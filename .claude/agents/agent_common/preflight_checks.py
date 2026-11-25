@@ -40,7 +40,32 @@ _BARE_TXXX_RE = re.compile(r"\bT\d+\b")
 # `- [T001] ...`). Prose bullets that merely cite an ID mid-sentence are not tasks.
 _LEADING_TXXX_RE = re.compile(r"^[-*]\s+\**\[?T\d+\b")
 
-# The grammar speckit-tasks/SKILL.md defines. A task with no testable deliverable
+# The one statement of the task tag grammar. The generator, fix and critic prompts
+# embed it, and a unit test keeps the copies in the skills and the tasks template
+# verbatim: five hand-written versions drifted apart and the tasks critic flapped
+# between them (27 self-reversing iterations across the 024-098 runs).
+_TASK_TAG_GRAMMAR = """\
+- `[TEST]`: the task writes failing tests only, no implementation code.
+- `[IMPL]`: the task writes production code to pass its paired `[TEST]` task's tests and names that task (e.g. "depends on T010"). An `[IMPL]` task with no testable behaviour (a schema migration, infrastructure) says so instead: "no test required — <reason>".
+- No type tag: a task with no testable deliverable of its own — setup, config, orientation, read-and-confirm. The implement stage still does it, and it needs no paired task.
+- `[MANUAL]`, alone and never with `[TEST]` or `[IMPL]`: work an agent cannot do inside the repo — waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist, an evaluation run. Agents never perform or check off `[MANUAL]` tasks, so every such task must carry it, and no task that writes repo files may.
+- `[P]`: the task can run in parallel (different files, no dependency on an incomplete task).
+- `[USn]`: the user story a `[TEST]`/`[IMPL]` task in a user-story phase serves; `[US1, US2]` for one pair serving several. Setup, Foundational and Polish tasks carry none.
+- No other tags. Work another pipeline stage owns (docs, deployed validation) is not a task."""
+
+_NO_TEST_STAGE_TYPE_TAGS = """\
+- `[IMPL]`: the task writes production code. The test stage is disabled, so there are no `[TEST]` tasks and no pairing.
+- No type tag: a task with no deliverable of its own — setup, config, orientation, read-and-confirm. The implement stage still does it."""
+
+
+def task_tag_grammar(test_stage_enabled: bool = True) -> str:
+    if test_stage_enabled:
+        return _TASK_TAG_GRAMMAR
+    lines = _TASK_TAG_GRAMMAR.splitlines()
+    return "\n".join([_NO_TEST_STAGE_TYPE_TAGS, *lines[3:]])
+
+
+# The grammar above, as code. A task with no testable deliverable
 # (setup, config, orientation) carries no type tag, and only [TEST]/[IMPL] tasks
 # in a user-story phase need a story label. Flagging every other line made the
 # tasks critic flap: it demanded [TEST]/[IMPL] on [MANUAL] tasks and [USn] on
@@ -117,6 +142,50 @@ def classify_task_lines(tasks: str) -> tuple[list[str], list[str], list[str], li
             _record_txxx_result(stripped, i, story_phase, complete_tasks, incomplete_tasks)
 
     return complete_tasks, incomplete_tasks, numbered, bullets
+
+
+# A task ID cited in a finding — not a §T rule number like "§T5".
+_CITED_TASK_ID_RE = re.compile(r"(?<![§\w])T\d+\b")
+_ENTRY_TASK_ID_RE = re.compile(r"\[[ xX]\]\s*(T\d+)\b")
+# The one §T5 call the code leaves to the critic: whether a task is out-of-repo
+# work, so it must (or must not) be [MANUAL].
+_MANUAL_JUDGEMENT_RE = re.compile(
+    r"(?i)((missing|lacks?|without|add|needs?|requires?|should (be|carry)|must (be|carry))"
+    r"\s+(tagged\s+)?(a\s+|the\s+)?`?\[MANUAL\]"
+    r"|(must not|should not|shouldn't|not) (be )?(tagged )?`?\[MANUAL\]"
+    r"|(remove|drop)\s+(the\s+)?`?\[MANUAL\])"
+)
+
+
+def discard_accepted_format_findings(result: dict, tasks: str) -> list[dict]:
+    """Drop a critic's §T5 findings that only cite tasks the format analysis
+    accepts, other than a [MANUAL] judgement, and return what was dropped. A
+    FAIL left with no BLOCKING finding becomes a PASS. The critic still
+    demanded [TEST]/[IMPL] on [MANUAL] tasks and flagged prose bullets after
+    being told the analysis was authoritative (031, 032, 048, 071)."""
+    complete, _, _, _ = classify_task_lines(tasks)
+    well_formed = {m.group(1) for line in complete if (m := _ENTRY_TASK_ID_RE.search(line))}
+    kept, dropped = [], []
+    for v in result.get("violations", []):
+        text = f"{v.get('location', '')} {v.get('finding', '')}" if isinstance(v, dict) else ""
+        cited = set(_CITED_TASK_ID_RE.findall(text))
+        if (
+            str(v.get("rule", "") if isinstance(v, dict) else "").startswith("§T5")
+            and cited
+            and cited <= well_formed
+            and not _MANUAL_JUDGEMENT_RE.search(text)
+        ):
+            dropped.append(v)
+        else:
+            kept.append(v)
+    if dropped:
+        result["violations"] = kept
+        result["discarded"] = result.get("discarded", []) + dropped
+        if result.get("status") == "FAIL" and not any(
+            isinstance(v, dict) and v.get("severity") == "BLOCKING" for v in kept
+        ):
+            result["status"] = "PASS"
+    return dropped
 
 
 def analyze_task_format(tasks: str) -> str:

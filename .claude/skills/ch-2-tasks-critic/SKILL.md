@@ -68,10 +68,17 @@ Check each rule in order. Every rule must appear in the output as either a viola
 
 ### §T5 — Task Format [BLOCKING]
 - Every task is a checkbox immediately followed by a bare task ID (`- [ ] T001`, never `- [T001]`), per `.specify/templates/tasks-template.md`; numbered task lists and bracketed IDs violate this rule. Bullets and numbered items in non-task sections (dependencies, execution order, parallel opportunities, implementation strategy, notes) are prose, not tasks — never flag them
-- The only valid tags are `[TEST]`, `[IMPL]`, `[MANUAL]`, `[P]` and a story label. A task with no testable deliverable (setup, config, schema migration, orientation) carries no type tag — never flag it for lacking one
-- Every task an agent cannot complete inside the repo (waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist, an evaluation run) is tagged `[MANUAL]`, alone — never combined with `[TEST]`/`[IMPL]`, which would leave a task no stage can finish. An untagged one blocks the implement stage
-- Conversely, no task that writes or edits files in the repo is tagged `[MANUAL]` — the implement stage skips `[MANUAL]` tasks, so that code is never written
-- `[TEST]`/`[IMPL]` tasks in a user-story phase carry `[USn]` (or `[US1, US2]` for one pair serving several stories). Setup, Foundational and Polish tasks, untagged tasks and `[MANUAL]` tasks need no story label
+- Tags follow the task ID, and this is the whole grammar:
+
+- `[TEST]`: the task writes failing tests only, no implementation code.
+- `[IMPL]`: the task writes production code to pass its paired `[TEST]` task's tests and names that task (e.g. "depends on T010"). An `[IMPL]` task with no testable behaviour (a schema migration, infrastructure) says so instead: "no test required — <reason>".
+- No type tag: a task with no testable deliverable of its own — setup, config, orientation, read-and-confirm. The implement stage still does it, and it needs no paired task.
+- `[MANUAL]`, alone and never with `[TEST]` or `[IMPL]`: work an agent cannot do inside the repo — waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist, an evaluation run. Agents never perform or check off `[MANUAL]` tasks, so every such task must carry it, and no task that writes repo files may.
+- `[P]`: the task can run in parallel (different files, no dependency on an incomplete task).
+- `[USn]`: the user story a `[TEST]`/`[IMPL]` task in a user-story phase serves; `[US1, US2]` for one pair serving several. Setup, Foundational and Polish tasks carry none.
+- No other tags. Work another pipeline stage owns (docs, deployed validation) is not a task.
+
+- An unchecked out-of-repo task without `[MANUAL]` is a violation (it blocks the implement stage), and so is a repo-writing task tagged `[MANUAL]` (the implement stage skips it, so that code is never written). Never demand a type tag on an untagged or `[MANUAL]` task
 
 ### §T6 — v1 Scope [BLOCKING]
 - No task implements functionality that is absent from `spec.md`

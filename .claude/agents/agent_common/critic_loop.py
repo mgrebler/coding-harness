@@ -5,6 +5,7 @@ ollama.run_gate — this module only sequences gates and tracks resume state."""
 
 import argparse
 import asyncio
+import json
 import re
 import sys
 from collections.abc import Awaitable, Callable
@@ -134,6 +135,9 @@ class GateSpec(NamedTuple):
         -> the query(...) call that reconciles >1 critics' raw findings into the canonical result,
         when critic_type resolves to more than one configured critic. None (the
         default) for gates that will only ever have 0-or-1 critics configured.
+    discard_findings: (result) -> the findings it removed from result, for
+        findings deterministic code has already ruled out. The trimmed result
+        is written back before the gate's verdict is read.
     """
 
     result_prefix: str
@@ -142,6 +146,7 @@ class GateSpec(NamedTuple):
     label: str
     build_query: Callable[..., object]
     build_reconcile_query: Callable[..., object] | None = None
+    discard_findings: Callable[[dict], list] | None = None
 
 
 CRITIC_TOOLS = ["Read", "Write", "Bash", "Glob", "Grep"]
@@ -161,6 +166,7 @@ def claude_gate(
     prompt: Callable[[int, str, str], str],
     context: Callable[[], list[tuple[str, str]]],
     violations_context: str | None = None,
+    discard_findings: Callable[[dict], list] | None = None,
 ) -> GateSpec:
     """Build a GateSpec whose Claude critic and Claude reconciler are wired the
     same way for every gate, so a stage only states what differs:
@@ -174,6 +180,7 @@ def claude_gate(
         against — read at call time, so revised artifacts are current.
     violations_context: how format_violations_block describes the previous
         iteration's findings.
+    discard_findings: see GateSpec.
     """
     tag = result_prefix.removesuffix("-result")
     critics = agent_name.removesuffix("-critic")
@@ -256,8 +263,27 @@ def claude_gate(
         )
 
     return GateSpec(
-        result_prefix, script_name, critic_type, label, build_query, build_reconcile_query
+        result_prefix,
+        script_name,
+        critic_type,
+        label,
+        build_query,
+        build_reconcile_query,
+        discard_findings,
     )
+
+
+def _discard_findings(log, gate: GateSpec, iteration: int, path: Path, result: dict) -> None:
+    discarded = gate.discard_findings(result) if gate.discard_findings else []
+    if not discarded:
+        return
+    log(
+        f"{gate.label} (iteration {iteration}): discarded {len(discarded)} finding(s) "
+        "the deterministic checks rule out:"
+    )
+    for v in discarded:
+        log(f"  {v.get('location')}: {str(v.get('finding'))[:160]}")
+    files.write_file(path, json.dumps(result, indent=2) + "\n")
 
 
 async def _run_gate_for_iteration(
@@ -333,6 +359,7 @@ async def _run_gate_for_iteration(
                 )
                 sys.exit(1)
             schema_error = str(e)
+    _discard_findings(log, gate, iteration, path, result)
     status = result.get("status", "FAIL")
     record_pass_followups(spec_dir, gate.label.title(), iteration, result)
 

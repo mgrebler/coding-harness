@@ -19,6 +19,7 @@ from pathlib import Path
 from agent_common.files import CONSTITUTION_PATH, read_required
 from agent_common.ollama import is_stage_enabled, run_local_critic_cli
 from agent_common.preflight_checks import analyze_task_format as _analyze_task_format
+from agent_common.preflight_checks import task_tag_grammar
 from agent_common.resume_state import format_violations_block, load_prior_violations
 
 CRITIC_RESULT_PREFIX = "ch-2-tasks-critic-result"
@@ -46,11 +47,9 @@ def tasks_rules(test_stage_enabled: bool = True) -> str:
     return f"""§T1 Plan Traceability [BLOCKING]: every phase in tasks.md maps to a named section or deliverable in plan.md
 §T2 Spec Coverage [BLOCKING]: every user story in spec.md has a corresponding phase in tasks.md
 {t3_rule}
-§T5 Task Format [BLOCKING]: every task entry is a markdown checkbox (`- [ ]` / `- [x]` / `- [X]`) immediately followed by a bare, unbracketed task ID (`T001`, not `[T001]`), per `.specify/templates/tasks-template.md` — `ch_3_test_auto.py` and `ch_4_implement_auto.py` scan for that checkbox to find outstanding work, so a task without it is silently skipped forever. Tags follow the ID, and these are the only valid ones:
-  - Type: `[TEST]` (writes failing tests) or `[IMPL]` (production code). A task with no testable deliverable — setup, config, a schema migration, orientation, read-and-confirm — carries NO type tag; never flag it for lacking one.
-  - `[MANUAL]`: work an agent cannot do inside the repo (waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist, an evaluation run). It stands alone: never combined with `[TEST]` or `[IMPL]`, and never demand that a `[MANUAL]` task gain one. An unchecked out-of-repo task that lacks `[MANUAL]` IS a violation (ch_4_implement_auto.py only skips `[MANUAL]` tasks). Conversely a task that writes or edits repo files must NOT be `[MANUAL]`: it would be skipped and its code never written (specs/017's T010).
-  - Story label: `[TEST]`/`[IMPL]` tasks in a user-story phase carry `[USn]`, or `[US1, US2]` for one pair serving several stories. Setup, Foundational and Polish phase tasks, untagged tasks and `[MANUAL]` tasks need no story label.
-  - `[P]` marks a parallelisable task.
+§T5 Task Format [BLOCKING]: every task entry is a markdown checkbox (`- [ ]` / `- [x]` / `- [X]`) immediately followed by a bare, unbracketed task ID (`T001`, not `[T001]`), per `.specify/templates/tasks-template.md` — `ch_3_test_auto.py` and `ch_4_implement_auto.py` scan for that checkbox to find outstanding work, so a task without it is silently skipped forever. Tags follow the ID, and this is the whole grammar:
+{task_tag_grammar(test_stage_enabled)}
+An unchecked out-of-repo task that lacks `[MANUAL]` IS a violation (ch_4_implement_auto.py only skips `[MANUAL]` tasks), and so is a repo-writing task tagged `[MANUAL]` (it would be skipped and its code never written, specs/017's T010). Never demand a type tag on an untagged or `[MANUAL]` task.
 The pre-computed task format analysis applies exactly this grammar: report a format violation ONLY for a line it lists as violating — never for a line it lists as well-formed, and never for a bullet or numbered item in a non-task section (dependencies, execution order, parallel opportunities, implementation strategy, notes); those are prose, not tasks. Numbered task lists also violate §T5. The `[MANUAL]`-vs-repo-work judgement above is yours to make from each task's description.
 §T7 Dependency Validity [BLOCKING]: all dep references resolve to real task IDs within tasks.md; no cycles; [P] tasks have no unresolved deps
 §T10 Phase Checkpoints [WARNING — never BLOCKING]: a checkpoint line is missing or not runnable — severity MUST be WARNING; if a checkpoint is present in any form at or after the phase tasks do NOT include this rule in violations at all"""

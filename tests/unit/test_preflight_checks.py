@@ -255,3 +255,57 @@ class TestTagViolations(unittest.TestCase):
     def test_test_stage_skips_manual_test_tasks(self):
         tasks = "- [ ] T036 [TEST] [MANUAL] Run the live evaluation\n- [x] T002 [TEST] Write test\n"
         self.assertEqual(pc.unchecked_task_lines(tasks, tag="[TEST]", exclude_tag="[MANUAL]"), [])
+
+
+class TestTaskTagGrammarCopies(unittest.TestCase):
+    """Five hand-written versions of the tag rules drifted apart and the tasks
+    critic flapped between them; every copy must be the grammar verbatim."""
+
+    def test_skills_and_template_carry_the_grammar_verbatim(self):
+        root = Path(__file__).parent.parent.parent
+        for rel in (
+            ".claude/skills/ch-2-tasks-critic/SKILL.md",
+            ".claude/skills/speckit-tasks/SKILL.md",
+            ".specify/templates/tasks-template.md",
+        ):
+            with self.subTest(rel):
+                self.assertIn(pc.task_tag_grammar(), (root / rel).read_text(encoding="utf-8"))
+
+
+class TestDiscardAcceptedFormatFindings(unittest.TestCase):
+    TASKS = (
+        "## Phase 3: User Story 1 (P1)\n"
+        "- [ ] T002 [TEST] [US1] Write failing test\n"
+        "- [ ] T003 [IMPL] Implement it (depends on T002)\n"
+        "## Phase 4: Polish\n"
+        "- [ ] T008 [MANUAL] Deploy to dev and run the live checks\n"
+        "- [ ] T009 Write the CI workflow env passthrough\n"
+    )
+
+    @staticmethod
+    def _finding(location, finding, rule="§T5 — Task Format"):
+        return {"rule": rule, "severity": "BLOCKING", "location": location, "finding": finding}
+
+    def test_drops_format_demands_on_accepted_lines_and_passes_the_result(self):
+        """072: the critic demanded [TEST]/[IMPL] on a correct [MANUAL] task."""
+        result = {
+            "status": "FAIL",
+            "violations": [self._finding("T008", "T008 uses [MANUAL] instead of [TEST] or [IMPL]")],
+        }
+        dropped = pc.discard_accepted_format_findings(result, self.TASKS)
+        self.assertEqual(len(dropped), 1)
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["violations"], [])
+
+    def test_keeps_manual_judgements_rejected_lines_and_other_rules(self):
+        kept = [
+            self._finding("T009", "T009 writes repo files so must not be tagged [MANUAL]"),
+            self._finding("T009", "T009 is a deploy step missing a [MANUAL] tag"),
+            self._finding("T003", "T003 is missing its [USX] story label"),
+            self._finding("T003", "T003 has no paired test", rule="§T3 — Pairing"),
+            self._finding("Phase 4", "Numbered list instead of tasks"),
+        ]
+        result = {"status": "FAIL", "violations": list(kept)}
+        self.assertEqual(pc.discard_accepted_format_findings(result, self.TASKS), [])
+        self.assertEqual(result["violations"], kept)
+        self.assertEqual(result["status"], "FAIL")
