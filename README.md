@@ -666,10 +666,16 @@ For the commit at HEAD, `ch_6_validate_auto.py`:
    (`browser_run_code_unsafe`) is denied, it starts in the run directory with `--ignore-roots`
    so its file tools (e.g. uploads) can't reach the checkout, and it gets only the environment
    npx and Chromium need, none of the harness's AWS, GitHub or database credentials.
+   Before any scenario, the agent checks the preview is fit to validate on: the app loads for the
+   test account, no request is blocked by the origin allow-list, and seeded data shows. If not, it
+   writes only a `setup_problem` and stops, and the stage escalates "Validation Environment Not
+   Ready" instead of reporting every scenario BLOCKED for the same reason. A re-run checks again.
 6. Checks the report: every scenario covered once, a recording on disk for every PASS/FAIL (its
    own `<id>.webm`, or the shared video its `recording` field names), and a recording and
    description for every setup step. An incomplete report gets one retry; still incomplete escalates.
-7. Posts the report as a PR comment (once per commit). Any FAIL/BLOCKED writes
+7. If the project sets `probe_commands` and scenarios are BLOCKED, runs the operator phase (see
+   § Probe commands) to settle the ones a browser can't see.
+8. Posts the report as a PR comment (once per commit). Any FAIL/BLOCKED writes
    `specs/NNN-feature/ch-6-validate-escalation.md` and exits non-zero.
 
 The stage is **report-only**: it never fixes code, never commits, and never merges. Everything it
@@ -709,6 +715,9 @@ report and, unless a `lock_command` is set, the cached deploy URL; `auth_command
 | `playwright_mcp_version` | no | Pins `@playwright/mcp`. |
 | `max_turns` | no (300) | Turn budget for the validation agent. |
 | `agent_notes` | no | Project-specific guidance added to the agent's instructions, e.g. limits on actions that cost money, or scenarios that can't run in a plain browser and should be `BLOCKED`. |
+| `fixtures_dir` | no | Directory, relative to the feature's spec dir, that `seed_command` reads fixtures from. When set, the stage refuses to start (before pushing or deploying) unless it holds at least one file; a feature that needs no fixtures adds a `NONE` file saying why. |
+| `probe_commands` | no | Named commands the operator agent may run, as `{"<name>": {"command": "...", "description": "..."}}`. See § Probe commands. |
+| `probe_max_turns` | no (150) | Turn budget for the operator agent. |
 
 Every command runs from the project root with `VALIDATION_FEATURE`, `VALIDATION_SHA`,
 `VALIDATION_BRANCH`, `VALIDATION_PR_NUMBER`, `VALIDATION_SPEC_DIR` and `VALIDATION_RUN_DIR`
@@ -751,6 +760,46 @@ project's choice — an S3 object, a DynamoDB item, a git ref — as long as:
 
 Under a lock the cached deploy URL is never reused, since the environment may hold another
 branch's deploy by the time a run resumes.
+
+### Probe commands
+
+Many scenarios have outcomes no browser can see: a database row, a log line, a queue message, an
+alarm. Without help the validation agent marks them BLOCKED and a human checks them afterwards.
+`probe_commands` lets an operator agent check them instead:
+
+```json
+"probe_commands": {
+  "query": {
+    "command": "pnpm --filter validation run query",
+    "description": "Read-only SQL against the test account's data. Args: one SQL statement."
+  },
+  "logs": {
+    "command": "pnpm --filter validation run logs",
+    "description": "Log lines for a function. Args: function name, minutes back."
+  }
+}
+```
+
+After the browser agent's report checks out, the operator agent gets the BLOCKED entries, the
+spec, the seeded data and each probe's `description`. It has no browser and no shell, and can only
+read and write in the run directory. Its one tool, `run_probe(name, args)`, runs the named
+`command` with the agent's arguments appended, each shell-quoted, with the same environment as the
+other commands plus `VALIDATION_BASE_URL` and a 2-minute limit. The harness saves each run's
+command line, exit status and output as `probe-<n>.txt`. A probe-based PASS or FAIL must name
+`"method": "probe"` and cite at least one of those transcripts. The harness keeps only rewrites of
+BLOCKED entries that pass that check, so the agent can't change a browser verdict.
+
+The commands are the safety boundary, so write them for it:
+
+- **Read-only unless the description says otherwise.** Use a read-only database role or a
+  read-only transaction, not just a prompt rule. A command that does write (e.g. delivering a
+  fixture email) should say so and be scoped to the test account.
+- **Scoped to the test account.** The agent chooses the arguments, so a query command should
+  confine itself to the test account's data rather than trust the SQL it's given.
+- **No secrets in the output.** The agent reads it, and it's saved under the run directory.
+
+A project whose governance says the validation agent "only drives a browser" needs to amend that
+before configuring probes.
 
 ### Project prerequisites
 

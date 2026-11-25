@@ -107,6 +107,20 @@ class TestPreflight(_ProjectCase):
         self._config({"stages": {"docs": {"enabled": False}}, "validation": CONFIG})
         self._preflight()
 
+    def test_fixtures_dir_must_hold_this_features_fixtures(self):
+        """051 and 072 deployed with no fixtures and came back almost all BLOCKED."""
+        self._config({"validation": {**CONFIG, "fixtures_dir": "validation-fixtures"}})
+        with self.assertRaises(SystemExit):
+            self._preflight()
+        (self.spec_dir / "validation-fixtures").mkdir()
+        (self.spec_dir / "validation-fixtures" / "NONE").write_text("No email in this feature.\n")
+        self._preflight()
+
+    def test_probe_commands_need_a_command_and_description(self):
+        self._config({"validation": {**CONFIG, "probe_commands": {"query": {"command": "q"}}}})
+        with self.assertRaises(SystemExit):
+            self._preflight()
+
     def test_non_claude_generation_blocks(self):
         self._config(
             {
@@ -356,7 +370,7 @@ class TestAgentNotes(unittest.TestCase):
         self.assertNotIn("PROJECT NOTES", self._instructions(""))
 
 
-class TestRun(_ProjectCase):
+class _RunCase(_ProjectCase):
     """End-to-end through run() with every external effect mocked."""
 
     def _agent_writing(self, *reports):
@@ -367,7 +381,7 @@ class TestRun(_ProjectCase):
         async def agent(instructions, task, config, mcp, run_dir):
             calls.append(task)
             report = next(reports)
-            for entry in report["scenarios"]:
+            for entry in report.get("scenarios", []):
                 if entry.get("record"):
                     (run_dir / f"{entry['id']}.webm").write_bytes(b"x")
             (run_dir / "report.json").write_text(json.dumps(report))
@@ -401,6 +415,8 @@ class TestRun(_ProjectCase):
         self.deploy = deploy
         return exited, push, ensure_pr, comment
 
+
+class TestRun(_RunCase):
     def test_finished_report_is_posted_without_redeploying(self):
         run_dir = self.spec_dir / "validation" / SHA[:12]
         run_dir.mkdir(parents=True)
@@ -476,6 +492,117 @@ class TestRun(_ProjectCase):
         self.assertEqual(len(calls), 2)
         comment.assert_not_called()
         self.assertIn("Report Invalid", (self.spec_dir / va.ESCALATION_FILENAME).read_text())
+
+
+UNFIT = {"setup_problem": "requests to https://db.example are blocked"}
+
+
+class TestSetupProblem(_RunCase):
+    """098's first run: blocked origins turned 34 of 36 scenarios BLOCKED."""
+
+    def test_escalates_without_attempting_scenarios_or_posting(self):
+        agent, calls = self._agent_writing(UNFIT)
+        exited, _, _, comment = self._run(agent)
+        self.assertEqual(exited, 1)
+        self.assertEqual(len(calls), 1)
+        comment.assert_not_called()
+        escalation = (self.spec_dir / va.ESCALATION_FILENAME).read_text()
+        self.assertIn("Environment Not Ready", escalation)
+        self.assertIn("db.example are blocked", escalation)
+
+    def test_rerun_checks_the_environment_again(self):
+        self._run(self._agent_writing(UNFIT)[0])
+        passing = {
+            "scenarios": [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok", "record": 1}]
+        }
+        agent, calls = self._agent_writing(passing)
+        self.assertIsNone(self._run(agent)[0])
+        self.assertEqual(len(calls), 1)
+
+
+PROBES = {
+    **CONFIG,
+    "probe_commands": {"query": {"command": "echo", "description": "Read-only SQL."}},
+}
+BLOCKED_REPORT = {
+    "scenarios": [{"id": "US1-AS1", "verdict": "BLOCKED", "reason": "the row isn't visible"}]
+}
+
+
+class TestOperatorPhase(_RunCase):
+    def _operator(self, verdict, cite_transcript=True):
+        """A fake operator agent that runs a real probe and rewrites the entry."""
+        run_dir = self.spec_dir / "validation" / SHA[:12]
+        self.queries = []
+
+        async def stream(_query):
+            transcript, output = va.run_probe("echo", ["saved row 1"], dict(os.environ), run_dir)
+            self.queries.append(output)
+            entry = {
+                "id": "US1-AS1",
+                "verdict": verdict,
+                "method": "probe",
+                "observed": "the row is saved",
+                "evidence": [str(transcript)] if cite_transcript else [],
+            }
+            (run_dir / "report.json").write_text(json.dumps({"scenarios": [entry]}))
+
+        return patch.multiple(va, stream_query=stream, query=lambda **_: None)
+
+    def test_probe_verdict_settles_a_blocked_scenario(self):
+        with self._operator("PASS"):
+            exited, _, _, comment = self._run(self._agent_writing(BLOCKED_REPORT)[0], PROBES)
+        self.assertIsNone(exited)
+        self.assertIn("saved row 1", self.queries[0])
+        report = json.loads((self.spec_dir / "validation" / SHA[:12] / "report.json").read_text())
+        self.assertEqual(report["scenarios"][0]["verdict"], "PASS")
+        self.assertEqual(report["operator_phase"], "done")
+        self.assertIn("probe: ", comment.call_args[0][1])
+
+    def test_probe_verdict_without_a_transcript_is_discarded(self):
+        with self._operator("PASS", cite_transcript=False):
+            exited, *_ = self._run(self._agent_writing(BLOCKED_REPORT)[0], PROBES)
+        self.assertEqual(exited, 1)
+        self.assertIn("US1-AS1** BLOCKED", (self.spec_dir / va.ESCALATION_FILENAME).read_text())
+
+    def test_not_run_without_probe_commands(self):
+        with self._operator("PASS"):
+            exited, *_ = self._run(self._agent_writing(BLOCKED_REPORT)[0])
+        self.assertEqual(exited, 1)
+        self.assertEqual(self.queries, [])
+
+
+class TestMergeOperatorVerdicts(unittest.TestCase):
+    def test_only_blocked_entries_can_change(self):
+        scenarios = [va.vr.Scenario("US1-AS1", "a"), va.vr.Scenario("US1-AS2", "b")]
+        before = {
+            "scenarios": [
+                {"id": "US1-AS1", "verdict": "PASS", "observed": "seen"},
+                {"id": "US1-AS2", "verdict": "BLOCKED", "reason": "not visible"},
+            ]
+        }
+        after = {
+            "scenarios": [
+                {"id": "US1-AS1", "verdict": "FAIL", "method": "probe", "observed": "x"},
+                {"id": "US1-AS2", "verdict": "BLOCKED", "reason": "no probe shows it"},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as d, patch.object(va, "log"):
+            merged = va.merge_operator_verdicts(before, after, scenarios, Path(d))
+        self.assertEqual(merged["scenarios"][0], before["scenarios"][0])
+        self.assertEqual(merged["scenarios"][1]["reason"], "no probe shows it")
+
+
+class TestRunProbe(unittest.TestCase):
+    def test_args_are_quoted_and_the_transcript_is_numbered(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d)
+            first, _ = va.run_probe("echo", ["a; touch pwned"], dict(os.environ), run_dir)
+            second, output = va.run_probe("echo", ["b"], dict(os.environ), run_dir)
+            self.assertEqual((first.name, second.name), ("probe-1.txt", "probe-2.txt"))
+            self.assertIn("a; touch pwned", first.read_text())
+            self.assertFalse((run_dir / "pwned").exists())
+            self.assertTrue(output.startswith("exit 0"))
 
 
 class TestPrDescription(_ProjectCase):

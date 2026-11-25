@@ -28,8 +28,12 @@ What this stage does, for the commit at HEAD:
      create through a browser (e.g. an inbound email) and describes it.
   4. Has a Claude agent drive a recorded browser (Playwright MCP) through
      every acceptance scenario, success criterion, and quickstart section,
-     writing one verdict per scenario to report.json.
-  5. Checks that report deterministically, posts it as one PR comment, and
+     writing one verdict per scenario to report.json. It first checks the
+     preview is fit to validate on, and stops with a setup_problem if not.
+  5. When the project sets validation.probe_commands, has an operator agent
+     settle BLOCKED scenarios with those commands (its only tool), citing
+     the transcripts the harness saves for each probe.
+  6. Checks that report deterministically, posts it as one PR comment, and
      escalates any FAIL/BLOCKED scenario for a human.
 
 The stage is report-only: it never fixes code, never commits (everything it
@@ -47,7 +51,10 @@ Resume behaviour:
   To re-validate the same commit from scratch, delete its validation dir.
 """
 
+import asyncio
+import json
 import os
+import shlex
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -55,7 +62,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
-from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, query
+from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, create_sdk_mcp_server, query, tool
 
 from agent_common import github_pr, ollama, pipeline_status
 from agent_common import validation_report as vr
@@ -79,6 +86,10 @@ SEED_TIMEOUT_S = 15 * 60
 DEFAULT_LOCK_TIMEOUT_MINUTES = 120
 UNLOCK_TIMEOUT_S = 300
 DEFAULT_MAX_TURNS = 300
+DEFAULT_PROBE_MAX_TURNS = 150
+PROBE_TIMEOUT_S = 120
+PROBE_OUTPUT_LIMIT = 20_000
+PROBE_TOOL = "mcp__probes__run_probe"
 DESCRIPTION_MAX_TURNS = 10
 DOCS_DIFF_LIMIT = 60_000
 log = make_logger(AGENT_NAME)
@@ -96,11 +107,8 @@ def preflight(spec_dir: Path) -> dict:
         _fail(
             '.specify/pipeline.json has no "validation" block — see README § Deployed Validation.'
         )
-    missing = [k for k in ("deploy_command", "auth_command") if not config.get(k)]
-    if missing:
-        _fail(f"validation config is missing: {', '.join(missing)}.")
-    if bool(config.get("lock_command")) != bool(config.get("unlock_command")):
-        _fail("validation config must set lock_command and unlock_command together.")
+    if problem := _config_problem(config, spec_dir):
+        _fail(problem)
     if not stage_is_complete(spec_dir, "ch-4-implement"):
         _fail("ch-4-implement has not completed for this feature. Run it first.")
     if ollama.is_stage_enabled("docs") and not stage_is_complete(spec_dir, "ch-5-docs"):
@@ -121,6 +129,36 @@ def preflight(spec_dir: Path) -> dict:
     if not github_pr.gh_authenticated():
         _fail("gh is not authenticated. Run `gh auth login` and re-run.")
     return config
+
+
+def _config_problem(config: dict, spec_dir: Path) -> str | None:
+    if missing := [k for k in ("deploy_command", "auth_command") if not config.get(k)]:
+        return f"validation config is missing: {', '.join(missing)}."
+    if bool(config.get("lock_command")) != bool(config.get("unlock_command")):
+        return "validation config must set lock_command and unlock_command together."
+    commands = config.get("probe_commands")
+    if commands is not None and (
+        not isinstance(commands, dict)
+        or not all(
+            isinstance(c, dict) and c.get("command") and c.get("description")
+            for c in commands.values()
+        )
+    ):
+        return (
+            'validation.probe_commands must map each probe name to {"command": ..., '
+            '"description": ...}.'
+        )
+    if (fixtures := config.get("fixtures_dir")) and not _has_files(spec_dir / fixtures):
+        # 051 and 072 deployed and ran with no fixtures; nearly every scenario came back BLOCKED.
+        return (
+            f"{spec_dir / fixtures} is missing or empty. Add this feature's validation fixtures "
+            "there, or a NONE file saying why it needs none."
+        )
+    return None
+
+
+def _has_files(path: Path) -> bool:
+    return path.is_dir() and any(path.iterdir())
 
 
 def _git(*args: str) -> str:
@@ -529,6 +567,13 @@ The browser already holds a logged-in session for a test account.
 --- SCENARIOS YOU MUST REPORT ON (exactly these ids, each exactly once) ---
 {scenario_list}
 
+First, check the preview is fit to validate on: open {base_url} and confirm the app loads
+for the logged-in account, `browser_console_messages` and `browser_network_requests` show no
+requests failing because their origin is outside the allow-list, and any data seeded for this
+run (above) shows where the app displays it. If it isn't fit, every scenario would be BLOCKED
+for the same reason, so attempt none: write `{run_path}/report.json` as
+{{"setup_problem": "<what is wrong, quoting the errors or blocked origins you saw>"}} and stop.
+
 A human watches your recordings to decide whether to trust your verdicts, so every video
 must show something they need to see, and nothing they have already seen:
 
@@ -618,6 +663,8 @@ def checked_report(
     report, error = vr.load_report(report_path)
     if report is None:
         return None, [error]
+    if problem := vr.setup_problem(report):
+        return report, [f"setup problem: {problem}"]
     return report, vr.check_report(report, scenarios, run_dir)
 
 
@@ -680,6 +727,9 @@ async def produce_report(
     with one retry for an incomplete report."""
     report_path = run_dir / "report.json"
     report, problems = checked_report(report_path, scenarios, run_dir)
+    if report is not None and vr.setup_problem(report):
+        report_path.unlink()
+        report, problems = None, []
     pipeline_status.step("preparing browser")
     ensure_browser(config)
     pipeline_status.step("logging in")
@@ -702,6 +752,7 @@ async def produce_report(
         task = f"Validate feature {feature} on {base_url}."
         await run_validation_agent(instructions, task, config, mcp, run_dir)
         report, problems = checked_report(report_path, scenarios, run_dir)
+        _escalate_setup_problem(spec_dir, feature, sha, base_url, report)
     if problems:
         log(f"Report incomplete ({len(problems)} problem(s)); asking the agent to finish it.")
         pipeline_status.step("completing report")
@@ -721,7 +772,209 @@ async def produce_report(
             "The validation agent's report is still incomplete after one retry, so it "
             "can't be used as evidence:\n\n" + "\n".join(f"- {p}" for p in problems),
         )
+    if operator_pending(config, report):
+        probe_env = {**env, "VALIDATION_BASE_URL": base_url}
+        report = await run_operator_phase(
+            config, probe_env, spec, seeded, scenarios, run_dir, report
+        )
     return report
+
+
+def _escalate_setup_problem(
+    spec_dir: Path, feature: str, sha: str, base_url: str, report: dict | None
+) -> None:
+    if report is None or not (problem := vr.setup_problem(report)):
+        return
+    escalate(
+        spec_dir,
+        feature,
+        sha,
+        "Validation Environment Not Ready",
+        f"The validation agent checked {base_url} before any scenario and stopped:\n\n"
+        f"> {problem}\n\nFix the environment or the validation config (e.g. "
+        "`allowed_origins`, `seed_command`, fixtures), then re-run; this commit's run "
+        "starts again from the browser check.",
+    )
+
+
+def operator_pending(config: dict, report: dict) -> bool:
+    return bool(
+        config.get("probe_commands")
+        and report.get("operator_phase") != "done"
+        and vr.blocked(report)
+    )
+
+
+def _next_transcript(run_dir: Path) -> Path:
+    taken = {p.name for p in run_dir.glob(vr.PROBE_TRANSCRIPT_GLOB)}
+    n = len(taken) + 1
+    while f"probe-{n}.txt" in taken:
+        n += 1
+    return run_dir.resolve() / f"probe-{n}.txt"
+
+
+def run_probe(command: str, args: list[str], env: dict, run_dir: Path) -> tuple[Path, str]:
+    """Run one project probe with the agent's arguments, each shell-quoted, and
+    save the transcript the agent must cite: its only evidence is what the
+    harness itself recorded, not the agent's account of it."""
+    line = " ".join([command, *(shlex.quote(a) for a in args)])
+    try:
+        result = subprocess.run(  # noqa: S602 — a project-authored command; args are quoted
+            line,
+            shell=True,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_S,
+        )
+        status, output = f"exit {result.returncode}", result.stdout + result.stderr
+    except subprocess.TimeoutExpired:
+        status, output = f"timed out after {PROBE_TIMEOUT_S}s", ""
+    transcript = _next_transcript(run_dir)
+    write_file(transcript, f"$ {line}\n{status}\n{output}")
+    return transcript, f"{status}\n{output[:PROBE_OUTPUT_LIMIT]}"
+
+
+def probe_server(commands: dict, env: dict, run_dir: Path) -> dict:
+    @tool(
+        "run_probe",
+        "Run one of the project's probe commands with the given arguments. Returns its exit "
+        "status and output, and the path of the transcript to cite as evidence.",
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "enum": list(commands)},
+                "args": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["name"],
+        },
+    )
+    async def probe(params: dict) -> dict:
+        name = params.get("name")
+        if name not in commands:
+            return {
+                "content": [{"type": "text", "text": f"No probe named {name!r}."}],
+                "is_error": True,
+            }
+        args = [str(a) for a in params.get("args") or []]
+        transcript, output = await asyncio.to_thread(
+            run_probe, commands[name]["command"], args, env, run_dir
+        )
+        log(f"Probe {name} {' '.join(args)[:120]} → {transcript.name}")
+        return {"content": [{"type": "text", "text": f"Transcript: {transcript}\n{output}"}]}
+
+    return create_sdk_mcp_server("probes", tools=[probe])
+
+
+def operator_instructions(
+    commands: dict, blocked_entries: list[dict], spec: str, seeded: str, run_dir: Path, notes: str
+) -> str:
+    run_path = run_dir.resolve()
+    probes = "\n".join(f"- {name}: {c['description']}" for name, c in commands.items())
+    entries = json.dumps(blocked_entries, indent=2)
+    project_notes = f"--- PROJECT NOTES ---\n{notes.strip()}\n\n" if notes.strip() else ""
+    seeded_data = (
+        f"--- DATA SEEDED FOR THIS RUN ---\n{seeded.strip()}\n\n" if seeded.strip() else ""
+    )
+    return f"""You are the Operator Agent for a spec-kit project. A browser agent has validated a
+feature on a deployed preview, and the scenarios below came back BLOCKED: their outcome isn't
+visible in a browser (a database row, a log line, a queue, an alarm). You check them the way an
+operator would, with the project's probe commands. You have no browser and no shell: your only
+way to look at the system is the `run_probe` tool.
+
+--- PROBE COMMANDS ---
+{probes}
+
+--- SPEC ---
+{spec}
+
+{seeded_data}--- BLOCKED SCENARIOS (their entries in {run_path}/report.json) ---
+{entries}
+
+For each blocked scenario:
+- If probes can show its expected outcome, run them and decide. PASS only when the probe output
+  itself shows every expected outcome; FAIL when it contradicts one. Rewrite the entry with
+  "verdict", "method": "probe", "steps" (the probes you ran and why), "observed" (what their
+  output showed), and "evidence" (the transcript path `run_probe` returned for each probe).
+- Otherwise leave it BLOCKED, updating "reason" if you learned more.
+Edit only these entries in report.json; leave every other entry, and "setup", unchanged.
+
+{project_notes}Rules:
+- Probes are for looking. Never use one to create, change or delete data unless its description
+  says that is what it does, and then only for the test account and data this run created.
+- Never report PASS for something the probe output doesn't show. An honest BLOCKED is useful;
+  a wrong PASS hides a bug from the human reviewer.
+- You do not fix anything. You only read and write files under {run_path}.
+{HUMAN_REVIEW_ATTESTATION_GUARDRAIL}
+"""
+
+
+async def run_operator_phase(
+    config: dict,
+    env: dict,
+    spec: str,
+    seeded: str,
+    scenarios: list[vr.Scenario],
+    run_dir: Path,
+    report: dict,
+) -> dict:
+    """Let the operator agent settle BLOCKED scenarios with the project's probe
+    commands. Only its PASS/FAIL/BLOCKED rewrites of BLOCKED entries that pass
+    the report checks are kept; everything else stays as the browser agent left it."""
+    pipeline_status.step("probing")
+    targets = vr.blocked(report)
+    log(f"Operator phase: {len(targets)} blocked scenario(s) to check with probes.")
+    commands = config["probe_commands"]
+    options = ClaudeAgentOptions(
+        system_prompt=_system_prompt_file(
+            run_dir,
+            "operator-prompt.md",
+            operator_instructions(
+                commands, targets, spec, seeded, run_dir, config.get("agent_notes", "")
+            ),
+        ),
+        tools=["Read", "Write"],
+        allowed_tools=["Read", "Write", PROBE_TOOL],
+        mcp_servers={"probes": probe_server(commands, env, run_dir)},
+        setting_sources=[],
+        model=ollama.load_claude_generation_model("validate"),
+        max_turns=config.get("probe_max_turns", DEFAULT_PROBE_MAX_TURNS),
+        hooks={
+            "PreToolUse": [HookMatcher(matcher="Read|Write", hooks=[_run_dir_scope_hook(run_dir)])]
+        },
+    )
+    await stream_query(query(prompt="Check the blocked scenarios with probes.", options=options))
+    rewritten, _ = vr.load_report(run_dir / "report.json")
+    report = merge_operator_verdicts(report, rewritten, scenarios, run_dir)
+    write_file(run_dir / "report.json", json.dumps(report, indent=2) + "\n")
+    return report
+
+
+def merge_operator_verdicts(
+    before: dict, after: dict | None, scenarios: list[vr.Scenario], run_dir: Path
+) -> dict:
+    by_id = {s.id: s for s in scenarios}
+    rewritten = {
+        e.get("id"): e
+        for e in (after or {}).get("scenarios", [])
+        if isinstance(e, dict) and e.get("id") in by_id
+    }
+    merged, settled = [], 0
+    for entry in before["scenarios"]:
+        candidate = rewritten.get(entry["id"])
+        if (
+            entry["verdict"] == vr.BLOCKED
+            and candidate is not None
+            and candidate.get("verdict") in (vr.PASS, vr.FAIL, vr.BLOCKED)
+            and (candidate["verdict"] == vr.BLOCKED or candidate.get("method") == vr.PROBE_METHOD)
+            and not vr.entry_problems(candidate, by_id[entry["id"]], run_dir)
+        ):
+            settled += candidate["verdict"] != vr.BLOCKED
+            merged.append(candidate)
+        else:
+            merged.append(entry)
+    log(f"Operator phase settled {settled} of {len(vr.blocked(before))} blocked scenario(s).")
+    return {**before, "scenarios": merged, "operator_phase": "done"}
 
 
 def verdict_counts(report: dict) -> str:
@@ -765,7 +1018,7 @@ async def run(feature: str):
     log(f"{len(scenarios)} scenario(s) to validate: {', '.join(s.id for s in scenarios)}")
 
     pr = await open_pr(spec, feature, branch, spec_dir, run_dir)
-    if report := finished_report(run_dir, scenarios):
+    if (report := finished_report(run_dir, scenarios)) and not operator_pending(config, report):
         base_url = (run_dir / "base-url").read_text(encoding="utf-8").strip()
     else:
         env = hook_env(feature, sha, branch, pr["number"], spec_dir, run_dir)
