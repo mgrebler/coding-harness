@@ -27,6 +27,7 @@ import subprocess
 from pathlib import Path
 
 from agent_common.git import resolve_base_ref
+from agent_common.project_conventions import looks_like_test_file
 
 # A compliant task line is a markdown checkbox (`- [ ]`, `- [x]`, or `- [X]`)
 # immediately followed by a bare, unbracketed task ID (`T001`, not `[T001]`).
@@ -539,3 +540,97 @@ def oversized_committed_files(
         if size > max_bytes:
             oversized.append((name, size))
     return oversized
+
+
+# A test case's declaration or one of its assertions (JS/TS and Python). Setup
+# lines (mocks, fixtures, helpers) don't match: the implementation stage may
+# change those, but never a test case.
+_TEST_CASE_LINE_RE = re.compile(
+    r"(?<![.\w])(?:it|test|describe)(?:\.\w+)*\s*\(|\bexpect\s*\(|^\s*def test_\w+|^\s*assert\b"
+)
+_TEST_PHASE_SUBJECT_RE = re.compile(r"^test(\(.*\))?:")
+
+
+def _git_out(*args: str) -> str:
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
+
+
+def _test_case_lines(diff: str, existing: set[str]) -> dict[str, list[str]]:
+    edits: dict[str, list[str]] = {}
+    path = None
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            path = line.split(" b/", 1)[-1]
+        elif line.startswith(("---", "+++")) or not line.startswith(("-", "+")):
+            continue
+        elif path in existing and _TEST_CASE_LINE_RE.search(line[1:]):
+            edits.setdefault(path, []).append(line[:160])
+    return edits
+
+
+def test_case_edits(base: str) -> dict[str, list[str]]:
+    """Test-case lines added or removed, in test files that already existed at
+    `base`, by any commit since `base` that isn't a test-phase commit (subject
+    `test: ...`), or by uncommitted changes. A feature that changes behaviour an
+    existing test pins needs that test updated in the test phase; the
+    implementation stage editing it breaks the constitution's TDD rule, and the
+    implement critic then failed three iterations on it with no way out (043,
+    057, 060, 066)."""
+    existing = {
+        p
+        for p in _git_out("ls-tree", "-r", "--name-only", base).splitlines()
+        if looks_like_test_file(p)
+    }
+    if not existing:
+        return {}
+    edits: dict[str, list[str]] = {}
+    for entry in _git_out("log", "--format=%H %s", f"{base}..HEAD").splitlines():
+        sha, _, subject = entry.partition(" ")
+        if _TEST_PHASE_SUBJECT_RE.match(subject):
+            continue
+        for path, lines in _test_case_lines(
+            _git_out("show", "-U0", "--format=", sha), existing
+        ).items():
+            edits.setdefault(path, []).extend(lines)
+    for path, lines in _test_case_lines(_git_out("diff", "-U0", "HEAD"), existing).items():
+        edits.setdefault(path, []).extend(lines)
+    return edits
+
+
+# Failures of the machine CI runs on, not of the code: a database that isn't
+# up, a full disk. 10 of the 16 features whose ch-4 CI failed matched one, and
+# each went to the code-fix agent anyway. Narrower than _INFRA_FAILURE_PATTERNS:
+# a CI run's ENOTFOUND or timeout is as often the code's fault.
+_CI_ENVIRONMENT_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"ECONNREFUSED",
+        r"connection refused",
+        r"could not connect to (?:server|database)",
+        r"ENOSPC",
+        r"no space left on device",
+    )
+]
+
+
+def ci_environment_failure(output: str) -> str | None:
+    """The first output line showing the CI environment, not the code, failed."""
+    for line in output.splitlines():
+        if any(p.search(line) for p in _CI_ENVIRONMENT_PATTERNS):
+            return line.strip()[:200]
+    return None
+
+
+# Vitest's line for a file whose every test was skipped, optionally with a
+# workspace project label: `↓ |api| tests/db/x.test.ts (4 tests | 4 skipped)`.
+_WHOLLY_SKIPPED_FILE_RE = re.compile(
+    r"↓\s+(?:\|[^|]*\|\s+)?(\S+)\s+\((\d+) tests?\s*\|\s*\2 skipped\)"
+)
+
+
+def wholly_skipped_test_files(output: str) -> list[str]:
+    """Test files a passing run skipped entirely — almost always a suite gated
+    on a service or variable the run lacked. 045's ch-4 CI skipped 310
+    Postgres-backed tests for want of DATABASE_URL and reported PASS while one
+    of them was failing."""
+    return sorted({m.group(1) for m in _WHOLLY_SKIPPED_FILE_RE.finditer(output)})

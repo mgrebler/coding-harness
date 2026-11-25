@@ -387,6 +387,17 @@ def stage_dirty_baseline(
     return baseline
 
 
+def stage_start_commit(spec_dir: Path, stage: str, head: Callable[[], str]) -> str:
+    """HEAD when the stage first started, recorded once and reused on every
+    resume, so the stage can tell its own commits from earlier stages'."""
+    path = spec_dir / f"{stage}-start-commit"
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    commit = head()
+    path.write_text(commit + "\n", encoding="utf-8")
+    return commit
+
+
 def clear_stage_complete(spec_dir: Path, stage: str) -> None:
     (spec_dir / f"{stage}-auto-complete").unlink(missing_ok=True)
 

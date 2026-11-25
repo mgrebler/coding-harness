@@ -32,16 +32,20 @@ Resume behaviour:
 
 import functools
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
+from fnmatch import fnmatch
 from pathlib import Path
+from typing import NamedTuple
 
 from ch_4_implement_critic import build_implement_critic_prompt
 from ch_4_implement_quality_critic import build_quality_review_prompt
 from claude_agent_sdk import AgentDefinition
 
 from agent_common import git, local_agent_loop, ollama, pipeline_status
-from agent_common.console import make_logger, setup_log_file
+from agent_common.console import HUMAN_ACTION_EXIT_CODE, make_logger, setup_log_file
 from agent_common.critic_loop import (
     claude_gate,
     confirm_review_existing,
@@ -55,7 +59,13 @@ from agent_common.driving_agent import (
 )
 from agent_common.files import CONSTITUTION_PATH, read_file, read_memory, require_spec_files
 from agent_common.followup import record_non_blocking_concerns
-from agent_common.preflight_checks import oversized_committed_files, unchecked_task_lines
+from agent_common.preflight_checks import (
+    ci_environment_failure,
+    oversized_committed_files,
+    test_case_edits,
+    unchecked_task_lines,
+    wholly_skipped_test_files,
+)
 from agent_common.project_conventions import is_slow_check, resolve_ci_commands
 from agent_common.resume_state import (
     apply_escalation_review,
@@ -65,9 +75,14 @@ from agent_common.resume_state import (
     read_result,
     stage_dirty_baseline,
     stage_is_complete,
+    stage_start_commit,
 )
 
 AGENT_NAME = "ch-4-implement-auto"
+TEST_UPDATES_FILENAME = "test-updates-needed.md"
+# Below this, a CI run fails on the disk, not the code (three features ran out
+# of /tmp to leftover cdk.out directories).
+MIN_FREE_DISK_BYTES = 2 * 1024**3
 CRITIC_RESULT_PREFIX = "ch-4-implement-critic-result"
 QUALITY_RESULT_PREFIX = "ch-4-implement-code-quality-review-result"
 log = make_logger(AGENT_NAME)
@@ -124,6 +139,14 @@ def impl_agent_definition(
             "3. Run this project's typecheck/build command to confirm it's sound"
         )
     )
+    test_updates_rule = (
+        "\nIf an existing test fails because this feature deliberately changes the behaviour it "
+        "asserts, leave it failing: add `- <test file>: <test name>: <what the spec changed>` "
+        f"to {TEST_UPDATES_FILENAME} in the feature's specs/ directory and carry on. The test "
+        "phase owns that change."
+        if test_stage_enabled
+        else ""
+    )
     tests_intro = (
         "Tests have already been written and confirmed failing by the test phase."
         if test_stage_enabled
@@ -138,7 +161,7 @@ def impl_agent_definition(
 Your sole function is to implement all unchecked [IMPL] tasks (marked - [ ] and containing [IMPL]) in tasks.md, in order.
 Also process any unchecked tasks with no [TEST]/[IMPL] label (infrastructure/setup tasks).
 
-DO NOT write new test files. DO NOT modify existing test files.
+DO NOT write new test files. DO NOT modify existing test files.{test_updates_rule}
 
 For each [IMPL] task:
 {load_test_artifact_step}
@@ -317,9 +340,18 @@ def _tail(output: str) -> str:
     return f"[... {len(output) - len(tail)} earlier characters omitted ...]\n{tail}"
 
 
-def _run_commands(commands: list[tuple[str, list[str]]]) -> tuple[bool, str]:
+class CiRun(NamedTuple):
+    passed: bool
+    failures: str
+    environment_failure: str | None = None
+    skipped_files: tuple[str, ...] = ()
+
+
+def _run_commands(commands: list[tuple[str, list[str]]]) -> CiRun:
     all_passed = True
     failures: list[str] = []
+    environment_failure = None
+    skipped: set[str] = set()
     for label, cmd in commands:
         log(f"CI: running {label}...")
         # A command parsed from a single constitution.md/README.md bullet (e.g.
@@ -333,6 +365,8 @@ def _run_commands(commands: list[tuple[str, list[str]]]) -> tuple[bool, str]:
         # again instead of an operator — exactly the bug being fixed here.
         run_target = " ".join(cmd) if needs_shell else cmd
         result = subprocess.run(run_target, shell=needs_shell, capture_output=True, text=True)
+        output = f"{result.stdout}\n{result.stderr}"
+        skipped.update(wholly_skipped_test_files(output))
         if result.returncode == 0:
             log(f"CI: {label} — PASSED")
         else:
@@ -345,7 +379,73 @@ def _run_commands(commands: list[tuple[str, list[str]]]) -> tuple[bool, str]:
                     section.append(tail)
             failures.append("\n".join(section))
             all_passed = False
-    return all_passed, "\n\n".join(failures)
+            environment_failure = environment_failure or ci_environment_failure(output)
+    return CiRun(all_passed, "\n\n".join(failures), environment_failure, tuple(sorted(skipped)))
+
+
+def _wait_for_human(*lines: str) -> None:
+    for line in lines:
+        log(line)
+    sys.exit(HUMAN_ACTION_EXIT_CODE)
+
+
+def _stop_on_ci_environment(run: CiRun) -> None:
+    if run.environment_failure:
+        _wait_for_human(
+            "WAITING: CI failed on its environment, not the code, so no fix agent was run:",
+            f"  {run.environment_failure}",
+            "Start the missing service or free the disk, then re-run this script.",
+        )
+
+
+def _stop_on_low_disk() -> None:
+    for path in {Path.cwd(), Path(tempfile.gettempdir())}:
+        free = shutil.disk_usage(path).free
+        if free < MIN_FREE_DISK_BYTES:
+            _wait_for_human(
+                f"WAITING: only {free / 1024**3:.1f} GB free under {path}, too little to run CI. "
+                "Remove leftover build output (e.g. old cdk.out directories in /tmp), then "
+                "re-run this script."
+            )
+
+
+def _stop_on_skipped_suites(skipped_files: tuple[str, ...]) -> None:
+    allowed = ollama.load_allowed_skipped_tests()
+    unexpected = [f for f in skipped_files if not any(fnmatch(f, p) for p in allowed)]
+    if unexpected:
+        _wait_for_human(
+            f"WAITING: CI passed but skipped every test in {len(unexpected)} file(s), so they "
+            "were never run:",
+            *(f"  {f}" for f in unexpected),
+            "Usually the run lacked a service or variable the suite needs (e.g. DATABASE_URL). "
+            "Provide it where this stage runs and re-run, or list the files in "
+            ".specify/pipeline.json ci.allow_skipped if skipping them is intended.",
+        )
+
+
+def _stop_on_test_updates(spec_dir: Path, base: str) -> None:
+    """Stop when the implementation stage needed an existing test changed: it
+    noted one in TEST_UPDATES_FILENAME, or edited a test case itself."""
+    if not ollama.is_stage_enabled("test"):
+        return
+    notes = (
+        read_file(spec_dir / TEST_UPDATES_FILENAME)
+        if (spec_dir / TEST_UPDATES_FILENAME).exists()
+        else ""
+    )
+    edits = test_case_edits(base)
+    if not notes.strip() and not edits:
+        return
+    _wait_for_human(
+        "WAITING: this feature changes behaviour that existing tests assert, and the test "
+        "phase didn't update them. The implementation stage may not change a test case.",
+        *(f"  {line}" for line in notes.splitlines() if line.strip()),
+        *(f"  {path} (edited during implementation): {lines[0]}" for path, lines in edits.items()),
+        "To resolve: add a [TEST] task per affected test file to tasks.md; make each update as a "
+        "test-phase commit (subject `test: ...`) with its red output in test-results/, reverting "
+        f"any implementation-phase edits to those tests; delete {spec_dir / TEST_UPDATES_FILENAME}; "
+        "then re-run this script.",
+    )
 
 
 def _check_commit_hygiene() -> None:
@@ -481,20 +581,24 @@ async def _ci_gate(
 
     log(f"Running {scope}...")
     pipeline_status.step(scope)
-    passed, failure_summary = _run_commands(commands)
-    if not passed:
+    _stop_on_low_disk()
+    run = _run_commands(commands)
+    _stop_on_ci_environment(run)
+    if not run.passed:
         log(f"{scope} failed — running CI fix agent (one attempt)...")
         pipeline_status.step(f"fixing {scope}")
         tasks = read_file(spec_dir / "tasks.md")
-        await _run_ci_fix_agent(feature, constitution, spec, plan, tasks, failure_summary)
+        await _run_ci_fix_agent(feature, constitution, spec, plan, tasks, run.failures)
 
         log(f"Re-running {scope} after fix attempt...")
         pipeline_status.step(f"re-running {scope}")
-        passed, failure_summary = _run_commands(commands)
-        if not passed:
+        run = _run_commands(commands)
+        _stop_on_ci_environment(run)
+        if not run.passed:
             log(f"FAIL: {scope} still failing after fix attempt. Human review required.")
-            log(f"Remaining failures:\n{failure_summary}")
+            log(f"Remaining failures:\n{run.failures}")
             sys.exit(1)
+    _stop_on_skipped_suites(run.skipped_files)
     log(f"{scope} passed.")
     return "All CI checks passed"
 
@@ -507,10 +611,12 @@ async def _finish_with_full_ci(
     plan: str,
     quality_result: dict,
     baseline_dirty: list[str],
+    base: str,
 ) -> None:
     """Record the passing quality review's follow-ups, run full CI, and finish
     the stage — the shared tail of a fresh both-gates PASS and a resumed one."""
     outcome = await _ci_gate(feature, spec_dir, constitution, spec, plan, include_slow=True)
+    _stop_on_test_updates(spec_dir, base)
     _check_commit_hygiene()
     finish_stage(
         log,
@@ -559,9 +665,10 @@ async def _on_both_pass(
     plan: str,
     quality_result: dict,
     baseline_dirty: list[str],
+    base: str,
 ) -> None:
     await _finish_with_full_ci(
-        feature, spec_dir, constitution, spec, plan, quality_result, baseline_dirty
+        feature, spec_dir, constitution, spec, plan, quality_result, baseline_dirty, base
     )
 
 
@@ -580,6 +687,7 @@ async def run(feature: str):
     # final commit can tell its own work apart from unrelated pre-existing
     # drift and leave the latter out. See FOLLOWUP_HARNESS.md Bug 4.
     baseline_dirty = stage_dirty_baseline(spec_dir, "ch-4-implement", git.dirty_files)
+    base = stage_start_commit(spec_dir, "ch-4-implement", git.head_commit)
 
     constitution = read_file(CONSTITUTION_PATH)
     spec = read_file(spec_dir / "spec.md")
@@ -603,10 +711,13 @@ async def run(feature: str):
         test_stage_enabled=ollama.is_stage_enabled("test"),
     )
 
+    _stop_on_test_updates(spec_dir, base)
+
     # Skipped once a critic iteration has passed: e2e is deferred until both
     # review gates pass, to avoid its ~3 min cost on every iteration.
     if not find_passing_iteration(spec_dir, CRITIC_RESULT_PREFIX):
         await _ci_gate(feature, spec_dir, constitution, spec, plan, include_slow=False)
+        _stop_on_test_updates(spec_dir, base)
 
     passing_quality = find_passing_iteration(spec_dir, QUALITY_RESULT_PREFIX)
     if passing_quality is not None:
@@ -619,6 +730,7 @@ async def run(feature: str):
             plan,
             read_result(spec_dir, QUALITY_RESULT_PREFIX, passing_quality),
             baseline_dirty,
+            base,
         )
         return
 
@@ -703,6 +815,7 @@ async def run(feature: str):
             spec,
             plan,
             baseline_dirty=baseline_dirty,
+            base=base,
         ),
         escalation_kwargs={
             "escalation_filename": "ch-4-implement-critic-escalation.md",

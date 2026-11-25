@@ -140,6 +140,22 @@ Review the failing test files. Then:
 /ch-4-implement-auto     # or /speckit-implement
 ```
 
+`ch-4-implement-auto` stops and waits for you (exit 4), rather than spending fix attempts or
+critic iterations, when:
+
+- **An existing test needs changing.** The feature changes behaviour an existing test asserts,
+  and the test phase didn't update it. The implementation agent lists such tests in
+  `specs/NNN-feature/test-updates-needed.md`, and any test case it edited anyway is detected
+  from git. Add a `[TEST]` task per affected file, make each update as a test-phase commit
+  (subject `test: ...`) with its red output, delete that file, and re-run. The tasks agent is
+  told to find these tests up front, so this should be rare.
+- **CI failed on its environment, not the code**, for example a database refusing connections
+  or a full disk. Fix the environment and re-run.
+- **CI passed but skipped whole test files**, which usually means a suite gated on a missing
+  service or variable such as `DATABASE_URL` never ran. Provide it and re-run. If a skip is
+  intended, list the files as globs in `.specify/pipeline.json`:
+  `"ci": {"allow_skipped": ["packages/*/tests/evals/**"]}`. Detected from Vitest's output.
+
 ### Step 5 — Review the implementation
 
 Review the code changes and verify CI passes locally. Then:

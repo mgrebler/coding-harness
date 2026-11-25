@@ -129,6 +129,13 @@ Inputs already loaded for you:
 Key rules:
 - Use .specify/scripts/bash/setup-plan.sh --json to get FEATURE_SPEC, IMPL_PLAN, SPECS_DIR, BRANCH
 - Also read contracts/ and research.md from the spec directory if they exist
+- Find the existing tests this feature will break: for every behaviour the plan changes or
+  removes (UI copy, navigation, routes, enum or status values, API fields, defaults), grep the
+  test directories named in the constitution's "Test file location" bullets for assertions
+  that pin the old behaviour. For each affected test file, add a [TEST] task in the phase
+  that makes the change, before its [IMPL] task: "Update <file>: <which cases, and what they
+  must now assert>". The implement stage may not change a test case, so a test missed here
+  stops the pipeline at implementation
 - Organise tasks by phase: Setup → Foundational → one phase per user story (in spec priority order) → Polish
 - Every task must follow the checklist format: - [ ] T### [tags] Description — file/path
 - Tag tasks by this grammar:

@@ -159,6 +159,8 @@ Key rules:
 - Use only the test libraries in the constitution's Stack Constraints section (§2) — no other test libraries
 - Test names must describe behaviour, not implementation details
 - No shared mutable state between test cases
+- A [TEST] task that updates an existing test: change only the cases it names so they assert
+  the new behaviour, and confirm they now fail against the current code, like any new test
 - Do not stop until all [TEST] tasks are marked [x] in tasks.md
 {HUMAN_REVIEW_ATTESTATION_GUARDRAIL}
 """,

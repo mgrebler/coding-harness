@@ -183,7 +183,11 @@ class TestCiGate(unittest.IsolatedAsyncioTestCase):
             _write_tasks(spec_dir, "- [x] T001 [IMPL] done\n")
             with (
                 patch.object(impl_auto, "_build_ci_commands", return_value=[("unit", ["x"])]),
-                patch.object(impl_auto, "_run_commands", side_effect=[(False, "boom"), (True, "")]),
+                patch.object(
+                    impl_auto,
+                    "_run_commands",
+                    side_effect=[impl_auto.CiRun(False, "boom"), impl_auto.CiRun(True, "")],
+                ),
                 patch.object(impl_auto, "_run_ci_fix_agent", new=AsyncMock()) as fix,
             ):
                 outcome = await impl_auto._ci_gate(
@@ -203,3 +207,64 @@ class TestCiOutputTail(unittest.TestCase):
         self.assertTrue(tail.endswith("line 4999"))
         self.assertIn("earlier characters omitted", tail)
         self.assertLessEqual(len(tail.splitlines()), impl_auto._CI_OUTPUT_TAIL_LINES + 1)
+
+
+class TestCiEnvironmentStops(unittest.IsolatedAsyncioTestCase):
+    async def _gate(self, *runs, allowed=None):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            _write_tasks(spec_dir, "- [x] T001 [IMPL] done\n")
+            with (
+                patch.object(impl_auto, "_build_ci_commands", return_value=[("unit", ["x"])]),
+                patch.object(impl_auto, "_run_commands", side_effect=list(runs)),
+                patch.object(impl_auto, "_run_ci_fix_agent", new=AsyncMock()) as fix,
+                patch.object(
+                    impl_auto.ollama, "load_allowed_skipped_tests", return_value=allowed or []
+                ),
+            ):
+                try:
+                    await impl_auto._ci_gate("feat", spec_dir, "c", "s", "p", include_slow=False)
+                    code = None
+                except SystemExit as e:
+                    code = e.code
+            return code, fix
+
+    async def test_environment_failure_waits_without_a_fix_attempt(self):
+        """024, 045: Postgres ECONNREFUSED went to the code-fix agent."""
+        run = impl_auto.CiRun(False, "boom", "connect ECONNREFUSED 127.0.0.1:5432")
+        code, fix = await self._gate(run)
+        self.assertEqual(code, impl_auto.HUMAN_ACTION_EXIT_CODE)
+        fix.assert_not_awaited()
+
+    async def test_wholly_skipped_suites_wait_unless_allowed(self):
+        """045: 310 Postgres-backed tests skipped for want of DATABASE_URL, reported PASS."""
+        run = impl_auto.CiRun(True, "", skipped_files=("tests/db/create-list-clubs.test.ts",))
+        code, _ = await self._gate(run)
+        self.assertEqual(code, impl_auto.HUMAN_ACTION_EXIT_CODE)
+        code, _ = await self._gate(run, allowed=["tests/db/*"])
+        self.assertIsNone(code)
+
+
+class TestStopOnTestUpdates(unittest.TestCase):
+    def test_waits_when_the_implementation_agent_noted_a_needed_update(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            (spec_dir / impl_auto.TEST_UPDATES_FILENAME).write_text(
+                "- tests/nav.test.ts: shows four sections: Settings replaces Family\n"
+            )
+            with (
+                patch.object(impl_auto, "test_case_edits", return_value={}),
+                patch.object(impl_auto.ollama, "is_stage_enabled", return_value=True),
+                patch.object(impl_auto, "log"),
+                self.assertRaises(SystemExit) as exit_info,
+            ):
+                impl_auto._stop_on_test_updates(spec_dir, "base")
+            self.assertEqual(exit_info.exception.code, impl_auto.HUMAN_ACTION_EXIT_CODE)
+
+    def test_passes_with_no_notes_or_edits(self):
+        with (
+            tempfile.TemporaryDirectory() as d,
+            patch.object(impl_auto, "test_case_edits", return_value={}),
+            patch.object(impl_auto.ollama, "is_stage_enabled", return_value=True),
+        ):
+            impl_auto._stop_on_test_updates(Path(d), "base")
