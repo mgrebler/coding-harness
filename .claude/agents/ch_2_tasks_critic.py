@@ -19,6 +19,7 @@ from pathlib import Path
 from agent_common.files import CONSTITUTION_PATH, read_required
 from agent_common.ollama import is_stage_enabled, run_local_critic_cli
 from agent_common.preflight_checks import analyze_task_format as _analyze_task_format
+from agent_common.resume_state import format_violations_block, load_prior_violations
 
 CRITIC_RESULT_PREFIX = "ch-2-tasks-critic-result"
 
@@ -36,7 +37,7 @@ def tasks_rules(test_stage_enabled: bool = True) -> str:
     """The harness's §T process rules, shared by the tasks critic and its reconciler."""
     t3_rule = (
         """§T3 [TEST]/[IMPL] Pairing [BLOCKING]: apply Constitution §5 ("Non-deliverable tasks") and §6 ("Pairing scope") exactly as written — do not apply a stricter or looser pairing rule than what those sections state. In particular:
-  - A task with no testable deliverable (orientation, read-and-confirm) needs NO [TEST]/[IMPL] tag at all — do not flag it either for lacking a tag or, in a later iteration, for having no tag to remove. If a prior iteration's violation list (see violations_block above) already asked for a tag to be added or removed on a given task ID, do not flip that request in the other direction this iteration — re-read Constitution §5 first.
+  - A task with no testable deliverable (setup, config, orientation, read-and-confirm) needs NO [TEST]/[IMPL] tag at all and no paired task — do not flag it either for lacking a tag or, in a later iteration, for having no tag to remove. Likewise an [IMPL] task whose description states "no test required — <reason>" is exempt: flag it under neither §T3 nor Constitution §6. If a prior iteration's violation list (see violations_block above) already asked for a tag to be added or removed on a given task ID, do not flip that request in the other direction this iteration — re-read Constitution §5 first.
   - A [TEST] task's description may explicitly name more than one [IMPL] task it covers (documented N:1 e2e/integration pairing per §6) — this is NOT an orphan [IMPL] task and must not be flagged, provided the linkage is stated in tasks.md.
   - An [IMPL] task with genuinely no [TEST] task anywhere in tasks.md, and not covered by a documented N:1 [TEST] task, IS a violation — quote the missing linkage."""
         if test_stage_enabled
@@ -45,7 +46,12 @@ def tasks_rules(test_stage_enabled: bool = True) -> str:
     return f"""§T1 Plan Traceability [BLOCKING]: every phase in tasks.md maps to a named section or deliverable in plan.md
 §T2 Spec Coverage [BLOCKING]: every user story in spec.md has a corresponding phase in tasks.md
 {t3_rule}
-§T5 Task Format [BLOCKING]: every task entry must use the machine-readable format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (or `- [x] TXXX ...` for a completed task) — a markdown checkbox (`- [ ]` / `- [x]` / `- [X]`) immediately followed by a bare, unbracketed task ID (`T001`, not `[T001]`), per `.specify/templates/tasks-template.md`. This checkbox is not cosmetic: `ch_3_test_auto.py` and `ch_4_implement_auto.py` scan for the literal substring `- [ ]` to detect which tasks still need work, so a task line missing the checkbox (e.g. `- [T001] [IMPL] ...` with the ID merely bracketed instead) is silently treated as already complete and skipped forever. Tasks written as numbered lists (1. 2. 3.), bracketed-ID-without-checkbox (`- [T001] ...`), or free-form prose without `[TEST]`/`[IMPL]` labels violate §T5. The pre-computed task format analysis is authoritative for format: report a format violation ONLY for a line it lists as violating, never for a bullet or numbered item in a non-task section (dependencies, execution order, parallel opportunities, implementation strategy, notes) — those are prose, not tasks. Also a §T5 violation: an unchecked task an agent cannot complete inside the repo (waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist) that lacks a `[MANUAL]` tag — ch_4_implement_auto.py only skips tasks tagged `[MANUAL]`. Conversely, a task that writes or edits files in the repo must NOT be tagged `[MANUAL]`: it would be skipped and its code never written (specs/017's T010).
+§T5 Task Format [BLOCKING]: every task entry is a markdown checkbox (`- [ ]` / `- [x]` / `- [X]`) immediately followed by a bare, unbracketed task ID (`T001`, not `[T001]`), per `.specify/templates/tasks-template.md` — `ch_3_test_auto.py` and `ch_4_implement_auto.py` scan for that checkbox to find outstanding work, so a task without it is silently skipped forever. Tags follow the ID, and these are the only valid ones:
+  - Type: `[TEST]` (writes failing tests) or `[IMPL]` (production code). A task with no testable deliverable — setup, config, a schema migration, orientation, read-and-confirm — carries NO type tag; never flag it for lacking one.
+  - `[MANUAL]`: work an agent cannot do inside the repo (waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist, an evaluation run). It stands alone: never combined with `[TEST]` or `[IMPL]`, and never demand that a `[MANUAL]` task gain one. An unchecked out-of-repo task that lacks `[MANUAL]` IS a violation (ch_4_implement_auto.py only skips `[MANUAL]` tasks). Conversely a task that writes or edits repo files must NOT be `[MANUAL]`: it would be skipped and its code never written (specs/017's T010).
+  - Story label: `[TEST]`/`[IMPL]` tasks in a user-story phase carry `[USn]`, or `[US1, US2]` for one pair serving several stories. Setup, Foundational and Polish phase tasks, untagged tasks and `[MANUAL]` tasks need no story label.
+  - `[P]` marks a parallelisable task.
+The pre-computed task format analysis applies exactly this grammar: report a format violation ONLY for a line it lists as violating — never for a line it lists as well-formed, and never for a bullet or numbered item in a non-task section (dependencies, execution order, parallel opportunities, implementation strategy, notes); those are prose, not tasks. Numbered task lists also violate §T5. The `[MANUAL]`-vs-repo-work judgement above is yours to make from each task's description.
 §T7 Dependency Validity [BLOCKING]: all dep references resolve to real task IDs within tasks.md; no cycles; [P] tasks have no unresolved deps
 §T10 Phase Checkpoints [WARNING — never BLOCKING]: a checkpoint line is missing or not runnable — severity MUST be WARNING; if a checkpoint is present in any form at or after the phase tasks do NOT include this rule in violations at all"""
 
@@ -143,6 +149,13 @@ def main():
             *(spec_dir / name for name in ("spec.md", "plan.md", "tasks.md")),
         )
 
+        # Without the previous findings the §T3 "don't flip a prior request" rule had
+        # nothing to check against, and hosted critics reversed their own demands.
+        violations_block = format_violations_block(
+            load_prior_violations(spec_dir, CRITIC_RESULT_PREFIX, iteration),
+            iteration,
+            "violations (already addressed by the tasks agent)",
+        )
         task_format_analysis = _analyze_task_format(tasks)
         return build_tasks_critic_prompt(
             constitution,
@@ -150,6 +163,7 @@ def main():
             plan,
             tasks,
             iteration,
+            violations_block=violations_block,
             task_format_analysis=task_format_analysis,
             test_stage_enabled=is_stage_enabled("test"),
         )

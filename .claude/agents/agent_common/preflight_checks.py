@@ -36,25 +36,43 @@ from agent_common.git import resolve_base_ref
 # permanently skipped by those downstream orchestrators.
 _CHECKBOX_TXXX_RE = re.compile(r"^[-*]\s+\[[ xX]\]\s*T\d+\b")
 _BARE_TXXX_RE = re.compile(r"\bT\d+\b")
+# A bullet that opens with a task ID but lacks the checkbox (`- T001 ...`,
+# `- [T001] ...`). Prose bullets that merely cite an ID mid-sentence are not tasks.
+_LEADING_TXXX_RE = re.compile(r"^[-*]\s+\**\[?T\d+\b")
 
-# These classifications only feed the critic's prompt (analyze_task_format), so a
-# task Constitution §5 exempts from [TEST]/[IMPL] tagging is left to its judgement.
+# The grammar speckit-tasks/SKILL.md defines. A task with no testable deliverable
+# (setup, config, orientation) carries no type tag, and only [TEST]/[IMPL] tasks
+# in a user-story phase need a story label. Flagging every other line made the
+# tasks critic flap: it demanded [TEST]/[IMPL] on [MANUAL] tasks and [USn] on
+# Setup/Polish tasks, then the reverse (032, 033, 049, 072 and ~15 others).
+_TYPE_TAGS = {"[TEST]", "[IMPL]"}
+_KNOWN_TAGS = _TYPE_TAGS | {"[MANUAL]", "[P]"}
+_STORY_LABEL_RE = re.compile(r"\[US\d+(?:\s*[,/+]\s*US\d+)*\]")
+# Tasks live under `## Phase N: ...` headings; bullets in the Dependencies,
+# Parallel Opportunities and Notes sections are prose that cites task IDs.
+_PHASE_HEADING_RE = re.compile(r"(?im)^## .*\bphase\b")
+_NON_STORY_PHASE_RE = re.compile(r"(?i)^## .*\b(setup|foundation(al)?|polish)\b")
 
 
-def _classify_txxx_issues(stripped: str) -> list[str]:
+def _classify_txxx_issues(stripped: str, story_phase: bool) -> list[str]:
+    tags = task_tags(stripped)
     issues = []
-    if not re.search(r"\[TEST\]|\[IMPL\]", stripped):
-        issues.append("MISSING [TEST] or [IMPL]")
-    if not re.search(r"\[US\d+\]", stripped):
+    if "[MANUAL]" in tags and tags & _TYPE_TAGS:
+        issues.append("[MANUAL] combined with [TEST]/[IMPL]")
+    if story_phase and tags & _TYPE_TAGS and not _STORY_LABEL_RE.search(stripped):
         issues.append("MISSING [USX] story label")
     return issues
 
 
 def _record_txxx_result(
-    stripped: str, i: int, complete_tasks: list[str], incomplete_tasks: list[str]
+    stripped: str,
+    i: int,
+    story_phase: bool,
+    complete_tasks: list[str],
+    incomplete_tasks: list[str],
 ) -> None:
     entry = f"  Line {i}: {stripped[:100]}"
-    issues = _classify_txxx_issues(stripped)
+    issues = _classify_txxx_issues(stripped, story_phase)
     if issues:
         incomplete_tasks.append(f"{entry} ← {', '.join(issues)}")
     else:
@@ -69,16 +87,25 @@ def classify_task_lines(tasks: str) -> tuple[list[str], list[str], list[str], li
     numbered: list[str] = []
     bullets: list[str] = []
 
+    has_phases = bool(_PHASE_HEADING_RE.search(tasks))
+    in_phase = not has_phases
+    story_phase = True
     for i, line in enumerate(tasks.splitlines(), 1):
         stripped = line.strip()
+        if stripped.startswith("## "):
+            in_phase = not has_phases or bool(_PHASE_HEADING_RE.match(stripped))
+            story_phase = not _NON_STORY_PHASE_RE.match(stripped)
         if not stripped or stripped.startswith("#"):
+            continue
+        if not in_phase:
+            bullets.append(f"  Line {i}: {stripped[:100]}")
             continue
         if re.match(r"^\d+\.", stripped):
             numbered.append(f"  Line {i}: {stripped[:100]}")
         elif stripped.startswith(("- ", "* ")):
             if _CHECKBOX_TXXX_RE.match(stripped):
-                _record_txxx_result(stripped, i, complete_tasks, incomplete_tasks)
-            elif _BARE_TXXX_RE.search(stripped):
+                _record_txxx_result(stripped, i, story_phase, complete_tasks, incomplete_tasks)
+            elif _LEADING_TXXX_RE.match(stripped):
                 incomplete_tasks.append(
                     f"  Line {i}: {stripped[:100]} ← MISSING checkbox "
                     f"(`- [ ]`/`- [x]` must immediately precede the bare task ID, "
@@ -87,7 +114,7 @@ def classify_task_lines(tasks: str) -> tuple[list[str], list[str], list[str], li
             else:
                 bullets.append(f"  Line {i}: {stripped[:100]}")
         elif _CHECKBOX_TXXX_RE.match(stripped) or _BARE_TXXX_RE.match(stripped):
-            _record_txxx_result(stripped, i, complete_tasks, incomplete_tasks)
+            _record_txxx_result(stripped, i, story_phase, complete_tasks, incomplete_tasks)
 
     return complete_tasks, incomplete_tasks, numbered, bullets
 
@@ -98,15 +125,9 @@ def analyze_task_format(tasks: str) -> str:
 
     parts = []
     if complete_tasks:
-        parts.append(
-            "Complete machine-readable tasks (`- [ ]`/`- [x]` Txxx [TEST|IMPL] [PX] [USX] format):\n"
-            + "\n".join(complete_tasks)
-        )
+        parts.append("Well-formed tasks (no format problem found):\n" + "\n".join(complete_tasks))
     if incomplete_tasks:
-        parts.append(
-            "Incomplete Txxx tasks — VIOLATE §T5 (missing checkbox and/or required components):\n"
-            + "\n".join(incomplete_tasks)
-        )
+        parts.append("Txxx tasks that VIOLATE §T5:\n" + "\n".join(incomplete_tasks))
     if numbered:
         parts.append(
             "Numbered list entries found — THESE VIOLATE §T5 (must use `- [ ] Txxx [TEST|IMPL]` format):\n"
@@ -151,7 +172,9 @@ _MANUAL_PHRASE_RE = re.compile(
 
 def task_format_violations(tasks: str) -> list[str]:
     """Return a flat list of unambiguous, mechanically-detected §T5 format
-    violations — the bracketed-ID-instead-of-checkbox case (`- [T001] ...`)
+    violations — the bracketed-ID-instead-of-checkbox case (`- [T001] ...`),
+    an unknown tag (051's `[non-deliverable]`, 040's `[FOUNDATION]`), `[MANUAL]`
+    combined with `[TEST]`/`[IMPL]` (033, 047, 057: a task no stage can finish),
     and an unchecked, non-[TEST] task described as human/out-of-repo work but
     missing its [MANUAL] tag — precise enough to auto-kick-back without LLM
     judgment. Deliberately conservative: false negatives here just mean the
@@ -169,9 +192,26 @@ def task_format_violations(tasks: str) -> list[str]:
                 f"  Line {i}: {stripped[:100]} ← MISSING checkbox (`- [ ]`/`- [x]` must "
                 f"immediately precede the task ID, e.g. `- [ ] T001 ...`, not `- [T001] ...`)"
             )
+            continue
+        tags = task_tags(stripped)
+        unknown = sorted(
+            t for t in tags if t not in _KNOWN_TAGS and not _STORY_LABEL_RE.fullmatch(t)
+        )
+        if unknown:
+            violations.append(
+                f"  Line {i}: {stripped[:100]} ← unknown tag {', '.join(unknown)} (use only "
+                f"[TEST], [IMPL], [MANUAL], [P] and [USn]; a task with no testable deliverable "
+                f"carries no type tag)"
+            )
+        if "[MANUAL]" in tags and tags & _TYPE_TAGS:
+            violations.append(
+                f"  Line {i}: {stripped[:100]} ← [MANUAL] combined with [TEST]/[IMPL] (no agent "
+                f"may check off a [MANUAL] task, so the test/implement stage can never finish it; "
+                f"keep [MANUAL] alone for out-of-repo work, or drop it if the task writes repo files)"
+            )
         elif (
             _UNCHECKED_TXXX_RE.match(stripped)
-            and not task_tags(stripped) & {"[MANUAL]", "[TEST]"}
+            and not tags & {"[MANUAL]", "[TEST]"}
             and _MANUAL_PHRASE_RE.search(stripped)
         ):
             violations.append(
@@ -239,8 +279,9 @@ _UNCHECKED_TXXX_RE = re.compile(r"^[-*]\s+\[ \]\s*T\d+\b")
 # (`T005 [IMPL] [P] [US1]`, sometimes bolded as `**[MANUAL]**`). Tags are only
 # matched there: specs/005 had an [IMPL] line whose prose said "no separate
 # [TEST] task", which a substring scan counted as an outstanding [TEST] task.
-_TASK_TAG_BLOCK_RE = re.compile(r"^[-*]\s+\[[ xX]\]\s*T\d+\b((?:\s*\**\[[\w-]+\]\**)*)")
-_TAG_RE = re.compile(r"\[[\w-]+\]")
+_TAG = r"\[[\w-]+(?:\s*[,/+]\s*[\w-]+)*\]"
+_TASK_TAG_BLOCK_RE = re.compile(rf"^[-*]\s+\[[ xX]\]\s*T\d+\b((?:\s*\**{_TAG}\**)*)")
+_TAG_RE = re.compile(_TAG)
 
 
 def task_tags(line: str) -> set[str]:

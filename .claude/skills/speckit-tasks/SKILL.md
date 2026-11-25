@@ -156,9 +156,10 @@ Every task MUST strictly follow this format:
    - `[TEST]` — this task writes failing test(s) only, no implementation
    - `[IMPL]` — this task writes implementation only, to pass the paired [TEST] task's tests
    - Setup/infrastructure tasks with no testable behaviour: NO type label (document exemption in description)
+   - `[MANUAL]` instead of a type label for work an agent cannot do inside the repo (human approval, live deploy, real external account, manual verification, evaluation run) — never combined with `[TEST]`/`[IMPL]`
 4. **[P] marker**: Include ONLY if task is parallelizable (different files, no dependencies on incomplete tasks)
 5. **[Story] label**: REQUIRED for user story phase tasks only
-   - Format: [US1], [US2], [US3], etc. (maps to user stories from spec.md)
+   - Format: [US1], [US2], [US3], etc. (maps to user stories from spec.md); [US1, US2] for one pair serving several stories
    - Setup phase: NO story label
    - Foundational phase: NO story label
    - User Story phases: MUST have story label

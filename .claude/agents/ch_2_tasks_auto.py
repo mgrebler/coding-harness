@@ -88,7 +88,11 @@ def tasks_agent_definition(
     data_model_block = f"\n--- DATA MODEL ---\n{data_model}" if data_model else ""
     pairing_rule = (
         "- Every implementation task must have a paired test task (unit/component or e2e, "
-        "per the project's approved test stack in the constitution's Stack Constraints section)"
+        "per the project's approved test stack in the constitution's Stack Constraints section)\n"
+        "- One [TEST]/[IMPL] pair per deliverable, as the constitution's Task Atomicity section "
+        "defines it (e.g. one schema change, one API procedure, one UI component); a deliverable "
+        "spanning backend and frontend is two pairs. Never fold several procedures or components "
+        "into one pair"
         if test_stage_enabled
         else "- The test stage is disabled for this project (.specify/pipeline.json "
         "stages.test.enabled=false) — write plain [IMPL] tasks only. Do NOT create [TEST] "
@@ -120,11 +124,18 @@ Key rules:
 - Use .specify/scripts/bash/setup-plan.sh --json to get FEATURE_SPEC, IMPL_PLAN, SPECS_DIR, BRANCH
 - Also read contracts/ and research.md from the spec directory if they exist
 - Organise tasks by phase: Setup → Foundational → one phase per user story (in spec priority order) → Polish
-- Every task must follow the checklist format: - [ ] T### [P?] [US#?] Description — file/path
-- Mark tasks [P] when they target different files with no dependencies
-- Tag [MANUAL] every task an agent cannot complete inside the repo — waiting for a human
-  approval, a live/cloud deploy, a real external account, a manual verification
-  checklist (see the template's Format section)
+- Every task must follow the checklist format: - [ ] T### [TEST|IMPL|MANUAL] [P?] [US#?] Description — file/path
+- Use only these tags:
+  - [TEST] writes failing tests; [IMPL] writes production code. A task with no testable
+    deliverable (setup, config, orientation) gets no type tag.
+  - [MANUAL], alone and never with [TEST]/[IMPL], on every task an agent cannot complete
+    inside the repo — waiting for a human approval, a live/cloud deploy, a real external
+    account, a manual verification checklist, an evaluation run. Never [MANUAL] on a task
+    that writes repo files.
+  - [US#] on [TEST]/[IMPL] tasks in user-story phases ([US1, US2] for one pair serving
+    several stories); none in Setup, Foundational or Polish phases.
+  - [P] when tasks target different files with no dependencies.
+- Don't write tasks for work another pipeline stage owns (docs, deployed validation)
 {pairing_rule}
 - Include a Checkpoint at the end of each phase with a concrete runnable verification command
 - Write tasks.md to the correct specs/$FEATURE/ path
@@ -163,10 +174,8 @@ async def _run_format_gate(
         )
         pipeline_status.step("fixing task format", attempt, max_attempts)
         user_prompt = (
-            f"Reformat specs/{feature}/tasks.md to comply with the machine-readable task "
-            f"format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (see .specify/templates/"
-            f"tasks-template.md), tagging [MANUAL] any task flagged as needing a human or an "
-            f"out-of-repo action. Fix ONLY the lines below — do not change task content, order, "
+            f"Reformat specs/{feature}/tasks.md to comply with the task format and tag rules "
+            f"(see .specify/templates/tasks-template.md). Fix ONLY the lines below — do not change task content, order, "
             f"or numbering beyond what's needed to fix the format:\n\n" + "\n".join(violations)
         )
         await local_agent_loop.run_agent(

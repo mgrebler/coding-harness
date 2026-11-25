@@ -195,3 +195,63 @@ class TestRedStateIssue(unittest.TestCase):
     def test_regression_guard_declaration_does_not_excuse_an_infra_failure(self):
         artifact = "§19 REGRESSION-GUARD EXCEPTION\nError: connect ECONNREFUSED 127.0.0.1:5432"
         self.assertIsNotNone(pc.red_state_issue(artifact))
+
+
+class TestTaskFormatAnalysis(unittest.TestCase):
+    """The grammar speckit-tasks/SKILL.md defines; the old analysis flagged every
+    line outside it and the tasks critic flapped on the result (032, 033, 072)."""
+
+    TASKS = (
+        "## Phase 1: Setup\n"
+        "- [ ] T001 Create the config file (no test — infrastructure setup)\n"
+        "## Phase 3: User Story 1 (P1)\n"
+        "- [ ] T002 [TEST] [US1, US2] Write failing test for the shared matcher\n"
+        "- [ ] T003 [IMPL] [US1, US2] Implement the shared matcher (depends on T002)\n"
+        "- [ ] T004 [IMPL] Implement the handler (depends on T002)\n"
+        "## Phase 4: Polish\n"
+        "- [ ] T005 [MANUAL] Deploy to dev and run the live checks\n"
+        "## Dependencies & Execution Order\n"
+        "- T002 [TEST] must complete before T003 [IMPL] begins\n"
+        "- Phase 3 depends on Setup (T001)\n"
+    )
+
+    def test_only_a_story_phase_type_tagged_task_needs_a_story_label(self):
+        _, incomplete, _, _ = pc.classify_task_lines(self.TASKS)
+        self.assertEqual(len(incomplete), 1)
+        self.assertIn("T004", incomplete[0])
+        self.assertIn("MISSING [USX] story label", incomplete[0])
+
+    def test_prose_bullets_citing_task_ids_are_not_tasks(self):
+        complete, incomplete, _, bullets = pc.classify_task_lines(self.TASKS)
+        self.assertFalse(any("must complete before" in line for line in complete + incomplete))
+        self.assertEqual(len(bullets), 2)
+
+    def test_bullet_opening_with_a_task_id_still_needs_a_checkbox(self):
+        tasks = "## Phase 1: Setup\n- T001 Create the config file\n"
+        _, incomplete, _, _ = pc.classify_task_lines(tasks)
+        self.assertIn("MISSING checkbox", incomplete[0])
+
+
+class TestTagViolations(unittest.TestCase):
+    def test_flags_manual_combined_with_a_type_tag(self):
+        """033, 047, 057: a [TEST] [MANUAL] task deadlocked the test stage."""
+        tasks = "- [ ] T036 [TEST] [MANUAL] [US5] Run the live evaluation\n"
+        violations = pc.task_format_violations(tasks)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("[MANUAL] combined with [TEST]/[IMPL]", violations[0])
+
+    def test_flags_unknown_tags(self):
+        """051: a literal [non-deliverable] tag aborted the implement stage."""
+        tasks = "- [ ] T141 [non-deliverable] [US1] Documentation stage updates docs/\n"
+        violations = pc.task_format_violations(tasks)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("unknown tag [non-deliverable]", violations[0])
+
+    def test_multi_story_labels_are_known_tags(self):
+        tasks = "- [ ] T002 [TEST] [P] [US1, US2] Write failing test\n"
+        self.assertEqual(pc.task_format_violations(tasks), [])
+        self.assertIn("[TEST]", pc.task_tags(tasks))
+
+    def test_test_stage_skips_manual_test_tasks(self):
+        tasks = "- [ ] T036 [TEST] [MANUAL] Run the live evaluation\n- [x] T002 [TEST] Write test\n"
+        self.assertEqual(pc.unchecked_task_lines(tasks, tag="[TEST]", exclude_tag="[MANUAL]"), [])
