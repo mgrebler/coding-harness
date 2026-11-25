@@ -19,7 +19,7 @@ class TestBuildRequest(unittest.TestCase):
     def setUp(self):
         # Isolate from whatever .env file (if any) happens to sit in the cwd
         # this test run — os.environ is the only source of truth here.
-        patcher = patch.object(openai_compatible, "_load_dotenv")
+        patcher = patch.object(openai_compatible, "_dotenv_value", return_value=None)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -332,54 +332,48 @@ class TestStreamChatResponseSilenceReport(unittest.TestCase):
         self.assertIn("timed out after 300s: no response headers", stderr.getvalue())
 
 
-class TestLoadDotenv(unittest.TestCase):
-    def test_missing_file_is_noop(self):
-        with patch.dict("os.environ", {}, clear=True):
-            openai_compatible._load_dotenv("/nonexistent/path/.env")
-            self.assertEqual(dict(os.environ), {})
+class TestApiKey(unittest.TestCase):
+    def _env_file(self, tmp: str, content: str) -> str:
+        env_path = Path(tmp) / ".env"
+        env_path.write_text(content)
+        return str(env_path)
 
-    def test_loads_values_into_environ(self):
+    def test_missing_file_is_none(self):
+        self.assertIsNone(openai_compatible._dotenv_value("NVIDIA_API_KEY", "/nonexistent/.env"))
+
+    def test_reads_only_the_named_key_and_never_touches_environ(self):
+        """056: copying all of .env into os.environ handed every Claude session
+        ANTHROPIC_API_KEY, so pipeline runs were billed to the API key."""
+        cwd = Path.cwd()
         with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text("NVIDIA_API_KEY=nvapi-from-file\n")
+            self._env_file(tmp, "ANTHROPIC_API_KEY=sk-ant\nNVIDIA_API_KEY=nvapi-from-file\n")
+            os.chdir(tmp)
+            self.addCleanup(os.chdir, cwd)
             with patch.dict("os.environ", {}, clear=True):
-                openai_compatible._load_dotenv(str(env_path))
-                self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-from-file")
+                self.assertEqual(openai_compatible.api_key("NVIDIA_API_KEY"), "nvapi-from-file")
+                self.assertEqual(dict(os.environ), {})
 
-    def test_does_not_override_existing_env_var(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text("NVIDIA_API_KEY=nvapi-from-file\n")
-            with patch.dict("os.environ", {"NVIDIA_API_KEY": "nvapi-from-shell"}, clear=True):
-                openai_compatible._load_dotenv(str(env_path))
-                self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-from-shell")
+    def test_environment_wins_over_the_file(self):
+        with (
+            patch.dict("os.environ", {"NVIDIA_API_KEY": "nvapi-from-shell"}, clear=True),
+            patch.object(openai_compatible, "_dotenv_value", return_value="nvapi-from-file"),
+        ):
+            self.assertEqual(openai_compatible.api_key("NVIDIA_API_KEY"), "nvapi-from-shell")
 
-    def test_overrides_existing_but_empty_env_var(self):
-        """A devcontainer/docker-compose `environment:` block can declare a
-        var as a host pass-through that resolves to an empty string when
-        unset on the host — that shouldn't block a real value in .env."""
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text("NVIDIA_API_KEY=nvapi-from-file\n")
-            with patch.dict("os.environ", {"NVIDIA_API_KEY": ""}, clear=True):
-                openai_compatible._load_dotenv(str(env_path))
-                self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-from-file")
+    def test_empty_environment_value_falls_back_to_the_file(self):
+        """A docker-compose pass-through of a variable unset on the host is ""."""
+        with (
+            patch.dict("os.environ", {"NVIDIA_API_KEY": ""}, clear=True),
+            patch.object(openai_compatible, "_dotenv_value", return_value="nvapi-from-file"),
+        ):
+            self.assertEqual(openai_compatible.api_key("NVIDIA_API_KEY"), "nvapi-from-file")
 
-    def test_skips_comments_and_blank_lines(self):
+    def test_skips_comments_and_strips_quotes(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text("# comment\n\nNVIDIA_API_KEY=nvapi-secret\n")
-            with patch.dict("os.environ", {}, clear=True):
-                openai_compatible._load_dotenv(str(env_path))
-                self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-secret")
-
-    def test_strips_surrounding_quotes_from_value(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env"
-            env_path.write_text('NVIDIA_API_KEY="nvapi-secret"\n')
-            with patch.dict("os.environ", {}, clear=True):
-                openai_compatible._load_dotenv(str(env_path))
-                self.assertEqual(os.environ["NVIDIA_API_KEY"], "nvapi-secret")
+            path = self._env_file(tmp, '# NVIDIA_API_KEY=old\n\nNVIDIA_API_KEY="nvapi-secret"\n')
+            self.assertEqual(
+                openai_compatible._dotenv_value("NVIDIA_API_KEY", path), "nvapi-secret"
+            )
 
 
 class TestUrlopenWithRetry(unittest.TestCase):
@@ -578,7 +572,7 @@ class TestStreamChatResponseHttpError(unittest.TestCase):
 
 class TestCallOpenAICompatibleLlm(unittest.TestCase):
     def setUp(self):
-        patcher = patch.object(openai_compatible, "_load_dotenv")
+        patcher = patch.object(openai_compatible, "_dotenv_value", return_value=None)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -688,7 +682,7 @@ class TestParseOpenaiChatMessage(unittest.TestCase):
 
 class TestBuildTurnRequest(unittest.TestCase):
     def setUp(self):
-        patcher = patch.object(openai_compatible, "_load_dotenv")
+        patcher = patch.object(openai_compatible, "_dotenv_value", return_value=None)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -725,7 +719,7 @@ class TestBuildTurnRequest(unittest.TestCase):
 
 class TestCallOpenaiCompatibleTurn(unittest.TestCase):
     def setUp(self):
-        patcher = patch.object(openai_compatible, "_load_dotenv")
+        patcher = patch.object(openai_compatible, "_dotenv_value", return_value=None)
         patcher.start()
         self.addCleanup(patcher.stop)
 

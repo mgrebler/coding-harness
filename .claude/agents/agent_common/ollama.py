@@ -7,7 +7,6 @@ import asyncio
 import contextlib
 import json
 import math
-import os
 import re
 import sys
 import time
@@ -430,8 +429,7 @@ def _provider_problem(config: dict) -> str | None:
     verified this way and is given the benefit of the doubt."""
     model = config["model"]
     if config["provider"] == "openai-compatible":
-        openai_compatible._load_dotenv()
-        api_key = os.environ.get(config["api_key_env"])
+        api_key = openai_compatible.api_key(config["api_key_env"])
         if not api_key:
             return f"{config['api_key_env']} is not set"
         req = _build_request(

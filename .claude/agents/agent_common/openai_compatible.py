@@ -128,30 +128,29 @@ def _urlopen_with_retry(req: urllib.request.Request, timeout: int = 300):
     return _call_with_retry(lambda: urllib.request.urlopen(req, timeout=timeout))  # noqa: S310 — see _build_request
 
 
-def _load_dotenv(path: str = ".env") -> None:
-    """Populate os.environ from a KEY=VALUE .env file in the current working
-    directory, without overriding a variable already set to a non-empty
-    value in the environment. No-op if the file doesn't exist — .env is an
-    optional convenience, not a required config source (the shell/CI
-    environment is the source of truth). An empty-string existing value
-    (e.g. a devcontainer/docker-compose `environment:` block that declares
-    the var as a host pass-through but leaves it blank when unset on the
-    host) is treated as unset rather than as a real override — plain
-    os.environ.setdefault would otherwise silently keep it blank and ignore
-    a real key present in .env."""
+def _dotenv_value(name: str, path: str = ".env") -> str | None:
+    """`name`'s value in a KEY=VALUE .env file in the current working
+    directory, or None. .env is an optional convenience, not a required
+    config source (the shell/CI environment is the source of truth)."""
     try:
         lines = Path(path).read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
-        return
+        return None
     for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and not os.environ.get(key):
-            os.environ[key] = value
+        key, sep, value = line.strip().partition("=")
+        if sep and not key.startswith("#") and key.strip() == name:
+            return value.strip().strip('"').strip("'")
+    return None
+
+
+def api_key(name: str) -> str | None:
+    """The environment's value for `name`, else the one in .env. Only `name` is
+    read: copying all of .env into os.environ (as this once did) handed every
+    Claude session its ANTHROPIC_API_KEY, which Claude Code prefers over the
+    claude.ai login, so pipeline runs were billed to the API key (048-056).
+    An empty environment value (a docker-compose pass-through of a variable
+    unset on the host) counts as unset."""
+    return os.environ.get(name) or _dotenv_value(name)
 
 
 def _build_request(prompt: str, config: dict) -> urllib.request.Request:
@@ -159,10 +158,9 @@ def _build_request(prompt: str, config: dict) -> urllib.request.Request:
     json_object (rather than Ollama's format="json") since that's the field
     this wire protocol uses for the same "raw JSON out" guarantee — on unless
     the entry sets json_mode: false."""
-    _load_dotenv()
     api_key_env = config["api_key_env"]
-    api_key = os.environ.get(api_key_env)
-    if not api_key:
+    key = api_key(api_key_env)
+    if not key:
         raise RuntimeError(
             f"Environment variable {api_key_env} is not set (required for provider "
             "'openai-compatible' — pipeline.json only names the env var, never "
@@ -186,7 +184,7 @@ def _build_request(prompt: str, config: dict) -> urllib.request.Request:
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {key}",
             "Accept": "text/event-stream",
         },
         method="POST",
@@ -449,10 +447,9 @@ def _build_turn_request(
     """Build a non-streaming /chat/completions request carrying `tools`, for
     the generation agentic loop. Unlike _build_request (critics), this never
     forces response_format=json_object."""
-    _load_dotenv()
     api_key_env = config["api_key_env"]
-    api_key = os.environ.get(api_key_env)
-    if not api_key:
+    key = api_key(api_key_env)
+    if not key:
         raise RuntimeError(
             f"Environment variable {api_key_env} is not set (required for provider "
             "'openai-compatible' — pipeline.json only names the env var, never "
@@ -475,7 +472,7 @@ def _build_turn_request(
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {key}",
         },
         method="POST",
     )
