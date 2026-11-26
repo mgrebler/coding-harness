@@ -345,8 +345,9 @@ class TestRunDirScope(unittest.TestCase):
             self.assertEqual(sorted(options.tools), ["Read", "Write"])
             self.assertNotIn("Glob", options.allowed_tools)
             self.assertEqual(options.disallowed_tools, ["mcp__playwright__browser_run_code_unsafe"])
-            [matcher] = options.hooks["PreToolUse"]
-            self.assertEqual(matcher.matcher, "Read|Write")
+            scope, session = options.hooks["PreToolUse"]
+            self.assertEqual(scope.matcher, "Read|Write")
+            self.assertIn(va.CLOSE_BROWSER_TOOL, session.matcher)
             self.assertEqual(options.system_prompt["type"], "file")
             self.assertEqual(Path(options.system_prompt["path"]).read_text(), "i" * 200_000)
 
@@ -670,7 +671,7 @@ class TestPrDescription(_ProjectCase):
     def test_instructions_carry_artifacts_and_followup_link(self):
         (self.spec_dir / "plan.md").write_text("PLAN TEXT")
         (self.spec_dir / "tasks.md").write_text("- [ ] T1 [TEST] covers save\n- [ ] T2 [IMPL] x\n")
-        (self.spec_dir / va.FOLLOWUP_FILENAME).write_text("concerns")
+        (self.spec_dir / va.FOLLOWUP_FILENAME).write_text("High: refresh grace period is 60s")
         captured = {}
 
         async def capture(instructions, run_dir):
@@ -682,6 +683,7 @@ class TestPrDescription(_ProjectCase):
             self.assertIn(expected, instructions)
         self.assertNotIn("T2 [IMPL]", instructions)
         self.assertIn(f"`specs/{FEATURE}/{va.FOLLOWUP_FILENAME}`", instructions)
+        self.assertIn("High: refresh grace period is 60s", instructions)
 
     def test_human_owned_pr_is_not_redescribed(self):
         pr = {"number": 3, "url": "u", "body": "Written by a human", "baseRefName": "main"}
@@ -995,3 +997,80 @@ class TestBranchMismatch(_RunCase):
                 asyncio.run(va.run(FEATURE))
         prepare.assert_not_called()
         push.assert_not_called()
+
+
+class TestSessionSaveGate(unittest.TestCase):
+    """077: the app rotated its session on use, and every browser launch after the
+    first started from the stale snapshot, so 21 scenarios came back BLOCKED."""
+
+    def _call(self, hook, tool, **tool_input):
+        result = asyncio.run(hook({"tool_name": tool, "tool_input": tool_input}, None, None))
+        return "deny" if result else "allow"
+
+    def test_close_waits_for_the_session_to_be_saved_to_the_launch_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            hook = va._session_save_gate(Path(d))
+            self.assertEqual(self._call(hook, va.CLOSE_BROWSER_TOOL), "deny")
+            self.assertEqual(self._call(hook, va.SAVE_SESSION_TOOL, filename="other.json"), "deny")
+            self.assertEqual(
+                self._call(hook, va.SAVE_SESSION_TOOL, filename=va.STORAGE_STATE_FILENAME), "allow"
+            )
+            self.assertEqual(self._call(hook, va.CLOSE_BROWSER_TOOL), "allow")
+            self.assertEqual(self._call(hook, va.CLOSE_BROWSER_TOOL), "deny")
+
+    def test_after_signing_in_again_the_browser_closes_without_saving(self):
+        with tempfile.TemporaryDirectory() as d:
+            hook = va._session_save_gate(Path(d))
+            self.assertEqual(self._call(hook, va.SIGN_IN_TOOL), "allow")
+            self.assertEqual(
+                self._call(hook, va.SAVE_SESSION_TOOL, filename=va.STORAGE_STATE_FILENAME), "deny"
+            )
+            self.assertEqual(self._call(hook, va.CLOSE_BROWSER_TOOL), "allow")
+
+    def test_storage_tools_are_enabled(self):
+        server = va.mcp_server({}, "https://p.example", Path("/s.json"), Path("/run"))
+        self.assertIn("--caps=devtools,storage", server["args"])
+
+
+class TestDisposableAccount(_RunCase):
+    """077: sign-out scenarios were BLOCKED by "never log out" although auth_command
+    made a fresh throwaway account for every run."""
+
+    def test_rules_and_tools_follow_the_setting(self):
+        def instructions(disposable):
+            return va.agent_instructions(
+                [], "spec", "qs", "", "https://p", Path("/run"), disposable_account=disposable
+            )
+
+        self.assertIn("Never log out", instructions(False))
+        self.assertNotIn("sign_in_again", instructions(False))
+        self.assertIn("you may sign out", instructions(True))
+        self.assertIn("sign_in_again", instructions(True))
+
+        servers = []
+
+        async def agent(instructions, task, config, mcp, run_dir):
+            servers.append(sorted(mcp))
+            entries = [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok"}]
+            (run_dir / "US1-AS1.webm").write_bytes(b"x")
+            (run_dir / "report.json").write_text(json.dumps({"scenarios": entries}))
+
+        self._run(agent, config={**CONFIG, "disposable_account": True})
+        self.assertEqual(servers, [["playwright", "session"]])
+
+    def test_signing_in_again_reruns_auth_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d) / va.STORAGE_STATE_FILENAME
+            ok = {"auth_command": 'echo "{}" > "$VALIDATION_STORAGE_STATE"'}
+            with patch.object(va, "log"):
+                self.assertIsNone(va._sign_in(ok, dict(os.environ), "https://p", state))
+                self.assertTrue(state.exists())
+                problem = va._sign_in(
+                    {"auth_command": "exit 2"}, dict(os.environ), "https://p", state
+                )
+            self.assertIn("exited 2", problem)
+
+    def test_must_be_a_boolean(self):
+        self.assertIsNotNone(
+            va._config_problem({**CONFIG, "disposable_account": "yes"}, self.spec_dir)
+        )

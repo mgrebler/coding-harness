@@ -660,7 +660,10 @@ For the commit at HEAD, `ch_6_validate_auto.py`:
    it creates first, in a recorded `setup-<n>.webm` that ends by browsing to where the app shows
    that data. Scenarios that check the same screen in the same data state share one video and
    trace, with a chapter per scenario id; it highlights each element it checks before
-   screenshotting it. It writes one verdict per scenario: `PASS`, `FAIL`, `BLOCKED` (with a
+   screenshotting it. Before each `browser_close` it must save the browser's session back to the
+   file every launch starts from (a hook refuses the close until it has), so an app that renews
+   or rotates its session cookie or refresh token keeps a working session across launches. It
+   writes one verdict per scenario: `PASS`, `FAIL`, `BLOCKED` (with a
    reason), or — for quickstart sections that only make sense in a local checkout —
    `NOT_APPLICABLE` (with a reason). It has no Bash and can only read and write inside the run
    directory. The browser server is held to the same limits: its code-running tool
@@ -723,6 +726,7 @@ report and, unless a `lock_command` is set, the cached deploy URL; `auth_command
 | `fixtures_max_turns` | no (60) | Turn budget for the fixtures agent. |
 | `fixtures_agent_notes` | no | Project guidance for the fixtures agent only (`agent_notes` is for the browser agent and isn't sent to it). |
 | `commit_trailer` | no (`Co-Authored-By: Claude <noreply@anthropic.com>`) | Trailer on the fixtures commit; `""` for none. |
+| `disposable_account` | no (`false`) | Set when `auth_command` signs in an account made for this run alone. The agent may then sign out, end sessions or replay credentials for scenarios about them, and gets a `sign_in_again` tool that re-runs `auth_command` for the scenarios after. If `auth_command` makes a new account each time, data created before is in the old one, so the agent runs session-ending scenarios last. |
 | `ignore_untracked` | no | Globs (`*` crosses `/`) for untracked files that don't stop the stage, e.g. `["*.md"]` for notes in the checkout. Changes to tracked files always stop it. |
 | `probe_commands` | no | Named commands the operator agent may run, as `{"<name>": {"command": "...", "description": "..."}}`. See § Probe commands. |
 | `probe_max_turns` | no (150) | Turn budget for the operator agent. |

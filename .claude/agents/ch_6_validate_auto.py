@@ -92,6 +92,10 @@ STAGE = "ch-6-validate"
 ESCALATION_FILENAME = "ch-6-validate-escalation.md"
 PLAYWRIGHT_MCP_VERSION = "0.0.84"
 RUN_CODE_TOOL = "mcp__playwright__browser_run_code_unsafe"
+SAVE_SESSION_TOOL = "mcp__playwright__browser_storage_state"
+CLOSE_BROWSER_TOOL = "mcp__playwright__browser_close"
+SIGN_IN_TOOL = "mcp__session__sign_in_again"
+STORAGE_STATE_FILENAME = "storage-state.json"
 DEFAULT_TIMEOUT_MINUTES = 20
 AUTH_TIMEOUT_S = 300
 SEED_TIMEOUT_S = 15 * 60
@@ -114,6 +118,7 @@ PROBE_OUTPUT_LIMIT = 20_000
 PROBE_TOOL = "mcp__probes__run_probe"
 DESCRIPTION_MAX_TURNS = 10
 DOCS_DIFF_LIMIT = 60_000
+FOLLOWUP_LIMIT = 20_000
 log = make_logger(AGENT_NAME)
 
 
@@ -174,7 +179,24 @@ def _config_problem(config: dict, spec_dir: Path) -> str | None:
             'validation.probe_commands must map each probe name to {"command": ..., '
             '"description": ...}.'
         )
-    return _fixtures_config_problem(config, spec_dir)
+    return _config_type_problem(config) or _fixtures_config_problem(config, spec_dir)
+
+
+def _config_type_problem(config: dict) -> str | None:
+    ignored = config.get("ignore_untracked")
+    if ignored is not None and not (
+        isinstance(ignored, list) and all(isinstance(g, str) for g in ignored)
+    ):
+        return "validation.ignore_untracked must be a list of glob strings."
+    if not isinstance(config.get("disposable_account", False), bool):
+        return "validation.disposable_account must be true or false."
+    for key in ("fixtures_agent_notes", "commit_trailer"):
+        if config.get(key) is not None and not isinstance(config[key], str):
+            return f"validation.{key} must be a string."
+    turns = config.get("fixtures_max_turns")
+    if turns is not None and not (isinstance(turns, int) and turns > 0):
+        return "validation.fixtures_max_turns must be a positive integer."
+    return None
 
 
 def _fixtures_config_problem(config: dict, spec_dir: Path) -> str | None:
@@ -188,17 +210,6 @@ def _fixtures_config_problem(config: dict, spec_dir: Path) -> str | None:
     check = config.get("fixtures_check_command")
     if check is not None and not (isinstance(check, str) and check.strip()):
         return "validation.fixtures_check_command must be a shell command."
-    ignored = config.get("ignore_untracked")
-    if ignored is not None and not (
-        isinstance(ignored, list) and all(isinstance(g, str) for g in ignored)
-    ):
-        return "validation.ignore_untracked must be a list of glob strings."
-    for key in ("fixtures_agent_notes", "commit_trailer"):
-        if config.get(key) is not None and not isinstance(config[key], str):
-            return f"validation.{key} must be a string."
-    turns = config.get("fixtures_max_turns")
-    if turns is not None and not (isinstance(turns, int) and turns > 0):
-        return "validation.fixtures_max_turns must be a positive integer."
     if fixtures and not guide and not _has_files(spec_dir / fixtures):
         # 051 and 072 deployed and ran with no fixtures; nearly every scenario came back BLOCKED.
         return (
@@ -295,13 +306,22 @@ def description_instructions(
     docs_diff: str,
     followup: str | None,
     body_path: Path,
+    followup_text: str = "",
 ) -> str:
     if len(docs_diff) > DOCS_DIFF_LIMIT:
         docs_diff = docs_diff[:DOCS_DIFF_LIMIT] + "\n[... docs diff truncated ...]"
+    if len(followup_text) > FOLLOWUP_LIMIT:
+        followup_text = followup_text[:FOLLOWUP_LIMIT] + "\n[... follow-ups truncated ...]"
     followup_rule = (
         f"Link `{followup}` and name its most important concerns in a sentence or two."
         if followup
         else 'Write "None".'
+    )
+    followups = (
+        f"--- FOLLOW-UPS (`{followup}`: concerns reviews raised but didn't block on) ---\n"
+        f"{followup_text}\n\n"
+        if followup
+        else ""
     )
     return f"""You write the pull request description for feature `{feature}` of a spec-kit
 project. A reviewer reads it to learn what the feature does and why, before reading the code.
@@ -321,6 +341,7 @@ project. A reviewer reads it to learn what the feature does and why, before read
 --- DOCS DIFF (the shipped behaviour, as merged into the project's docs/) ---
 {docs_diff or "(none)"}
 
+{followups}
 Write the description as GitHub markdown to `{body_path.resolve()}`, with these sections:
 - `## Summary`: two or three sentences on the problem and what this PR does about it.
 - `## What users get`: the user-visible changes, from the user stories and the docs diff.
@@ -380,6 +401,8 @@ async def pr_body(feature: str, spec_dir: Path, spec: str, run_dir: Path) -> str
             branch_changes("--", "docs/"),
             followup.as_posix() if followup.exists() else None,
             body_path,
+            # 077's agent could link the file but not summarise it, having only its path.
+            read_optional(followup, ""),
         )
         try:
             await run_description_agent(instructions, run_dir)
@@ -491,12 +514,90 @@ def deploy(config: dict, env: dict, run_dir: Path) -> str:
 
 
 def login(config: dict, env: dict, base_url: str, run_dir: Path) -> Path:
-    storage_state = (run_dir / "storage-state.json").resolve()
-    env = {**env, "VALIDATION_BASE_URL": base_url, "VALIDATION_STORAGE_STATE": str(storage_state)}
-    result = run_hook(config, "auth_command", env, AUTH_TIMEOUT_S)
-    if result.returncode != 0 or not storage_state.exists():
-        _fail(f"auth_command exited {result.returncode} without writing {storage_state}.")
+    storage_state = (run_dir / STORAGE_STATE_FILENAME).resolve()
+    if problem := _sign_in(config, env, base_url, storage_state):
+        _fail(problem)
     return storage_state
+
+
+def _sign_in(config: dict, env: dict, base_url: str, storage_state: Path) -> str | None:
+    """Run auth_command to write a fresh session to storage_state; why not, if it fails."""
+    storage_state.unlink(missing_ok=True)
+    env = {**env, "VALIDATION_BASE_URL": base_url, "VALIDATION_STORAGE_STATE": str(storage_state)}
+    try:
+        result = run_hook(config, "auth_command", env, AUTH_TIMEOUT_S)
+    except SystemExit:
+        return f"auth_command did not finish within {AUTH_TIMEOUT_S / 60:g} minutes."
+    if result.returncode != 0 or not storage_state.exists():
+        return f"auth_command exited {result.returncode} without writing {storage_state}."
+    return None
+
+
+def session_server(config: dict, env: dict, base_url: str, run_dir: Path) -> dict:
+    """The sign_in_again tool, for a disposable_account run: a scenario that signs
+    out or ends the session leaves the rest with none (077's sign-out scenarios
+    were BLOCKED by the never-log-out rule)."""
+    storage_state = (run_dir / STORAGE_STATE_FILENAME).resolve()
+
+    @tool(
+        "sign_in_again",
+        "Sign the test account in again after a scenario ended its session. The next "
+        "browser launch starts with the new session.",
+        {"type": "object", "properties": {}},
+    )
+    async def sign_in_again(_params: dict) -> dict:
+        problem = await asyncio.to_thread(_sign_in, config, env, base_url, storage_state)
+        text = problem or (
+            "Signed in again. Close the browser now without saving its session, so the next "
+            "launch starts with the new one."
+        )
+        return {"content": [{"type": "text", "text": text}], "is_error": bool(problem)}
+
+    return create_sdk_mcp_server("session", tools=[sign_in_again])
+
+
+def _session_save_gate(run_dir: Path):
+    """Refuse browser_close until the session is saved back to the file the next
+    launch starts from. An app that rotates its session cookie or refresh token
+    on use invalidates the starting copy on the first page load; 077's run lost
+    its session after one launch and came back 21 BLOCKED."""
+    storage_state = (run_dir / STORAGE_STATE_FILENAME).resolve()
+    state = {"saved": False, "signed_in_again": False}
+
+    def deny(reason: str) -> dict:
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+
+    async def hook(input_data: dict, tool_use_id, context) -> dict:
+        tool_name = input_data.get("tool_name")
+        filename = (input_data.get("tool_input") or {}).get("filename") or ""
+        if tool_name == SIGN_IN_TOOL:
+            state.update(saved=True, signed_in_again=True)
+        elif tool_name == SAVE_SESSION_TOOL:
+            if state["signed_in_again"]:
+                return deny(
+                    "You signed in again since this browser started: close it without saving, "
+                    "so the next launch uses the new session."
+                )
+            if (run_dir.resolve() / filename).resolve() != storage_state:
+                return deny(f"Save the session to `{STORAGE_STATE_FILENAME}`.")
+            state["saved"] = True
+        elif tool_name == CLOSE_BROWSER_TOOL:
+            if not state["saved"]:
+                return deny(
+                    f"Save the session first: `browser_storage_state` with filename "
+                    f"`{STORAGE_STATE_FILENAME}`. The app may have renewed its session cookie "
+                    "or tokens, and the next launch starts from that file."
+                )
+            state.update(saved=False, signed_in_again=False)
+        return {}
+
+    return hook
 
 
 def seed(config: dict, env: dict, base_url: str) -> str:
@@ -596,7 +697,7 @@ def mcp_server(config: dict, base_url: str, storage_state: Path, run_dir: Path) 
             "--headless",
             "--isolated",
             "--ignore-roots",
-            "--caps=devtools",
+            "--caps=devtools,storage",
             "--viewport-size=1280x720",
             f"--storage-state={storage_state}",
             f"--output-dir={run_dir.resolve()}",
@@ -637,8 +738,21 @@ def agent_instructions(
     run_dir: Path,
     agent_notes: str = "",
     seeded: str = "",
+    disposable_account: bool = False,
 ) -> str:
     run_path = run_dir.resolve()
+    account_rule = (
+        "This account was made for this run alone: when a scenario needs it, you may sign out,\n"
+        "  end its sessions or replay its credentials. Never delete it or change its credentials."
+        if disposable_account
+        else "Never log out, delete the account, or change its credentials."
+    )
+    ended_session = (
+        "If more scenarios need a session after that, call `sign_in_again`, then\n"
+        "   `browser_close` without saving, and carry on."
+        if disposable_account
+        else ""
+    )
     scenario_list = "\n".join(f"- {s.id}: {s.text}" for s in scenarios)
     project_notes = (
         f"--- PROJECT NOTES ---\n{agent_notes.strip()}\n\n" if agent_notes.strip() else ""
@@ -702,6 +816,10 @@ must show something they need to see, and nothing they have already seen:
       script — the recording then shows nothing of what you checked.
    End the group with `browser_stop_tracing`, then `browser_stop_video`, then
    `browser_close`, so the next group starts from a fresh browser.
+4. Before every `browser_close`, save the session: `browser_storage_state` with filename
+   `{STORAGE_STATE_FILENAME}`. The app may renew its session cookie or tokens as you use it, and
+   each launch starts from that file. A scenario that signs out, revokes or replays a
+   credential ends the session for everything after it, so run those last. {ended_session}
 
 Verdicts:
 - PASS: you observed every expected outcome yourself, in the browser.
@@ -727,7 +845,7 @@ Leave "setup" empty if you created no data.
 {project_notes}Rules:
 - This is a preview environment, but treat its data with care: create only what a scenario
   needs, name anything you create with a "[validation]" prefix, and never delete or modify
-  data you did not create. Never log out, delete the account, or change its credentials.
+  data you did not create. {account_rule}
 - Create data at the pace a single user would: one request at a time, never in parallel. A
   preview's database and functions are small and shared, and its errors may alert people. If
   a request fails, retry it after a pause rather than speeding up.
@@ -740,22 +858,28 @@ Leave "setup" empty if you created no data.
 
 
 async def run_validation_agent(
-    instructions: str, task: str, config: dict, mcp: dict, run_dir: Path
+    instructions: str, task: str, config: dict, servers: dict, run_dir: Path
 ) -> None:
     options = ClaudeAgentOptions(
         system_prompt=_system_prompt_file(run_dir, "agent-prompt.md", instructions),
         tools=["Read", "Write"],
-        allowed_tools=["Read", "Write", "mcp__playwright"],
+        allowed_tools=["Read", "Write", *(f"mcp__{name}" for name in servers)],
         # Runs Node code in the MCP server process, outside every other limit here.
         disallowed_tools=[RUN_CODE_TOOL],
-        mcp_servers={"playwright": mcp},
+        mcp_servers=servers,
         setting_sources=[],
         model=ollama.load_claude_generation_model("validate"),
         max_turns=config.get("max_turns", DEFAULT_MAX_TURNS),
         # The spec and quickstart are already in the prompt, so the agent never needs the repo;
         # keeping it out stops a hostile preview page steering it into reading local secrets.
         hooks={
-            "PreToolUse": [HookMatcher(matcher="Read|Write", hooks=[_run_dir_scope_hook(run_dir)])]
+            "PreToolUse": [
+                HookMatcher(matcher="Read|Write", hooks=[_run_dir_scope_hook(run_dir)]),
+                HookMatcher(
+                    matcher=f"{SAVE_SESSION_TOOL}|{CLOSE_BROWSER_TOOL}|{SIGN_IN_TOOL}",
+                    hooks=[_session_save_gate(run_dir)],
+                ),
+            ]
         },
     )
     await stream_query(query(prompt=task, options=options))
@@ -840,7 +964,9 @@ async def produce_report(
     storage_state = login(config, env, base_url, run_dir)
     pipeline_status.step("seeding data")
     seeded = seed(config, env, base_url)
-    mcp = mcp_server(config, base_url, storage_state, run_dir)
+    servers = {"playwright": mcp_server(config, base_url, storage_state, run_dir)}
+    if config.get("disposable_account"):
+        servers["session"] = session_server(config, env, base_url, run_dir)
     instructions = agent_instructions(
         scenarios,
         spec,
@@ -850,12 +976,13 @@ async def produce_report(
         run_dir,
         config.get("agent_notes", ""),
         seeded,
+        bool(config.get("disposable_account")),
     )
     config = {**config, "max_turns": agent_max_turns(config, scenarios)}
     if not report_path.exists():
         pipeline_status.step("validating")
         task = f"Validate feature {feature} on {base_url}."
-        await _run_until_out_of_turns(instructions, task, config, mcp, run_dir)
+        await _run_until_out_of_turns(instructions, task, config, servers, run_dir)
         report, problems = checked_report(report_path, scenarios, run_dir)
         _escalate_setup_problem(spec_dir, feature, sha, base_url, report)
     if problems:
@@ -866,7 +993,7 @@ async def produce_report(
             "re-running a scenario (with a fresh recording) where evidence is missing — "
             "and leave correct entries alone:\n- " + "\n- ".join(problems)
         )
-        await _run_until_out_of_turns(instructions, task, config, mcp, run_dir)
+        await _run_until_out_of_turns(instructions, task, config, servers, run_dir)
         report, problems = checked_report(report_path, scenarios, run_dir)
     if problems:
         escalate(
@@ -890,12 +1017,12 @@ def agent_max_turns(config: dict, scenarios: list[vr.Scenario]) -> int:
 
 
 async def _run_until_out_of_turns(
-    instructions: str, task: str, config: dict, mcp: dict, run_dir: Path
+    instructions: str, task: str, config: dict, servers: dict, run_dir: Path
 ) -> None:
     """Run the validation agent; running out of turns ends the run, not the
     stage, so the verdicts it saved are kept and the next pass finishes the rest."""
     try:
-        await run_validation_agent(instructions, task, config, mcp, run_dir)
+        await run_validation_agent(instructions, task, config, servers, run_dir)
     except ResultError as e:
         if "maximum number of turns" not in str(e):
             raise
