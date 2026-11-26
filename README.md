@@ -634,7 +634,8 @@ scenario so a human can watch what was actually tested before marking the PR rea
 
 For the commit at HEAD, `ch_6_validate_auto.py`:
 
-1. Pushes the feature branch (never forced) and finds or opens its **draft** PR against `main`.
+1. Refuses to run unless the checked-out branch is the feature's: the PR, its `Closes #N` and the
+   report all follow the branch. Then pushes the feature branch (never forced) and finds or opens its **draft** PR against `main`.
    If the spec came from an issue (`/ch-specify-from-issue` writes a `**Source Issue**: #N`
    header line), the PR body gets `Closes #N`.
    A Claude agent (no tools but writing one file in the run directory) writes the PR description
@@ -720,6 +721,9 @@ report and, unless a `lock_command` is set, the cached deploy URL; `auth_command
 | `fixtures_guide` | no | `path` or `path#heading-slug` of the project's guide to writing fixtures. Setting it makes the stage draft missing fixtures. See § Fixtures. |
 | `fixtures_check_command` | no | Shell command that checks fixtures without touching any environment (e.g. parses the manifest, checks referenced files and scenario ids exist). Given `VALIDATION_FEATURE`, `VALIDATION_SPEC_DIR` and `VALIDATION_FIXTURES_DIR`; 5-minute limit. |
 | `fixtures_max_turns` | no (60) | Turn budget for the fixtures agent. |
+| `fixtures_agent_notes` | no | Project guidance for the fixtures agent only (`agent_notes` is for the browser agent and isn't sent to it). |
+| `commit_trailer` | no (`Co-Authored-By: Claude <noreply@anthropic.com>`) | Trailer on the fixtures commit; `""` for none. |
+| `ignore_untracked` | no | Globs (`*` crosses `/`) for untracked files that don't stop the stage, e.g. `["*.md"]` for notes in the checkout. Changes to tracked files always stop it. |
 | `probe_commands` | no | Named commands the operator agent may run, as `{"<name>": {"command": "...", "description": "..."}}`. See § Probe commands. |
 | `probe_max_turns` | no (150) | Turn budget for the operator agent. |
 
@@ -778,11 +782,14 @@ plan them. With `fixtures_dir` set, before choosing the commit to validate, the 
    and only write in the fixtures directory. It's told to use invented people and data, never
    real ones. If it writes nothing, the stage stops. Without `fixtures_guide`, a missing or
    empty directory stops the stage, as a human must add them.
-2. **Checks and commits uncommitted fixtures.** It runs `fixtures_check_command`, if set. A failure
-   escalates "Validation Fixtures Invalid" with its output, and nothing is pushed or deployed;
-   fix the files and re-run. Then it commits the fixtures as
-   `chore(validation): draft deployed-validation fixtures (ch-6)` and validates that commit, so
-   the deploy and the seed see the same files.
+2. **Checks the fixtures** with `fixtures_check_command`, if set, on every run, committed or not,
+   since a set goes stale when its spec changes. When fixtures drafted in this run fail, the agent
+   gets the check's output and one try to fix exactly those problems. A failure that remains, or
+   any failure of fixtures it didn't draft in this run, escalates "Validation Fixtures Invalid"
+   with the output, and nothing is pushed or deployed.
+3. **Commits uncommitted fixtures** as `chore(validation): draft deployed-validation fixtures
+   (ch-6)` (plus `commit_trailer`) and validates that commit, so the deploy and the seed see the
+   same files.
 
 Drafted fixtures are pushed with the branch before anyone has reviewed them. The PR's report
 comment says when the validated fixtures are still the agent's draft, so review them along with

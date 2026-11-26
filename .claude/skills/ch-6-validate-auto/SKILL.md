@@ -36,7 +36,8 @@ Wait for the script to complete and relay its output to the user.
 
 1. Does nothing unless `.specify/pipeline.json` sets `stages.validate.enabled: true` and has a
    `validation` block (see README § Deployed Validation)
-2. Validates pre-flight conditions (implement and docs stages complete, clean working tree,
+2. Validates pre-flight conditions (the checked-out branch is the feature's, implement and docs
+   stages complete, clean working tree apart from `ignore_untracked` files,
    `gh` authenticated, validation generation provider is Claude, and this feature's fixtures
    present when `fixtures_dir` is set, unless `fixtures_guide` lets the stage draft them, after
    which it checks and commits them before choosing the commit to validate)

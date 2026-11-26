@@ -113,9 +113,24 @@ get_highest_from_specs() {
     echo "$highest"
 }
 
-# Function to get highest number from git branches
+# Reads "<ref> <branch name>" lines and prints the names of numbered branches
+# whose own tree has specs/<name>/, i.e. feature branches. Other numbered
+# branches (a bug fix named after its issue, like 223-zod-4) have no spec dir
+# and mustn't push the next feature number up.
+_feature_branch_names() {
+    local ref name
+    while read -r ref name; do
+        echo "$name" | grep -Eq '^[0-9]{3,}-' || continue
+        git cat-file -e "$ref:specs/$name" 2>/dev/null && echo "$name"
+    done
+}
+
+# Function to get highest number from git feature branches
 get_highest_from_branches() {
-    git branch -a 2>/dev/null | sed 's/^[* ]*//; s|^remotes/[^/]*/||' | _extract_highest_number
+    {
+        git for-each-ref --format='%(refname) %(refname:lstrip=2)' refs/heads
+        git for-each-ref --format='%(refname) %(refname:lstrip=3)' refs/remotes
+    } 2>/dev/null | _feature_branch_names | _extract_highest_number
 }
 
 # Extract the highest sequential feature number from a list of ref names (one per line).
@@ -141,7 +156,8 @@ get_highest_from_remote_refs() {
 
     for remote in $(git remote 2>/dev/null); do
         local remote_highest
-        remote_highest=$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads "$remote" 2>/dev/null | sed 's|.*refs/heads/||' | _extract_highest_number)
+        # A head whose commit isn't fetched can't be checked for specs/, so isn't counted.
+        remote_highest=$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads "$remote" 2>/dev/null | sed 's|\trefs/heads/| |' | _feature_branch_names | _extract_highest_number)
         if [ "$remote_highest" -gt "$highest" ]; then
             highest=$remote_highest
         fi

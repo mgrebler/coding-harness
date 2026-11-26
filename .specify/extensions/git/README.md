@@ -65,6 +65,10 @@ auto_commit:
     message: "[Spec Kit] Add specification"
 ```
 
+Sequential numbering takes the next number after the highest one among `specs/` and the feature
+branches, local or remote, that have their own `specs/<branch>/` directory. Other numbered branches,
+such as a bug fix named after its issue (`223-zod-4`), don't count.
+
 ## Installation
 
 ```bash

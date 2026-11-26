@@ -69,7 +69,7 @@ class TestRunDisabled(_ProjectCase):
 class TestPreflight(_ProjectCase):
     def _preflight(self, dirty=(), authed=True):
         with (
-            patch.object(va, "dirty_files", return_value=list(dirty)),
+            patch.object(va, "uncommitted_paths", return_value=list(dirty)),
             patch.object(va.github_pr, "gh_authenticated", return_value=authed),
             patch.object(va, "log"),
         ):
@@ -882,3 +882,116 @@ class TestRunDraftsBeforeReadingHead(_RunCase):
         ):
             self.assertIsNone(self._run(agent, config={**CONFIG, "fixtures_dir": "fx"})[0])
         self.assertEqual(order[:2], ["prepare", "sha"])
+
+
+CHECK_FIXED = 'grep -q fixed "$VALIDATION_FIXTURES_DIR/fixtures.json" || { echo "QS-10 not in spec"; exit 1; }'
+
+
+class TestFixturesFollowUps(_FixturesCase):
+    def _hand_written(self, content, commit=True):
+        self.fixtures.mkdir(parents=True)
+        (self.fixtures / "fixtures.json").write_text(content)
+        if commit:
+            subprocess.run(["git", "add", "-A"], check=True)
+            subprocess.run(["git", "commit", "-qm", "test: fixtures"], check=True)
+
+    def _draft(self, contents, config):
+        """A fake fixtures agent writing contents[N] on its Nth call."""
+        contents = list(contents)
+        calls = []
+
+        async def agent(instructions, config, fixtures_dir):
+            calls.append(instructions)
+            fixtures_dir.mkdir(parents=True, exist_ok=True)
+            (fixtures_dir / "fixtures.json").write_text(contents.pop(0))
+
+        with patch.object(va, "run_fixtures_agent", side_effect=agent), patch.object(va, "log"):
+            try:
+                asyncio.run(va.prepare_fixtures(config, self.spec_dir, FEATURE))
+                code = None
+            except SystemExit as e:
+                code = e.code
+        return code, calls
+
+    def test_committed_fixtures_are_checked_too(self):
+        """055's committed fixtures named a quickstart section the spec had dropped."""
+        self._hand_written("stale")
+        head = self._head()
+        code, calls = self._draft([], {**DRAFTING, "fixtures_check_command": CHECK_FIXED})
+        self.assertEqual((code, calls, self._head()), (1, [], head))
+        escalation = (self.spec_dir / va.ESCALATION_FILENAME).read_text()
+        self.assertIn("QS-10 not in spec", escalation)
+        self.assertIn("Fix them, commit, and re-run.", escalation)
+
+    def test_committed_fixtures_that_pass_make_no_commit(self):
+        self._hand_written("fixed")
+        head = self._head()
+        code, _ = self._draft([], {**DRAFTING, "fixtures_check_command": CHECK_FIXED})
+        self.assertEqual((code, self._head()), (None, head))
+
+    def test_a_failed_draft_gets_one_fix_from_the_agent(self):
+        config = {**DRAFTING, "fixtures_check_command": CHECK_FIXED}
+        code, calls = self._draft(["broken", "fixed"], config)
+        self.assertIsNone(code)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("QS-10 not in spec", calls[1])
+        self.assertEqual(va._git("log", "-1", "--format=%s"), va.FIXTURES_COMMIT_SUBJECT)
+
+    def test_a_draft_failing_twice_escalates_with_both_outputs_uncommitted(self):
+        head = self._head()
+        config = {**DRAFTING, "fixtures_check_command": CHECK_FIXED}
+        code, calls = self._draft(["broken", "still broken"], config)
+        self.assertEqual((code, len(calls), self._head()), (1, 2, head))
+        escalation = (self.spec_dir / va.ESCALATION_FILENAME).read_text()
+        self.assertEqual(escalation.count("QS-10 not in spec"), 2)
+        self.assertIn("they are uncommitted", escalation)
+
+    def test_uncommitted_hand_written_fixtures_never_go_to_the_agent(self):
+        self._hand_written("broken", commit=False)
+        code, calls = self._draft([], {**DRAFTING, "fixtures_check_command": CHECK_FIXED})
+        self.assertEqual((code, calls), (1, []))
+
+    def test_fixtures_agent_gets_its_own_notes_not_the_browser_agents(self):
+        config = {
+            **DRAFTING,
+            "agent_notes": "BROWSER ONLY",
+            "fixtures_agent_notes": "FEWEST EMAILS",
+        }
+        _, calls = self._draft(["{}"], config)
+        self.assertIn("FEWEST EMAILS", calls[0])
+        self.assertNotIn("BROWSER ONLY", calls[0])
+
+    def test_commit_carries_a_configurable_trailer(self):
+        self._draft(["{}"], DRAFTING)
+        self.assertIn(va.DEFAULT_COMMIT_TRAILER, va._git("log", "-1", "--format=%B"))
+        subprocess.run(["git", "rm", "-rqf", str(self.fixtures)], check=True)
+        subprocess.run(["git", "commit", "-qm", "test: drop fixtures"], check=True)
+        self._draft(["{}"], {**DRAFTING, "commit_trailer": ""})
+        self.assertEqual(va._git("log", "-1", "--format=%B"), va.FIXTURES_COMMIT_SUBJECT)
+
+
+class TestUncommittedPaths(_FixturesCase):
+    def test_ignored_untracked_files_pass_and_tracked_changes_never_do(self):
+        (self.root / "brief.md").write_text("notes")
+        (self.root / "src").mkdir()
+        (self.root / "src/new.ts").write_text("x")
+        (self.root / "docs/ops.md").write_text("changed")
+        self.assertEqual(sorted(va.uncommitted_paths(["*.md"])), ["docs/ops.md", "src/new.ts"])
+        self.assertIn("brief.md", va.uncommitted_paths([]))
+
+
+class TestBranchMismatch(_RunCase):
+    def test_refused_before_anything_is_committed_or_pushed(self):
+        with patch.object(va, "prepare_fixtures") as prepare:
+            pr = {"number": 5, "url": "u", "body": "", "baseRefName": "main"}
+            with (
+                patch.object(va, "preflight", return_value={**CONFIG, "fixtures_dir": "fx"}),
+                patch.object(va, "_git", return_value="077-other"),
+                patch.object(va.github_pr, "push_branch") as push,
+                patch.object(va.github_pr, "ensure_draft_pr", return_value=pr),
+                patch.object(va, "log"),
+                self.assertRaises(SystemExit),
+            ):
+                asyncio.run(va.run(FEATURE))
+        prepare.assert_not_called()
+        push.assert_not_called()

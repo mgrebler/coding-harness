@@ -63,6 +63,7 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from fnmatch import fnmatch
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -82,7 +83,7 @@ from agent_common.critic_loop import run_cli
 from agent_common.driving_agent import HUMAN_REVIEW_ATTESTATION_GUARDRAIL
 from agent_common.files import read_file, read_optional, require_spec_files, write_file
 from agent_common.followup import FOLLOWUP_FILENAME
-from agent_common.git import branch_changes, dirty_files
+from agent_common.git import branch_changes
 from agent_common.github_deployment_url import SUPERSEDED_EXIT_CODE
 from agent_common.resume_state import clear_stage_complete, stage_is_complete
 
@@ -103,6 +104,7 @@ DEFAULT_PROBE_MAX_TURNS = 150
 DEFAULT_FIXTURES_MAX_TURNS = 60
 FIXTURES_CHECK_TIMEOUT_S = 300
 FIXTURES_COMMIT_SUBJECT = "chore(validation): draft deployed-validation fixtures (ch-6)"
+DEFAULT_COMMIT_TRAILER = "Co-Authored-By: Claude <noreply@anthropic.com>"
 # What the fixtures agent may read: enough to see the spec, the project's guide
 # and other features' fixtures, not the checkout's secrets. What it writes is
 # committed and pushed before a human sees it.
@@ -141,7 +143,11 @@ def preflight(spec_dir: Path) -> dict:
     # The spec dir is pipeline bookkeeping, not app code — and ch-5-docs leaves
     # its own completion marker uncommitted, which must not block this stage.
     spec_prefix = spec_dir.as_posix().rstrip("/") + "/"
-    if dirty := [p for p in dirty_files() if not (p + "/").startswith(spec_prefix)]:
+    if dirty := [
+        p
+        for p in uncommitted_paths(config.get("ignore_untracked", []))
+        if not (p + "/").startswith(spec_prefix)
+    ]:
         _fail(
             "working tree has uncommitted changes, which the deployed preview would not "
             f"contain — commit or stash them first: {', '.join(dirty)}"
@@ -182,6 +188,14 @@ def _fixtures_config_problem(config: dict, spec_dir: Path) -> str | None:
     check = config.get("fixtures_check_command")
     if check is not None and not (isinstance(check, str) and check.strip()):
         return "validation.fixtures_check_command must be a shell command."
+    ignored = config.get("ignore_untracked")
+    if ignored is not None and not (
+        isinstance(ignored, list) and all(isinstance(g, str) for g in ignored)
+    ):
+        return "validation.ignore_untracked must be a list of glob strings."
+    for key in ("fixtures_agent_notes", "commit_trailer"):
+        if config.get(key) is not None and not isinstance(config[key], str):
+            return f"validation.{key} must be a string."
     turns = config.get("fixtures_max_turns")
     if turns is not None and not (isinstance(turns, int) and turns > 0):
         return "validation.fixtures_max_turns must be a positive integer."
@@ -225,6 +239,26 @@ def fixtures_guide_text(ref: str) -> tuple[str, str | None]:
             )
             return "\n".join(lines[i:end]), None
     return "", f"validation.fixtures_guide: {path} has no heading for #{anchor}."
+
+
+def uncommitted_paths(ignore_untracked: list[str]) -> list[str]:
+    """Paths the deployed commit wouldn't contain: every tracked change, and every
+    untracked file not matching an ignore_untracked glob (`*` crosses `/`). A
+    stray brief at the repo root stopped sprognoggin's runs until each one was
+    excluded from git by hand."""
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    paths = []
+    for line in status.splitlines():
+        path = line[3:].split(" -> ", 1)[-1].strip('"')
+        if line.startswith("??") and any(fnmatch(path, glob) for glob in ignore_untracked):
+            continue
+        paths.append(path)
+    return paths
 
 
 def _has_files(path: Path) -> bool:
@@ -1157,65 +1191,98 @@ async def run_fixtures_agent(instructions: str, config: dict, fixtures_dir: Path
 
 async def prepare_fixtures(config: dict, spec_dir: Path, feature: str) -> None:
     """Draft the feature's fixtures when it has none and the project has a guide,
-    then check and commit any uncommitted fixtures before HEAD is read, so the
+    check them, and commit any uncommitted ones before HEAD is read, so the
     deploy and the seed see the same files. No stage plans fixtures (deployed
     validation owns them), so without this an unattended pipeline stopped here."""
     fixtures_dir = spec_dir / config["fixtures_dir"]
+    instructions = None
     if not _has_files(fixtures_dir):
         pipeline_status.step("drafting fixtures")
         log(f"{fixtures_dir} is empty — drafting fixtures from {config['fixtures_guide']}.")
         spec = read_file(spec_dir / "spec.md")
         quickstart = read_optional(spec_dir / "quickstart.md", "")
-        await run_fixtures_agent(
-            fixtures_instructions(
-                spec,
-                quickstart,
-                vr.extract_scenarios(spec, quickstart),
-                fixtures_guide_text(config["fixtures_guide"])[0],
-                fixtures_dir,
-                config["fixtures_dir"],
-                config.get("agent_notes", ""),
-            ),
-            config,
+        instructions = fixtures_instructions(
+            spec,
+            quickstart,
+            vr.extract_scenarios(spec, quickstart),
+            fixtures_guide_text(config["fixtures_guide"])[0],
             fixtures_dir,
+            config["fixtures_dir"],
+            config.get("fixtures_agent_notes", ""),
         )
+        await run_fixtures_agent(instructions, config, fixtures_dir)
         if not _has_files(fixtures_dir):
             _fail(
                 f"the fixtures agent wrote nothing to {fixtures_dir} (see this stage's log). Add "
                 "the fixtures by hand, or a NONE file saying why none are needed, and re-run."
             )
-    if not _git("status", "--porcelain", "--", str(fixtures_dir)):
-        return
-    _check_fixtures(config, spec_dir, feature, fixtures_dir)
-    try:
-        _git("add", "--", str(fixtures_dir))
-        _git("commit", "-q", "-m", FIXTURES_COMMIT_SUBJECT, "--", str(fixtures_dir))
-    except subprocess.CalledProcessError as e:
-        _fail(f"committing {fixtures_dir} failed: {(e.stderr or e.stdout or '').strip()[-1000:]}")
-    log(f"Committed {fixtures_dir}. Review them with the recordings.")
+    dirty = bool(_git("status", "--porcelain", "--", str(fixtures_dir)))
+    # Committed sets are checked too: they're the ones a later spec change leaves stale
+    # (055's fixtures still named a quickstart section it no longer had).
+    failures = [rejection] if (rejection := fixtures_rejection(config, spec_dir, feature)) else []
+    if failures and instructions is not None:
+        log("The drafted fixtures failed the fixtures check; giving the agent one try to fix them.")
+        await run_fixtures_agent(
+            f"{instructions}\nYour draft failed the project's fixtures check. Fix exactly these "
+            f"problems and change nothing else:\n\n{failures[0]}\n",
+            config,
+            fixtures_dir,
+        )
+        failures = (
+            [*failures, rejection]
+            if (rejection := fixtures_rejection(config, spec_dir, feature))
+            else []
+        )
+    if failures:
+        _escalate_fixtures(spec_dir, feature, fixtures_dir, failures, committed=not dirty)
+    if dirty:
+        _commit_fixtures(config, fixtures_dir)
 
 
-def _check_fixtures(config: dict, spec_dir: Path, feature: str, fixtures_dir: Path) -> None:
+def fixtures_rejection(config: dict, spec_dir: Path, feature: str) -> str | None:
+    """fixtures_check_command's output when it rejects the fixtures, else None."""
     if not config.get("fixtures_check_command"):
-        return
+        return None
     env = {
         **os.environ,
         "VALIDATION_FEATURE": feature,
         "VALIDATION_SPEC_DIR": str(spec_dir.resolve()),
-        "VALIDATION_FIXTURES_DIR": str(fixtures_dir.resolve()),
+        "VALIDATION_FIXTURES_DIR": str((spec_dir / config["fixtures_dir"]).resolve()),
     }
     result = run_hook(config, "fixtures_check_command", env, FIXTURES_CHECK_TIMEOUT_S, capture=True)
-    if result.returncode != 0:
-        escalate(
-            spec_dir,
-            feature,
-            _git("rev-parse", "HEAD"),
-            "Validation Fixtures Invalid",
-            f"`fixtures_check_command` rejected {fixtures_dir} (exit {result.returncode}), so "
-            f"nothing was pushed or deployed:\n\n```\n{result.stdout.strip()[-4000:]}\n```\n\n"
-            "Fix the fixtures (they are uncommitted) and re-run; the stage checks and commits "
-            "them before validating.",
-        )
+    if result.returncode == 0:
+        return None
+    return f"(exit {result.returncode})\n{result.stdout.strip()[-4000:]}"
+
+
+def _escalate_fixtures(
+    spec_dir: Path, feature: str, fixtures_dir: Path, failures: list[str], committed: bool
+) -> None:
+    outputs = "\n\n".join(f"```\n{f}\n```" for f in failures)
+    action = (
+        "Fix them, commit, and re-run."
+        if committed
+        else "Fix them (they are uncommitted) and re-run; the stage checks and commits them."
+    )
+    escalate(
+        spec_dir,
+        feature,
+        _git("rev-parse", "HEAD"),
+        "Validation Fixtures Invalid",
+        f"`fixtures_check_command` rejected {fixtures_dir}, so nothing was pushed or "
+        f"deployed:\n\n{outputs}\n\n{action}",
+    )
+
+
+def _commit_fixtures(config: dict, fixtures_dir: Path) -> None:
+    trailer = config.get("commit_trailer", DEFAULT_COMMIT_TRAILER)
+    message = f"{FIXTURES_COMMIT_SUBJECT}\n\n{trailer}" if trailer else FIXTURES_COMMIT_SUBJECT
+    try:
+        _git("add", "--", str(fixtures_dir))
+        _git("commit", "-q", "-m", message, "--", str(fixtures_dir))
+    except subprocess.CalledProcessError as e:
+        _fail(f"committing {fixtures_dir} failed: {(e.stderr or e.stdout or '').strip()[-1000:]}")
+    log(f"Committed {fixtures_dir}. Review them with the recordings.")
 
 
 def fixtures_note(config: dict, spec_dir: Path) -> str:
@@ -1256,10 +1323,16 @@ async def run(feature: str):
         return
 
     config = preflight(spec_dir)
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    if branch != feature:
+        # The PR, its `Closes #N` and the report all follow the checked-out branch.
+        _fail(
+            f"the checked-out branch is {branch}, not {feature}, so this run would commit to, "
+            f"push and report on {branch}'s PR. Check out {feature} and re-run."
+        )
     if config.get("fixtures_dir"):
         await prepare_fixtures(config, spec_dir, feature)
     sha = _git("rev-parse", "HEAD")
-    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
     if already_validated(spec_dir, sha):
         log(f"{sha[:12]} already passed validation. No further action taken.")
         return

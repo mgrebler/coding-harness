@@ -80,16 +80,30 @@ function Get-HighestNumberFromNames {
     return $highest
 }
 
+# Names of numbered branches whose own tree has specs/<name>/, i.e. feature
+# branches. Other numbered branches (a bug fix named after its issue, like
+# 223-zod-4) have no spec dir and mustn't push the next feature number up.
+# Takes "<ref or sha> <branch name>" pairs.
+function Get-FeatureBranchNames {
+    param([string[]]$RefNamePairs)
+
+    foreach ($pair in $RefNamePairs) {
+        $ref, $name = $pair -split ' ', 2
+        if ($name -notmatch '^\d{3,}-') { continue }
+        git cat-file -e "${ref}:specs/$name" 2>$null
+        if ($LASTEXITCODE -eq 0) { $name }
+    }
+}
+
 function Get-HighestNumberFromBranches {
     param()
 
     try {
-        $branches = git branch -a 2>$null
-        if ($LASTEXITCODE -eq 0 -and $branches) {
-            $cleanNames = $branches | ForEach-Object {
-                $_.Trim() -replace '^\*?\s+', '' -replace '^remotes/[^/]+/', ''
-            }
-            return Get-HighestNumberFromNames -Names $cleanNames
+        $pairs = @(git for-each-ref --format='%(refname) %(refname:lstrip=2)' refs/heads 2>$null) +
+            @(git for-each-ref --format='%(refname) %(refname:lstrip=3)' refs/remotes 2>$null)
+        $names = @(Get-FeatureBranchNames -RefNamePairs ($pairs | Where-Object { $_ }))
+        if ($names.Count -gt 0) {
+            return Get-HighestNumberFromNames -Names $names
         }
     } catch {
         Write-Verbose "Could not check Git branches: $_"
@@ -107,9 +121,11 @@ function Get-HighestNumberFromRemoteRefs {
                 $refs = git ls-remote --heads $remote 2>$null
                 $env:GIT_TERMINAL_PROMPT = $null
                 if ($LASTEXITCODE -eq 0 -and $refs) {
-                    $refNames = $refs | ForEach-Object {
-                        if ($_ -match 'refs/heads/(.+)$') { $matches[1] }
+                    # A head whose commit isn't fetched can't be checked for specs/, so isn't counted.
+                    $pairs = $refs | ForEach-Object {
+                        if ($_ -match '^(\S+)\s+refs/heads/(.+)$') { "$($matches[1]) $($matches[2])" }
                     } | Where-Object { $_ }
+                    $refNames = @(Get-FeatureBranchNames -RefNamePairs $pairs)
                     $remoteHighest = Get-HighestNumberFromNames -Names $refNames
                     if ($remoteHighest -gt $highest) { $highest = $remoteHighest }
                 }
