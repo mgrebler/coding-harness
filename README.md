@@ -678,7 +678,8 @@ For the commit at HEAD, `ch_6_validate_auto.py`:
 8. Posts the report as a PR comment (once per commit). Any FAIL/BLOCKED writes
    `specs/NNN-feature/ch-6-validate-escalation.md` and exits non-zero.
 
-The stage is **report-only**: it never fixes code, never commits, and never merges. Everything it
+The stage is **report-only**: it never fixes code and never merges. It commits nothing after
+choosing the commit to validate (see § Fixtures for the one commit it makes before). Everything it
 writes is gitignored and local to the machine that ran it — recordings, traces, the session file
 and the report live in `specs/NNN-feature/validation/<sha12>/`. Each commit is validated once:
 re-running on an already-passed commit is a no-op, and a new commit starts fresh. To re-validate
@@ -715,7 +716,10 @@ report and, unless a `lock_command` is set, the cached deploy URL; `auth_command
 | `playwright_mcp_version` | no | Pins `@playwright/mcp`. |
 | `max_turns` | no (16 per scenario, at least 300) | Turn budget for the validation agent. Running out ends that pass, not the stage: the agent's saved verdicts are kept and one more pass finishes the missing scenarios. |
 | `agent_notes` | no | Project-specific guidance added to the agent's instructions, e.g. limits on actions that cost money, or scenarios that can't run in a plain browser and should be `BLOCKED`. |
-| `fixtures_dir` | no | Directory, relative to the feature's spec dir, that `seed_command` reads fixtures from. When set, the stage refuses to start (before pushing or deploying) unless it holds at least one file; a feature that needs no fixtures adds a `NONE` file saying why. |
+| `fixtures_dir` | no | Directory, relative to the feature's spec dir, that `seed_command` reads fixtures from. See § Fixtures. |
+| `fixtures_guide` | no | `path` or `path#heading-slug` of the project's guide to writing fixtures. Setting it makes the stage draft missing fixtures. See § Fixtures. |
+| `fixtures_check_command` | no | Shell command that checks fixtures without touching any environment (e.g. parses the manifest, checks referenced files and scenario ids exist). Given `VALIDATION_FEATURE`, `VALIDATION_SPEC_DIR` and `VALIDATION_FIXTURES_DIR`; 5-minute limit. |
+| `fixtures_max_turns` | no (60) | Turn budget for the fixtures agent. |
 | `probe_commands` | no | Named commands the operator agent may run, as `{"<name>": {"command": "...", "description": "..."}}`. See § Probe commands. |
 | `probe_max_turns` | no (150) | Turn budget for the operator agent. |
 
@@ -760,6 +764,29 @@ project's choice — an S3 object, a DynamoDB item, a git ref — as long as:
 
 Under a lock the cached deploy URL is never reused, since the environment may hold another
 branch's deploy by the time a run resumes.
+
+### Fixtures
+
+Some scenarios need data a browser can't create, which `seed_command` delivers from per-feature
+fixtures. No earlier stage writes them: deployed validation owns them, so the tasks stage doesn't
+plan them. With `fixtures_dir` set, before choosing the commit to validate, the stage:
+
+1. **Drafts missing fixtures**, when the directory is missing or empty and `fixtures_guide` is set.
+   A Claude agent gets the spec, quickstart, scenario ids, the guide (or the named section of it)
+   and `agent_notes`, and writes the fixtures, or a `NONE` file saying why none are needed. It
+   can only read under `specs/` and `docs/` (for the format, it reads other features' fixtures),
+   and only write in the fixtures directory. It's told to use invented people and data, never
+   real ones. If it writes nothing, the stage stops. Without `fixtures_guide`, a missing or
+   empty directory stops the stage, as a human must add them.
+2. **Checks and commits uncommitted fixtures.** It runs `fixtures_check_command`, if set. A failure
+   escalates "Validation Fixtures Invalid" with its output, and nothing is pushed or deployed;
+   fix the files and re-run. Then it commits the fixtures as
+   `chore(validation): draft deployed-validation fixtures (ch-6)` and validates that commit, so
+   the deploy and the seed see the same files.
+
+Drafted fixtures are pushed with the branch before anyone has reviewed them. The PR's report
+comment says when the validated fixtures are still the agent's draft, so review them along with
+the recordings. Deleting the directory makes the next run draft them again.
 
 ### Probe commands
 

@@ -38,7 +38,8 @@ Wait for the script to complete and relay its output to the user.
    `validation` block (see README § Deployed Validation)
 2. Validates pre-flight conditions (implement and docs stages complete, clean working tree,
    `gh` authenticated, validation generation provider is Claude, and this feature's fixtures
-   present when `fixtures_dir` is set)
+   present when `fixtures_dir` is set, unless `fixtures_guide` lets the stage draft them, after
+   which it checks and commits them before choosing the commit to validate)
 3. Pushes the feature branch (never forced) and finds or opens its **draft** PR against `main`,
    adding `Closes #N` when the spec came from an issue
 4. Runs the project's `deploy_command`, which prints this commit's preview URL — inside the

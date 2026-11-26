@@ -727,3 +727,158 @@ class TestPrTitle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+GUIDE = "# Ops\n\n## Writing a feature's fixtures\n\nUse fixtures.json.\n\n## Other\n\nx\n"
+DRAFTING = {
+    **CONFIG,
+    "fixtures_dir": "validation-fixtures",
+    "fixtures_guide": "docs/ops.md#writing-a-features-fixtures",
+}
+
+
+class _FixturesCase(_ProjectCase):
+    def setUp(self):
+        super().setUp()
+        (self.root / "docs").mkdir()
+        (self.root / "docs/ops.md").write_text(GUIDE)
+        for args in (
+            ["init", "-q"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["add", "-A"],
+            ["commit", "-q", "-m", "init"],
+        ):
+            subprocess.run(["git", *args], check=True, capture_output=True)
+        self.fixtures = self.spec_dir / "validation-fixtures"
+
+    def _head(self):
+        return va._git("rev-parse", "HEAD")
+
+    def _prepare(self, config=DRAFTING, writes=("fixtures.json",)):
+        calls = []
+
+        async def agent(instructions, config, fixtures_dir):
+            calls.append(instructions)
+            for name in writes:
+                fixtures_dir.mkdir(parents=True, exist_ok=True)
+                (fixtures_dir / name).write_text('{"US1-AS1": "email.eml"}')
+
+        with patch.object(va, "run_fixtures_agent", side_effect=agent), patch.object(va, "log"):
+            asyncio.run(va.prepare_fixtures(config, self.spec_dir, FEATURE))
+        return calls
+
+
+class TestFixturesConfig(_FixturesCase):
+    def test_guide_section_and_types(self):
+        self.assertIsNone(va._config_problem(DRAFTING, self.spec_dir))
+        bad = {
+            "unknown heading": {**DRAFTING, "fixtures_guide": "docs/ops.md#nope"},
+            "missing file": {**DRAFTING, "fixtures_guide": "docs/gone.md"},
+            "no fixtures_dir": {**CONFIG, "fixtures_guide": "docs/ops.md"},
+            "empty check command": {**DRAFTING, "fixtures_check_command": " "},
+            "bad turn budget": {**DRAFTING, "fixtures_max_turns": "60"},
+        }
+        for name, config in bad.items():
+            with self.subTest(name):
+                self.assertIsNotNone(va._config_problem(config, self.spec_dir))
+
+    def test_guide_text_is_the_named_section(self):
+        text, problem = va.fixtures_guide_text("docs/ops.md#writing-a-features-fixtures")
+        self.assertIsNone(problem)
+        self.assertIn("Use fixtures.json", text)
+        self.assertNotIn("## Other", text)
+
+
+class TestPrepareFixtures(_FixturesCase):
+    def test_drafts_and_commits_before_head_is_read(self):
+        before = self._head()
+        calls = self._prepare()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("Use fixtures.json", calls[0])
+        self.assertNotEqual(self._head(), before)
+        self.assertEqual(va._git("log", "-1", "--format=%s"), va.FIXTURES_COMMIT_SUBJECT)
+        self.assertEqual(va._git("status", "--porcelain"), "")
+        self.assertIn("drafted by an agent", va.fixtures_note(DRAFTING, self.spec_dir))
+
+    def test_rerun_does_not_draft_again(self):
+        self._prepare()
+        head = self._head()
+        self.assertEqual(self._prepare(), [])
+        self.assertEqual(self._head(), head)
+
+    def test_agent_writing_nothing_fails_before_anything_else(self):
+        head = self._head()
+        with self.assertRaises(SystemExit):
+            self._prepare(writes=())
+        self.assertEqual(self._head(), head)
+
+    def test_failed_check_escalates_without_committing(self):
+        head = self._head()
+        with self.assertRaises(SystemExit):
+            self._prepare(config={**DRAFTING, "fixtures_check_command": "echo bad id; exit 1"})
+        self.assertEqual(self._head(), head)
+        escalation = (self.spec_dir / va.ESCALATION_FILENAME).read_text()
+        self.assertIn("Fixtures Invalid", escalation)
+        self.assertIn("bad id", escalation)
+
+    def test_a_human_edit_is_not_reported_as_drafted(self):
+        self._prepare()
+        (self.fixtures / "fixtures.json").write_text("{}")
+        subprocess.run(["git", "commit", "-qam", "test: fix fixtures"], check=True)
+        self.assertEqual(va.fixtures_note(DRAFTING, self.spec_dir), "")
+
+    def test_without_a_guide_missing_fixtures_still_fail_preflight(self):
+        config = {**CONFIG, "fixtures_dir": "validation-fixtures"}
+        self.assertIn("missing or empty", va._config_problem(config, self.spec_dir))
+
+
+class TestFixturesAgentScope(unittest.TestCase):
+    def _decide(self, tool, tool_input):
+        with tempfile.TemporaryDirectory() as d:
+            cwd = Path.cwd()
+            os.chdir(d)
+            try:
+                hook = va._path_scope_hook(Path("specs/012-x/fx"), (Path("specs"), Path("docs")))
+                result = asyncio.run(
+                    hook({"tool_name": tool, "tool_input": tool_input}, None, None)
+                )
+            finally:
+                os.chdir(cwd)
+        return "deny" if result else "allow"
+
+    def test_writes_only_in_the_fixtures_dir_and_reads_only_specs_and_docs(self):
+        cases = {
+            ("Write", "specs/012-x/fx/fixtures.json"): "allow",
+            ("Write", "specs/012-x/plan.md"): "deny",
+            ("Read", "docs/ops.md"): "allow",
+            ("Read", ".env"): "deny",
+        }
+        for (tool, path), expected in cases.items():
+            with self.subTest(tool=tool, path=path):
+                self.assertEqual(self._decide(tool, {"file_path": path}), expected)
+        self.assertEqual(self._decide("Glob", {"pattern": "**/*.json", "path": "specs"}), "allow")
+        self.assertEqual(self._decide("Glob", {"pattern": "**/.env"}), "deny")
+        self.assertEqual(self._decide("Glob", {"pattern": "../**", "path": "specs"}), "deny")
+
+
+class TestRunDraftsBeforeReadingHead(_RunCase):
+    def test_fixtures_are_prepared_before_the_commit_is_chosen(self):
+        order = []
+
+        async def prepare(config, spec_dir, feature):
+            order.append("prepare")
+
+        passing = {
+            "scenarios": [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok", "record": 1}]
+        }
+        agent, _ = self._agent_writing(passing)
+        with (
+            patch.object(va, "prepare_fixtures", side_effect=prepare),
+            patch.object(va, "fixtures_note", return_value=""),
+            patch.object(
+                va, "already_validated", side_effect=lambda *a: order.append("sha") or False
+            ),
+        ):
+            self.assertIsNone(self._run(agent, config={**CONFIG, "fixtures_dir": "fx"})[0])
+        self.assertEqual(order[:2], ["prepare", "sha"])

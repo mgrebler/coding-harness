@@ -36,9 +36,12 @@ What this stage does, for the commit at HEAD:
   6. Checks that report deterministically, posts it as one PR comment, and
      escalates any FAIL/BLOCKED scenario for a human.
 
-The stage is report-only: it never fixes code, never commits (everything it
-writes is gitignored — a commit would move HEAD off the deploy it just
-validated), and never merges or marks the PR ready for review.
+The stage is report-only: it never fixes code and never merges or marks the
+PR ready for review. Its output is gitignored, and it never commits after
+choosing the commit to validate, since that would move HEAD off the deploy it
+validated. The one commit it makes comes first: when validation.fixtures_dir is
+set, it commits the feature's uncommitted fixtures (drafting them when there
+are none and fixtures_guide is set) and then validates that commit.
 
 Resume behaviour:
   All output lives in specs/$FEATURE/validation/<sha12>/, so each commit is
@@ -54,6 +57,7 @@ Resume behaviour:
 import asyncio
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -96,6 +100,13 @@ DEFAULT_MAX_TURNS = 300
 # 098's 39 upload-heavy scenarios ran out of 300 turns at 14 and finished in 600.
 TURNS_PER_SCENARIO = 16
 DEFAULT_PROBE_MAX_TURNS = 150
+DEFAULT_FIXTURES_MAX_TURNS = 60
+FIXTURES_CHECK_TIMEOUT_S = 300
+FIXTURES_COMMIT_SUBJECT = "chore(validation): draft deployed-validation fixtures (ch-6)"
+# What the fixtures agent may read: enough to see the spec, the project's guide
+# and other features' fixtures, not the checkout's secrets. What it writes is
+# committed and pushed before a human sees it.
+FIXTURES_READ_ROOTS = ("specs", "docs")
 PROBE_TIMEOUT_S = 120
 PROBE_OUTPUT_LIMIT = 20_000
 PROBE_TOOL = "mcp__probes__run_probe"
@@ -157,13 +168,63 @@ def _config_problem(config: dict, spec_dir: Path) -> str | None:
             'validation.probe_commands must map each probe name to {"command": ..., '
             '"description": ...}.'
         )
-    if (fixtures := config.get("fixtures_dir")) and not _has_files(spec_dir / fixtures):
+    return _fixtures_config_problem(config, spec_dir)
+
+
+def _fixtures_config_problem(config: dict, spec_dir: Path) -> str | None:
+    fixtures = config.get("fixtures_dir")
+    guide = config.get("fixtures_guide")
+    if guide is not None:
+        if not fixtures or not isinstance(guide, str):
+            return "validation.fixtures_guide must be a path, and needs fixtures_dir set."
+        if problem := fixtures_guide_text(guide)[1]:
+            return problem
+    check = config.get("fixtures_check_command")
+    if check is not None and not (isinstance(check, str) and check.strip()):
+        return "validation.fixtures_check_command must be a shell command."
+    turns = config.get("fixtures_max_turns")
+    if turns is not None and not (isinstance(turns, int) and turns > 0):
+        return "validation.fixtures_max_turns must be a positive integer."
+    if fixtures and not guide and not _has_files(spec_dir / fixtures):
         # 051 and 072 deployed and ran with no fixtures; nearly every scenario came back BLOCKED.
         return (
             f"{spec_dir / fixtures} is missing or empty. Add this feature's validation fixtures "
-            "there, or a NONE file saying why it needs none."
+            "there, or a NONE file saying why it needs none — or set "
+            "validation.fixtures_guide so this stage drafts them."
         )
     return None
+
+
+def _slug(heading: str) -> str:
+    return re.sub(r"[^\w\s-]", "", heading).strip().lower().replace(" ", "-")
+
+
+def fixtures_guide_text(ref: str) -> tuple[str, str | None]:
+    """The guide `ref` names ("path" or "path#heading-slug"): the whole file, or
+    the section under that heading up to the next heading of the same or higher
+    level. Returns (text, problem)."""
+    path, _, anchor = ref.partition("#")
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return "", f"validation.fixtures_guide: {path} can't be read."
+    if not anchor:
+        return text, None
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        heading = re.match(r"^(#+)\s+(.*)$", line)
+        if heading and _slug(heading[2]) == anchor:
+            level = len(heading[1])
+            end = next(
+                (
+                    j
+                    for j in range(i + 1, len(lines))
+                    if (h := re.match(r"^(#+)\s", lines[j])) and len(h[1]) <= level
+                ),
+                len(lines),
+            )
+            return "\n".join(lines[i:end]), None
+    return "", f"validation.fixtures_guide: {path} has no heading for #{anchor}."
 
 
 def _has_files(path: Path) -> bool:
@@ -1006,6 +1067,172 @@ def merge_operator_verdicts(
     return {**before, "scenarios": merged, "operator_phase": "done"}
 
 
+def _path_scope_hook(write_root: Path, read_roots: tuple[Path, ...]):
+    """Confine Write to write_root, and Read/Glob to read_roots (a Glob with no
+    path would search the whole checkout)."""
+    write_root = write_root.resolve()
+    read_roots = tuple(r.resolve() for r in read_roots)
+
+    async def hook(input_data: dict, tool_use_id, context) -> dict:
+        tool_input = input_data.get("tool_input") or {}
+        if input_data.get("tool_name") == "Write":
+            path, roots = tool_input.get("file_path", ""), (write_root,)
+        else:
+            path, roots = tool_input.get("file_path") or tool_input.get("path") or "", read_roots
+        escapes = ".." in str(tool_input.get("pattern", ""))
+        if path and not escapes and any(Path(path).resolve().is_relative_to(r) for r in roots):
+            return {}
+        allowed = ", ".join(str(r) for r in roots)
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": f"This agent may only use paths under {allowed}.",
+            }
+        }
+
+    return hook
+
+
+def fixtures_instructions(
+    spec: str,
+    quickstart: str,
+    scenarios: list[vr.Scenario],
+    guide: str,
+    fixtures_dir: Path,
+    fixtures_name: str,
+    notes: str,
+) -> str:
+    scenario_list = "\n".join(f"- {s.id}: {s.text}" for s in scenarios)
+    project_notes = f"--- PROJECT NOTES ---\n{notes.strip()}\n\n" if notes.strip() else ""
+    return f"""You are the Fixtures Agent for a spec-kit project. Before this feature is validated
+on a deployed preview, the project seeds data from fixtures that a browser can't create (an
+inbound email, a webhook, a queue message). This feature has none yet; you draft them.
+
+--- PROJECT'S GUIDE TO WRITING FIXTURES ---
+{guide}
+
+--- SPEC ---
+{spec}
+
+--- QUICKSTART ---
+{quickstart or "(none)"}
+
+--- SCENARIOS THE VALIDATION WILL CHECK ---
+{scenario_list}
+
+{project_notes}Look at a few existing `specs/*/{fixtures_name}/` directories (Glob with a path
+under specs/) to follow the project's format exactly. Then write this feature's fixtures into
+{fixtures_dir.resolve()}:
+- Only for scenarios that need seeded data; each entry names the scenario ids it serves.
+- If no scenario needs seeded data, write a single `NONE` file with a one-line reason.
+- Synthetic content only: invented people, households, schools and addresses. Never copy a
+  real person's name or data from the spec, an issue or another feature's fixtures.
+- Write nothing outside that directory. You can read only under specs/ and docs/.
+"""
+
+
+async def run_fixtures_agent(instructions: str, config: dict, fixtures_dir: Path) -> None:
+    work_dir = fixtures_dir.parent / "validation" / "fixtures-draft"
+    options = ClaudeAgentOptions(
+        system_prompt=_system_prompt_file(work_dir, "fixtures-prompt.md", instructions),
+        tools=["Read", "Glob", "Write"],
+        allowed_tools=["Read", "Glob", "Write"],
+        setting_sources=[],
+        model=ollama.load_claude_generation_model("validate"),
+        max_turns=config.get("fixtures_max_turns", DEFAULT_FIXTURES_MAX_TURNS),
+        hooks={
+            "PreToolUse": [
+                HookMatcher(
+                    matcher="Read|Glob|Write",
+                    hooks=[
+                        _path_scope_hook(fixtures_dir, tuple(Path(r) for r in FIXTURES_READ_ROOTS))
+                    ],
+                )
+            ]
+        },
+    )
+    await stream_query(query(prompt="Draft this feature's validation fixtures.", options=options))
+
+
+async def prepare_fixtures(config: dict, spec_dir: Path, feature: str) -> None:
+    """Draft the feature's fixtures when it has none and the project has a guide,
+    then check and commit any uncommitted fixtures before HEAD is read, so the
+    deploy and the seed see the same files. No stage plans fixtures (deployed
+    validation owns them), so without this an unattended pipeline stopped here."""
+    fixtures_dir = spec_dir / config["fixtures_dir"]
+    if not _has_files(fixtures_dir):
+        pipeline_status.step("drafting fixtures")
+        log(f"{fixtures_dir} is empty — drafting fixtures from {config['fixtures_guide']}.")
+        spec = read_file(spec_dir / "spec.md")
+        quickstart = read_optional(spec_dir / "quickstart.md", "")
+        await run_fixtures_agent(
+            fixtures_instructions(
+                spec,
+                quickstart,
+                vr.extract_scenarios(spec, quickstart),
+                fixtures_guide_text(config["fixtures_guide"])[0],
+                fixtures_dir,
+                config["fixtures_dir"],
+                config.get("agent_notes", ""),
+            ),
+            config,
+            fixtures_dir,
+        )
+        if not _has_files(fixtures_dir):
+            _fail(
+                f"the fixtures agent wrote nothing to {fixtures_dir} (see this stage's log). Add "
+                "the fixtures by hand, or a NONE file saying why none are needed, and re-run."
+            )
+    if not _git("status", "--porcelain", "--", str(fixtures_dir)):
+        return
+    _check_fixtures(config, spec_dir, feature, fixtures_dir)
+    try:
+        _git("add", "--", str(fixtures_dir))
+        _git("commit", "-q", "-m", FIXTURES_COMMIT_SUBJECT, "--", str(fixtures_dir))
+    except subprocess.CalledProcessError as e:
+        _fail(f"committing {fixtures_dir} failed: {(e.stderr or e.stdout or '').strip()[-1000:]}")
+    log(f"Committed {fixtures_dir}. Review them with the recordings.")
+
+
+def _check_fixtures(config: dict, spec_dir: Path, feature: str, fixtures_dir: Path) -> None:
+    if not config.get("fixtures_check_command"):
+        return
+    env = {
+        **os.environ,
+        "VALIDATION_FEATURE": feature,
+        "VALIDATION_SPEC_DIR": str(spec_dir.resolve()),
+        "VALIDATION_FIXTURES_DIR": str(fixtures_dir.resolve()),
+    }
+    result = run_hook(config, "fixtures_check_command", env, FIXTURES_CHECK_TIMEOUT_S, capture=True)
+    if result.returncode != 0:
+        escalate(
+            spec_dir,
+            feature,
+            _git("rev-parse", "HEAD"),
+            "Validation Fixtures Invalid",
+            f"`fixtures_check_command` rejected {fixtures_dir} (exit {result.returncode}), so "
+            f"nothing was pushed or deployed:\n\n```\n{result.stdout.strip()[-4000:]}\n```\n\n"
+            "Fix the fixtures (they are uncommitted) and re-run; the stage checks and commits "
+            "them before validating.",
+        )
+
+
+def fixtures_note(config: dict, spec_dir: Path) -> str:
+    """A line for the report when the fixtures it validated were agent-drafted
+    and no human has committed a change to them since."""
+    if not config.get("fixtures_dir"):
+        return ""
+    last = _git("log", "-1", "--format=%h%x09%s", "--", str(spec_dir / config["fixtures_dir"]))
+    commit, _, subject = last.partition("\t")
+    if subject != FIXTURES_COMMIT_SUBJECT:
+        return ""
+    return (
+        f"\n**The validation fixtures were drafted by an agent** in {commit}; review them "
+        "along with the recordings.\n"
+    )
+
+
 def verdict_counts(report: dict) -> str:
     """The authoritative tally, logged because the agent's own closing summary can miscount."""
     counts: dict[str, int] = {}
@@ -1029,6 +1256,8 @@ async def run(feature: str):
         return
 
     config = preflight(spec_dir)
+    if config.get("fixtures_dir"):
+        await prepare_fixtures(config, spec_dir, feature)
     sha = _git("rev-parse", "HEAD")
     branch = _git("rev-parse", "--abbrev-ref", "HEAD")
     if already_validated(spec_dir, sha):
@@ -1061,6 +1290,7 @@ async def run(feature: str):
 
     log(f"Verdicts from report.json: {verdict_counts(report)}")
     markdown = vr.render_markdown(report, scenarios, sha, base_url, run_dir)
+    markdown += fixtures_note(config, spec_dir)
     write_file(run_dir / "report.md", markdown)
     pipeline_status.step("posting report")
     try:
