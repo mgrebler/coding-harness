@@ -34,6 +34,12 @@ def get_feature_from_branch(agent_name: str) -> str:
     return branch
 
 
+def head_commit() -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
 def dirty_files() -> list[str]:
     """Return every currently dirty path — staged, unstaged, or untracked —
     via `git status --porcelain`. Used to snapshot a baseline before a stage

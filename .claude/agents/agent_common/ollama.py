@@ -7,7 +7,6 @@ import asyncio
 import contextlib
 import json
 import math
-import os
 import re
 import sys
 import time
@@ -295,6 +294,14 @@ def load_validation_config() -> dict | None:
     return validation if isinstance(validation, dict) else None
 
 
+def load_allowed_skipped_tests() -> list[str]:
+    """Glob patterns, from .specify/pipeline.json's ci.allow_skipped, for test
+    files the implement stage's CI may skip entirely on purpose."""
+    ci = _load_raw_config().get("ci")
+    patterns = ci.get("allow_skipped") if isinstance(ci, dict) else None
+    return [p for p in patterns if isinstance(p, str)] if isinstance(patterns, list) else []
+
+
 def load_claude_model(critic_type: str) -> str | None:
     """
     Resolve which Claude model, if any, is explicitly configured for this
@@ -430,8 +437,7 @@ def _provider_problem(config: dict) -> str | None:
     verified this way and is given the benefit of the doubt."""
     model = config["model"]
     if config["provider"] == "openai-compatible":
-        openai_compatible._load_dotenv()
-        api_key = os.environ.get(config["api_key_env"])
+        api_key = openai_compatible.api_key(config["api_key_env"])
         if not api_key:
             return f"{config['api_key_env']} is not set"
         req = _build_request(

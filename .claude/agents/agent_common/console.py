@@ -3,11 +3,12 @@
 import contextlib
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO
 
@@ -57,6 +58,22 @@ class SessionLimitError(Exception):
     the original human-readable CLI text (e.g. "You've hit your session limit ·
     resets 3:20am (UTC)").
     """
+
+
+_LIMIT_RESET_RE = re.compile(r"(?i)\bresets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(UTC\)")
+
+
+def limit_reset_time(text: str, now: datetime) -> datetime | None:
+    """When a SessionLimitError's limit resets, from its "resets 9:20am (UTC)"
+    text: the next such time after `now`, or None if the text has none."""
+    match = _LIMIT_RESET_RE.search(text)
+    if not match:
+        return None
+    hour = int(match[1]) % 12 + (12 if match[3].lower() == "pm" else 0)
+    reset = now.astimezone(UTC).replace(
+        hour=hour, minute=int(match[2] or 0), second=0, microsecond=0
+    )
+    return reset if reset > now else reset + timedelta(days=1)
 
 
 def _is_session_limit_result(message: ResultMessage) -> bool:

@@ -58,7 +58,7 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - Every `[IMPL]` task must reference its paired `[TEST]` task ID in its description (e.g. "depends on T010")
 - No `[IMPL]` task may exist without a paired `[TEST]` task
 - No `[TEST]` task may exist without a paired `[IMPL]` task
-- Schema migrations and infrastructure tasks with no testable behaviour are exempt — the exemption must be stated explicitly in the task description itself (e.g. "no test required — schema migration")
+- Untagged setup/config/orientation tasks are not `[IMPL]` tasks and need no pair. An `[IMPL]` task with no testable behaviour (schema migration, infrastructure) is exempt when the exemption is stated in its description (e.g. "no test required — schema migration") — flag it under neither §T3 nor Constitution §6
 - Within each user story phase, `[TEST]` tasks must appear before their paired `[IMPL]` tasks
 
 ### §T4 — Stack Constraints [BLOCKING]
@@ -67,9 +67,18 @@ Check each rule in order. Every rule must appear in the output as either a viola
 - No unapproved library or tool introduced without a constitution amendment proposed in `plan.md`
 
 ### §T5 — Task Format [BLOCKING]
-- Every task uses the machine-readable format `- [ ] TXXX [TEST|IMPL] [P?] [USZ] description` from `.specify/templates/tasks-template.md` — a checkbox immediately followed by a bare task ID (`- [ ] T001`, never `- [T001]`); numbered task lists, bracketed IDs, and untagged prose tasks violate this rule. Bullets and numbered items in non-task sections (dependencies, execution order, parallel opportunities, implementation strategy) are prose, not tasks — never flag them
-- Every task an agent cannot complete inside the repo (waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist) is tagged `[MANUAL]` — an untagged one blocks the implement stage
-- Conversely, no task that writes or edits files in the repo is tagged `[MANUAL]` — the implement stage skips `[MANUAL]` tasks, so that code is never written
+- Every task is a checkbox immediately followed by a bare task ID (`- [ ] T001`, never `- [T001]`), per `.specify/templates/tasks-template.md`; numbered task lists and bracketed IDs violate this rule. Bullets and numbered items in non-task sections (dependencies, execution order, parallel opportunities, implementation strategy, notes) are prose, not tasks — never flag them
+- Tags follow the task ID, and this is the whole grammar:
+
+- `[TEST]`: the task writes failing tests only, no implementation code.
+- `[IMPL]`: the task writes production code to pass its paired `[TEST]` task's tests and names that task (e.g. "depends on T010"). An `[IMPL]` task with no testable behaviour (a schema migration, infrastructure) says so instead: "no test required — <reason>".
+- No type tag: a task with no testable deliverable of its own — setup, config, orientation, read-and-confirm. The implement stage still does it, and it needs no paired task.
+- `[MANUAL]`, alone and never with `[TEST]` or `[IMPL]`: work an agent cannot do inside the repo — waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist, an evaluation run. Agents never perform or check off `[MANUAL]` tasks, so every such task must carry it, and no task that writes repo files may.
+- `[P]`: the task can run in parallel (different files, no dependency on an incomplete task).
+- `[USn]`: the user story a `[TEST]`/`[IMPL]` task in a user-story phase serves; `[US1, US2]` for one pair serving several. Setup, Foundational and Polish tasks carry none.
+- No other tags. Work another pipeline stage owns (docs, deployed validation) is not a task.
+
+- An unchecked out-of-repo task without `[MANUAL]` is a violation (it blocks the implement stage), and so is a repo-writing task tagged `[MANUAL]` (the implement stage skips it, so that code is never written). Never demand a type tag on an untagged or `[MANUAL]` task
 
 ### §T6 — v1 Scope [BLOCKING]
 - No task implements functionality that is absent from `spec.md`

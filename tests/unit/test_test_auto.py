@@ -135,3 +135,41 @@ class TestRunTestAgentIfNeeded(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUndeliverableTestTasks(unittest.IsolatedAsyncioTestCase):
+    """072: post-implementation checks tagged [TEST] aborted the stage with no
+    reason; the agent now names them and the stage waits for a human."""
+
+    async def test_waits_for_a_human_without_retrying_when_every_task_is_declared(self):
+        with tempfile.TemporaryDirectory() as d:
+            spec_dir = Path(d)
+            _write_tasks(spec_dir, "- [ ] T008 [TEST] Run the dev live check\n")
+
+            async def fake_run_generation(
+                _log, _stage, *, claude_fallback, system_prompt, user_prompt
+            ):
+                (spec_dir / test_auto.UNDELIVERABLE_FILENAME).write_text(
+                    "- T008: needs the deployed implementation\n", encoding="utf-8"
+                )
+
+            with (
+                patch.object(
+                    test_auto.local_agent_loop,
+                    "run_generation",
+                    new=AsyncMock(side_effect=fake_run_generation),
+                ) as mock_run,
+                self.assertRaises(SystemExit) as exit_info,
+            ):
+                await test_auto._run_test_agent_if_needed(
+                    "some-feature",
+                    spec_dir,
+                    "- [ ] T008 [TEST] Run the dev live check\n",
+                    "constitution",
+                    "spec",
+                    "plan",
+                    "principles",
+                )
+
+            self.assertEqual(mock_run.await_count, 1)
+            self.assertEqual(exit_info.exception.code, test_auto.HUMAN_ACTION_EXIT_CODE)

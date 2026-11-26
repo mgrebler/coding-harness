@@ -150,6 +150,17 @@ class TestPendingHumanApprovals(unittest.TestCase):
             ["- Constitution §2: add Route 53", "- architecture.md §8: API key at the edge"],
         )
 
+    def test_none_followed_by_notes_or_ratified_amendments_is_nothing_pending(self):
+        """030 listed already-ratified amendments under "No open items."; 098 put
+        informational notes under "None."; both stopped ch-2 as pending."""
+        for lead in ("None.", "**No open items.**"):
+            plan = (
+                f"## Pending Human Approvals\n\n{lead}\n\n### Already ratified\n"
+                "- Amendment 018: login-free link following\n\n## Project Structure\n"
+            )
+            with self.subTest(lead):
+                self.assertEqual(pc.pending_human_approvals(plan), [])
+
     def test_plan_without_the_section_has_nothing_pending(self):
         self.assertEqual(pc.pending_human_approvals("## Summary\n- a\n"), [])
 
@@ -195,3 +206,117 @@ class TestRedStateIssue(unittest.TestCase):
     def test_regression_guard_declaration_does_not_excuse_an_infra_failure(self):
         artifact = "§19 REGRESSION-GUARD EXCEPTION\nError: connect ECONNREFUSED 127.0.0.1:5432"
         self.assertIsNotNone(pc.red_state_issue(artifact))
+
+
+class TestTaskFormatAnalysis(unittest.TestCase):
+    """The grammar speckit-tasks/SKILL.md defines; the old analysis flagged every
+    line outside it and the tasks critic flapped on the result (032, 033, 072)."""
+
+    TASKS = (
+        "## Phase 1: Setup\n"
+        "- [ ] T001 Create the config file (no test — infrastructure setup)\n"
+        "## Phase 3: User Story 1 (P1)\n"
+        "- [ ] T002 [TEST] [US1, US2] Write failing test for the shared matcher\n"
+        "- [ ] T003 [IMPL] [US1, US2] Implement the shared matcher (depends on T002)\n"
+        "- [ ] T004 [IMPL] Implement the handler (depends on T002)\n"
+        "## Phase 4: Polish\n"
+        "- [ ] T005 [MANUAL] Deploy to dev and run the live checks\n"
+        "## Dependencies & Execution Order\n"
+        "- T002 [TEST] must complete before T003 [IMPL] begins\n"
+        "- Phase 3 depends on Setup (T001)\n"
+    )
+
+    def test_only_a_story_phase_type_tagged_task_needs_a_story_label(self):
+        _, incomplete, _, _ = pc.classify_task_lines(self.TASKS)
+        self.assertEqual(len(incomplete), 1)
+        self.assertIn("T004", incomplete[0])
+        self.assertIn("MISSING [USX] story label", incomplete[0])
+
+    def test_prose_bullets_citing_task_ids_are_not_tasks(self):
+        complete, incomplete, _, bullets = pc.classify_task_lines(self.TASKS)
+        self.assertFalse(any("must complete before" in line for line in complete + incomplete))
+        self.assertEqual(len(bullets), 2)
+
+    def test_bullet_opening_with_a_task_id_still_needs_a_checkbox(self):
+        tasks = "## Phase 1: Setup\n- T001 Create the config file\n"
+        _, incomplete, _, _ = pc.classify_task_lines(tasks)
+        self.assertIn("MISSING checkbox", incomplete[0])
+
+
+class TestTagViolations(unittest.TestCase):
+    def test_flags_manual_combined_with_a_type_tag(self):
+        """033, 047, 057: a [TEST] [MANUAL] task deadlocked the test stage."""
+        tasks = "- [ ] T036 [TEST] [MANUAL] [US5] Run the live evaluation\n"
+        violations = pc.task_format_violations(tasks)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("[MANUAL] combined with [TEST]/[IMPL]", violations[0])
+
+    def test_flags_unknown_tags(self):
+        """051: a literal [non-deliverable] tag aborted the implement stage."""
+        tasks = "- [ ] T141 [non-deliverable] [US1] Documentation stage updates docs/\n"
+        violations = pc.task_format_violations(tasks)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("unknown tag [non-deliverable]", violations[0])
+
+    def test_multi_story_labels_are_known_tags(self):
+        tasks = "- [ ] T002 [TEST] [P] [US1, US2] Write failing test\n"
+        self.assertEqual(pc.task_format_violations(tasks), [])
+        self.assertIn("[TEST]", pc.task_tags(tasks))
+
+    def test_test_stage_skips_manual_test_tasks(self):
+        tasks = "- [ ] T036 [TEST] [MANUAL] Run the live evaluation\n- [x] T002 [TEST] Write test\n"
+        self.assertEqual(pc.unchecked_task_lines(tasks, tag="[TEST]", exclude_tag="[MANUAL]"), [])
+
+
+class TestTaskTagGrammarCopies(unittest.TestCase):
+    """Five hand-written versions of the tag rules drifted apart and the tasks
+    critic flapped between them; every copy must be the grammar verbatim."""
+
+    def test_skills_and_template_carry_the_grammar_verbatim(self):
+        root = Path(__file__).parent.parent.parent
+        for rel in (
+            ".claude/skills/ch-2-tasks-critic/SKILL.md",
+            ".claude/skills/speckit-tasks/SKILL.md",
+            ".specify/templates/tasks-template.md",
+        ):
+            with self.subTest(rel):
+                self.assertIn(pc.task_tag_grammar(), (root / rel).read_text(encoding="utf-8"))
+
+
+class TestDiscardAcceptedFormatFindings(unittest.TestCase):
+    TASKS = (
+        "## Phase 3: User Story 1 (P1)\n"
+        "- [ ] T002 [TEST] [US1] Write failing test\n"
+        "- [ ] T003 [IMPL] Implement it (depends on T002)\n"
+        "## Phase 4: Polish\n"
+        "- [ ] T008 [MANUAL] Deploy to dev and run the live checks\n"
+        "- [ ] T009 Write the CI workflow env passthrough\n"
+    )
+
+    @staticmethod
+    def _finding(location, finding, rule="§T5 — Task Format"):
+        return {"rule": rule, "severity": "BLOCKING", "location": location, "finding": finding}
+
+    def test_drops_format_demands_on_accepted_lines_and_passes_the_result(self):
+        """072: the critic demanded [TEST]/[IMPL] on a correct [MANUAL] task."""
+        result = {
+            "status": "FAIL",
+            "violations": [self._finding("T008", "T008 uses [MANUAL] instead of [TEST] or [IMPL]")],
+        }
+        dropped = pc.discard_accepted_format_findings(result, self.TASKS)
+        self.assertEqual(len(dropped), 1)
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["violations"], [])
+
+    def test_keeps_manual_judgements_rejected_lines_and_other_rules(self):
+        kept = [
+            self._finding("T009", "T009 writes repo files so must not be tagged [MANUAL]"),
+            self._finding("T009", "T009 is a deploy step missing a [MANUAL] tag"),
+            self._finding("T003", "T003 is missing its [USX] story label"),
+            self._finding("T003", "T003 has no paired test", rule="§T3 — Pairing"),
+            self._finding("Phase 4", "Numbered list instead of tasks"),
+        ]
+        result = {"status": "FAIL", "violations": list(kept)}
+        self.assertEqual(pc.discard_accepted_format_findings(result, self.TASKS), [])
+        self.assertEqual(result["violations"], kept)
+        self.assertEqual(result["status"], "FAIL")

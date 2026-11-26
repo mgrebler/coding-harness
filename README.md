@@ -140,6 +140,22 @@ Review the failing test files. Then:
 /ch-4-implement-auto     # or /speckit-implement
 ```
 
+`ch-4-implement-auto` stops and waits for you (exit 4), rather than spending fix attempts or
+critic iterations, when:
+
+- **An existing test needs changing.** The feature changes behaviour an existing test asserts,
+  and the test phase didn't update it. The implementation agent lists such tests in
+  `specs/NNN-feature/test-updates-needed.md`, and any test case it edited anyway is detected
+  from git. Add a `[TEST]` task per affected file, make each update as a test-phase commit
+  (subject `test: ...`) with its red output, delete that file, and re-run. The tasks agent is
+  told to find these tests up front, so this should be rare.
+- **CI failed on its environment, not the code**, for example a database refusing connections
+  or a full disk. Fix the environment and re-run.
+- **CI passed but skipped whole test files**, which usually means a suite gated on a missing
+  service or variable such as `DATABASE_URL` never ran. Provide it and re-run. If a skip is
+  intended, list the files as globs in `.specify/pipeline.json`:
+  `"ci": {"allow_skipped": ["packages/*/tests/evals/**"]}`. Detected from Vitest's output.
+
 ### Step 5 — Review the implementation
 
 Review the code changes and verify CI passes locally. Then:
@@ -618,7 +634,8 @@ scenario so a human can watch what was actually tested before marking the PR rea
 
 For the commit at HEAD, `ch_6_validate_auto.py`:
 
-1. Pushes the feature branch (never forced) and finds or opens its **draft** PR against `main`.
+1. Refuses to run unless the checked-out branch is the feature's: the PR, its `Closes #N` and the
+   report all follow the branch. Then pushes the feature branch (never forced) and finds or opens its **draft** PR against `main`.
    If the spec came from an issue (`/ch-specify-from-issue` writes a `**Source Issue**: #N`
    header line), the PR body gets `Closes #N`.
    A Claude agent (no tools but writing one file in the run directory) writes the PR description
@@ -643,20 +660,30 @@ For the commit at HEAD, `ch_6_validate_auto.py`:
    it creates first, in a recorded `setup-<n>.webm` that ends by browsing to where the app shows
    that data. Scenarios that check the same screen in the same data state share one video and
    trace, with a chapter per scenario id; it highlights each element it checks before
-   screenshotting it. It writes one verdict per scenario: `PASS`, `FAIL`, `BLOCKED` (with a
+   screenshotting it. Before each `browser_close` it must save the browser's session back to the
+   file every launch starts from (a hook refuses the close until it has), so an app that renews
+   or rotates its session cookie or refresh token keeps a working session across launches. It
+   writes one verdict per scenario: `PASS`, `FAIL`, `BLOCKED` (with a
    reason), or — for quickstart sections that only make sense in a local checkout —
    `NOT_APPLICABLE` (with a reason). It has no Bash and can only read and write inside the run
    directory. The browser server is held to the same limits: its code-running tool
    (`browser_run_code_unsafe`) is denied, it starts in the run directory with `--ignore-roots`
    so its file tools (e.g. uploads) can't reach the checkout, and it gets only the environment
    npx and Chromium need, none of the harness's AWS, GitHub or database credentials.
+   Before any scenario, the agent checks the preview is fit to validate on: the app loads for the
+   test account, no request is blocked by the origin allow-list, and seeded data shows. If not, it
+   writes only a `setup_problem` and stops, and the stage escalates "Validation Environment Not
+   Ready" instead of reporting every scenario BLOCKED for the same reason. A re-run checks again.
 6. Checks the report: every scenario covered once, a recording on disk for every PASS/FAIL (its
    own `<id>.webm`, or the shared video its `recording` field names), and a recording and
    description for every setup step. An incomplete report gets one retry; still incomplete escalates.
-7. Posts the report as a PR comment (once per commit). Any FAIL/BLOCKED writes
+7. If the project sets `probe_commands` and scenarios are BLOCKED, runs the operator phase (see
+   § Probe commands) to settle the ones a browser can't see.
+8. Posts the report as a PR comment (once per commit). Any FAIL/BLOCKED writes
    `specs/NNN-feature/ch-6-validate-escalation.md` and exits non-zero.
 
-The stage is **report-only**: it never fixes code, never commits, and never merges. Everything it
+The stage is **report-only**: it never fixes code and never merges. It commits nothing after
+choosing the commit to validate (see § Fixtures for the one commit it makes before). Everything it
 writes is gitignored and local to the machine that ran it — recordings, traces, the session file
 and the report live in `specs/NNN-feature/validation/<sha12>/`. Each commit is validated once:
 re-running on an already-passed commit is a no-op, and a new commit starts fresh. To re-validate
@@ -691,8 +718,18 @@ report and, unless a `lock_command` is set, the cached deploy URL; `auth_command
 | `lock_timeout_minutes` | no (120) | Limit on `lock_command`, including time spent waiting for another run. |
 | `allowed_origins` | no | Extra origins the browser may load besides the preview's own (e.g. an auth provider). |
 | `playwright_mcp_version` | no | Pins `@playwright/mcp`. |
-| `max_turns` | no (300) | Turn budget for the validation agent. |
+| `max_turns` | no (16 per scenario, at least 300) | Turn budget for the validation agent. Running out ends that pass, not the stage: the agent's saved verdicts are kept and one more pass finishes the missing scenarios. |
 | `agent_notes` | no | Project-specific guidance added to the agent's instructions, e.g. limits on actions that cost money, or scenarios that can't run in a plain browser and should be `BLOCKED`. |
+| `fixtures_dir` | no | Directory, relative to the feature's spec dir, that `seed_command` reads fixtures from. See § Fixtures. |
+| `fixtures_guide` | no | `path` or `path#heading-slug` of the project's guide to writing fixtures. Setting it makes the stage draft missing fixtures. See § Fixtures. |
+| `fixtures_check_command` | no | Shell command that checks fixtures without touching any environment (e.g. parses the manifest, checks referenced files and scenario ids exist). Given `VALIDATION_FEATURE`, `VALIDATION_SPEC_DIR` and `VALIDATION_FIXTURES_DIR`; 5-minute limit. |
+| `fixtures_max_turns` | no (60) | Turn budget for the fixtures agent. |
+| `fixtures_agent_notes` | no | Project guidance for the fixtures agent only (`agent_notes` is for the browser agent and isn't sent to it). |
+| `commit_trailer` | no (`Co-Authored-By: Claude <noreply@anthropic.com>`) | Trailer on the fixtures commit; `""` for none. |
+| `disposable_account` | no (`false`) | Set when `auth_command` signs in an account made for this run alone. The agent may then sign out, end sessions or replay credentials for scenarios about them, and gets a `sign_in_again` tool that re-runs `auth_command` for the scenarios after. If `auth_command` makes a new account each time, data created before is in the old one, so the agent runs session-ending scenarios last. |
+| `ignore_untracked` | no | Globs (`*` crosses `/`) for untracked files that don't stop the stage, e.g. `["*.md"]` for notes in the checkout. Changes to tracked files always stop it. |
+| `probe_commands` | no | Named commands the operator agent may run, as `{"<name>": {"command": "...", "description": "..."}}`. See § Probe commands. |
+| `probe_max_turns` | no (150) | Turn budget for the operator agent. |
 
 Every command runs from the project root with `VALIDATION_FEATURE`, `VALIDATION_SHA`,
 `VALIDATION_BRANCH`, `VALIDATION_PR_NUMBER`, `VALIDATION_SPEC_DIR` and `VALIDATION_RUN_DIR`
@@ -735,6 +772,72 @@ project's choice — an S3 object, a DynamoDB item, a git ref — as long as:
 
 Under a lock the cached deploy URL is never reused, since the environment may hold another
 branch's deploy by the time a run resumes.
+
+### Fixtures
+
+Some scenarios need data a browser can't create, which `seed_command` delivers from per-feature
+fixtures. No earlier stage writes them: deployed validation owns them, so the tasks stage doesn't
+plan them. With `fixtures_dir` set, before choosing the commit to validate, the stage:
+
+1. **Drafts missing fixtures**, when the directory is missing or empty and `fixtures_guide` is set.
+   A Claude agent gets the spec, quickstart, scenario ids, the guide (or the named section of it)
+   and `agent_notes`, and writes the fixtures, or a `NONE` file saying why none are needed. It
+   can only read under `specs/` and `docs/` (for the format, it reads other features' fixtures),
+   and only write in the fixtures directory. It's told to use invented people and data, never
+   real ones. If it writes nothing, the stage stops. Without `fixtures_guide`, a missing or
+   empty directory stops the stage, as a human must add them.
+2. **Checks the fixtures** with `fixtures_check_command`, if set, on every run, committed or not,
+   since a set goes stale when its spec changes. When fixtures drafted in this run fail, the agent
+   gets the check's output and one try to fix exactly those problems. A failure that remains, or
+   any failure of fixtures it didn't draft in this run, escalates "Validation Fixtures Invalid"
+   with the output, and nothing is pushed or deployed.
+3. **Commits uncommitted fixtures** as `chore(validation): draft deployed-validation fixtures
+   (ch-6)` (plus `commit_trailer`) and validates that commit, so the deploy and the seed see the
+   same files.
+
+Drafted fixtures are pushed with the branch before anyone has reviewed them. The PR's report
+comment says when the validated fixtures are still the agent's draft, so review them along with
+the recordings. Deleting the directory makes the next run draft them again.
+
+### Probe commands
+
+Many scenarios have outcomes no browser can see: a database row, a log line, a queue message, an
+alarm. Without help the validation agent marks them BLOCKED and a human checks them afterwards.
+`probe_commands` lets an operator agent check them instead:
+
+```json
+"probe_commands": {
+  "query": {
+    "command": "pnpm --filter validation run query",
+    "description": "Read-only SQL against the test account's data. Args: one SQL statement."
+  },
+  "logs": {
+    "command": "pnpm --filter validation run logs",
+    "description": "Log lines for a function. Args: function name, minutes back."
+  }
+}
+```
+
+After the browser agent's report checks out, the operator agent gets the BLOCKED entries, the
+spec, the seeded data and each probe's `description`. It has no browser and no shell, and can only
+read and write in the run directory. Its one tool, `run_probe(name, args)`, runs the named
+`command` with the agent's arguments appended, each shell-quoted, with the same environment as the
+other commands plus `VALIDATION_BASE_URL` and a 2-minute limit. The harness saves each run's
+command line, exit status and output as `probe-<n>.txt`. A probe-based PASS or FAIL must name
+`"method": "probe"` and cite at least one of those transcripts. The harness keeps only rewrites of
+BLOCKED entries that pass that check, so the agent can't change a browser verdict.
+
+The commands are the safety boundary, so write them for it:
+
+- **Read-only unless the description says otherwise.** Use a read-only database role or a
+  read-only transaction, not just a prompt rule. A command that does write (e.g. delivering a
+  fixture email) should say so and be scoped to the test account.
+- **Scoped to the test account.** The agent chooses the arguments, so a query command should
+  confine itself to the test account's data rather than trust the SQL it's given.
+- **No secrets in the output.** The agent reads it, and it's saved under the run directory.
+
+A project whose governance says the validation agent "only drives a browser" needs to amend that
+before configuring probes.
 
 ### Project prerequisites
 
@@ -851,7 +954,7 @@ While a `ch-*-auto` stage or `/ch-plan-to-implement-auto` is running, the Claude
 | `✓` | stage complete (its `*-auto-complete` marker exists) |
 | `▶ <step> i/max · 14m` | running: current step, critic iteration or attempt, time on this step |
 | `⚠ escalated` | stage wrote an escalation and is waiting for your `-review.md` |
-| `⏸ paused` | stopped at a Claude usage/session limit; re-run once it resets |
+| `⏸ paused` | hit a Claude usage/session limit; waits for the reset and resumes when it's under 6 hours away, otherwise stops for you to re-run |
 | `✗ stopped at <step>` | the stage's process exited mid-step (CI failure, crash, Ctrl-C) |
 | `⊘` | stage disabled via `.specify/pipeline.json` `stages` |
 | `·` | not started |

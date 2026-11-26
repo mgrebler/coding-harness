@@ -46,6 +46,7 @@ Pre-flight:
 """
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -141,6 +142,30 @@ def get_current_branch() -> str:
     return result.stdout.strip()
 
 
+_STOP_LINE_RE = re.compile(r"^\[ch-[\w-]+\] (?:FAIL|ABORTED|WAITING)\b")
+_ERROR_LINE_RE = re.compile(r"^\[ch-[\w-]+\] ERROR\b")
+_EXCEPTION_LINE_RE = re.compile(r"^[\w.]*(?:Error|Exception)\b.*")
+_MAX_CAUSE_LINES = 15
+
+
+def stage_failure_cause(stage_log: Path) -> list[str]:
+    """The lines explaining why a stage's latest run stopped: its last FAIL/
+    ABORTED/WAITING line and the logged lines after it, else its last ERROR
+    line, else the exception it crashed with. 21 runs ended "No escalation file
+    was written", leaving the human to dig through the raw log for this."""
+    try:
+        text = stage_log.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return []
+    run = text.rsplit("[run started", 1)[-1].splitlines()
+    for pattern in (_STOP_LINE_RE, _ERROR_LINE_RE):
+        starts = [i for i, line in enumerate(run) if pattern.match(line)]
+        if starts:
+            logged = [line for line in run[starts[-1] :] if line.startswith("[ch-")]
+            return logged[:_MAX_CAUSE_LINES]
+    return [line for line in run if _EXCEPTION_LINE_RE.match(line)][-1:]
+
+
 def _check_stage_result(rc: int, stage_num: int, stage_name: str, escalation: Path) -> None:
     """
     Log the outcome of a stage subprocess and exit if it didn't pass. A usage-limit
@@ -157,18 +182,24 @@ def _check_stage_result(rc: int, stage_num: int, stage_name: str, escalation: Pa
             f"limit. Re-run this command once the limit resets; progress so far is preserved."
         )
         sys.exit(rc)
+    stage_log = escalation.parent / f"ch-{stage_num}-{stage_name}-auto.log"
     if rc == HUMAN_ACTION_EXIT_CODE:
-        log(
-            f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): WAITING for human action — "
-            f"see the stage log above. Re-run once done."
-        )
+        log(f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): WAITING for human action:")
+        for line in stage_failure_cause(stage_log) or ["(see the stage log above)"]:
+            log(f"  {line}")
+        log("Re-run once done.")
         sys.exit(rc)
     if rc != 0:
         if escalation.exists():
-            next_step = f"Review {escalation.name} and re-run."
+            log(
+                f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): FAILED. Review {escalation.name} and re-run."
+            )
         else:
-            next_step = "No escalation file was written — the cause is in the stage log above."
-        log(f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): FAILED. {next_step}")
+            log(
+                f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): FAILED, no escalation file. Cause:"
+            )
+            for line in stage_failure_cause(stage_log) or [f"(not found — see {stage_log})"]:
+                log(f"  {line}")
         sys.exit(1)
     log(f"Stage {stage_num}/{TOTAL_STAGES} ({stage_name}): PASSED.")
 

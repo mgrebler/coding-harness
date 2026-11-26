@@ -16,6 +16,10 @@ BLOCKED = "BLOCKED"
 NOT_APPLICABLE = "NOT_APPLICABLE"
 VERDICTS = (PASS, FAIL, BLOCKED, NOT_APPLICABLE)
 NEEDS_ATTENTION = (FAIL, BLOCKED)
+# A verdict reached through the project's probe commands instead of the
+# browser; its evidence is the transcripts the harness wrote for each probe.
+PROBE_METHOD = "probe"
+PROBE_TRANSCRIPT_GLOB = "probe-*.txt"
 
 COMMENT_MARKER_PREFIX = "<!-- ch-6-validate sha="
 
@@ -119,9 +123,17 @@ def load_report(path: Path) -> tuple[dict | None, str | None]:
         return None, f"{path} was not written"
     except (OSError, json.JSONDecodeError) as e:
         return None, f"{path} is not valid JSON: {e}"
+    if isinstance(report, dict) and setup_problem(report):
+        return report, None
     if not isinstance(report, dict) or not isinstance(report.get("scenarios"), list):
         return None, f'{path} must be an object with a "scenarios" list'
     return report, None
+
+
+def setup_problem(report: dict) -> str:
+    """Why the agent stopped before any scenario: the environment wasn't fit to
+    validate on (blocked origins, a broken login, seeded data missing)."""
+    return str(report.get("setup_problem") or "").strip()
 
 
 def check_report(report: dict, scenarios: list[Scenario], run_dir: Path) -> list[str]:
@@ -143,7 +155,7 @@ def check_report(report: dict, scenarios: list[Scenario], run_dir: Path) -> list
             problems.append(f"{sid}: reported more than once")
             continue
         seen.add(sid)
-        problems += _entry_problems(entry, expected[sid], run_dir)
+        problems += entry_problems(entry, expected[sid], run_dir)
     problems += [f"{sid}: missing from report" for sid in expected if sid not in seen]
     return problems
 
@@ -165,7 +177,7 @@ def _setup_problems(setup, run_dir: Path) -> list[str]:
     return problems
 
 
-def _entry_problems(entry: dict, scenario: Scenario, run_dir: Path) -> list[str]:
+def entry_problems(entry: dict, scenario: Scenario, run_dir: Path) -> list[str]:
     sid = scenario.id
     verdict = entry.get("verdict")
     if verdict not in VERDICTS:
@@ -177,13 +189,30 @@ def _entry_problems(entry: dict, scenario: Scenario, run_dir: Path) -> list[str]
     if not str(entry.get("observed", "")).strip() and verdict in (PASS, FAIL):
         return [f"{sid}: a {verdict} verdict needs a non-empty 'observed' description"]
     problems = []
-    if verdict in (PASS, FAIL) and (problem := _recording_problem(sid, entry, run_dir)):
+    if verdict in (PASS, FAIL) and entry.get("method") == PROBE_METHOD:
+        if not probe_transcripts(entry, run_dir):
+            problems.append(f"{sid}: a probe verdict needs a probe transcript as evidence")
+    elif verdict in (PASS, FAIL) and (problem := _recording_problem(sid, entry, run_dir)):
         problems.append(problem)
     return problems + _evidence_problems(sid, entry)
 
 
+def probe_transcripts(entry: dict, run_dir: Path) -> list[Path]:
+    """The harness-written probe transcripts an entry cites as evidence."""
+    evidence = entry.get("evidence")
+    if not isinstance(evidence, list):
+        return []
+    root = run_dir.resolve()
+    paths = [Path(e).resolve() for e in evidence if isinstance(e, str)]
+    return [p for p in paths if p.parent == root and p.match(PROBE_TRANSCRIPT_GLOB) and p.exists()]
+
+
 def needs_attention(report: dict) -> list[dict]:
     return [e for e in report["scenarios"] if e.get("verdict") in NEEDS_ATTENTION]
+
+
+def blocked(report: dict) -> list[dict]:
+    return [e for e in report["scenarios"] if e.get("verdict") == BLOCKED]
 
 
 def comment_marker(sha: str) -> str:
@@ -200,10 +229,9 @@ def render_markdown(
     for scenario in scenarios:
         entry = entries[scenario.id]
         detail = entry.get("reason") or entry.get("observed", "")
-        recording = run_dir / recording_name(entry)
         rows.append(
             f"| {scenario.id} | {entry['verdict']} | {_cell(scenario.text)} | {_cell(detail)} "
-            f"| {f'`{recording}`' if recording.exists() else '—'} |"
+            f"| {_evidence_cell(entry, run_dir)} |"
         )
     setup = "".join(
         f"- `{run_dir / step['recording']}`: {_cell(step['created'])}\n"
@@ -216,11 +244,19 @@ def render_markdown(
         f"## Deployed validation — `{sha[:12]}`\n\n"
         f"Validated against {base_url} by ch-6-validate-auto: **{summary}**.\n\n"
         f"{setup}"
-        "| Scenario | Verdict | Expected | Observed / reason | Recording |\n"
+        "| Scenario | Verdict | Expected | Observed / reason | Recording or probe |\n"
         "|---|---|---|---|---|\n" + "\n".join(rows) + "\n\n"
         f"Recordings and traces are local to the machine that ran the stage, under "
         f"`{run_dir}/`. Review them before marking this PR ready for review.\n"
     )
+
+
+def _evidence_cell(entry: dict, run_dir: Path) -> str:
+    if entry.get("method") == PROBE_METHOD:
+        transcripts = probe_transcripts(entry, run_dir)
+        return "probe: " + ", ".join(f"`{p}`" for p in transcripts) if transcripts else "—"
+    recording = run_dir / recording_name(entry)
+    return f"`{recording}`" if recording.exists() else "—"
 
 
 def _cell(text: str) -> str:

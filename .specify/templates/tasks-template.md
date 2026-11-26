@@ -12,18 +12,16 @@ description: "Task list template for feature implementation"
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
-## Format: `[ID] [TEST|IMPL] [P?] [Story] Description`
+## Format: `- [ ] [ID] [tags] Description`
 
-- **[TEST]**: This task writes failing test(s) only — no implementation code
-- **[IMPL]**: This task writes implementation to pass the paired [TEST] task's tests
-- **[P]**: Can run in parallel (different files, no dependencies)
-- **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
-- **[MANUAL]**: The task needs a human or something outside the repo — waiting for an
-  approval, a live/cloud deploy, a real external account, a manual verification
-  checklist. Agents never perform or check off [MANUAL] tasks, so every such task MUST
-  carry the tag (`- [ ] T040 [MANUAL] ...`); an untagged one blocks the implement stage
+- `[TEST]`: the task writes failing tests only, no implementation code.
+- `[IMPL]`: the task writes production code to pass its paired `[TEST]` task's tests and names that task (e.g. "depends on T010"). An `[IMPL]` task with no testable behaviour (a schema migration, infrastructure) says so instead: "no test required — <reason>".
+- No type tag: a task with no testable deliverable of its own — setup, config, orientation, read-and-confirm. The implement stage still does it, and it needs no paired task.
+- `[MANUAL]`, alone and never with `[TEST]` or `[IMPL]`: work an agent cannot do inside the repo — waiting for a human approval, a live/cloud deploy, a real external account, a manual verification checklist, an evaluation run. Agents never perform or check off `[MANUAL]` tasks, so every such task must carry it, and no task that writes repo files may.
+- `[P]`: the task can run in parallel (different files, no dependency on an incomplete task).
+- `[USn]`: the user story a `[TEST]`/`[IMPL]` task in a user-story phase serves; `[US1, US2]` for one pair serving several. Setup, Foundational and Polish tasks carry none.
+- No other tags. Work another pipeline stage owns (docs, deployed validation) is not a task.
 - Include exact file paths in descriptions
-- [IMPL] tasks must reference their paired [TEST] task ID in the description
 - A task whose implementation touches a uniqueness, count, or last-item invariant (e.g.
   "reject if a record with this key already exists", "block deleting the last X") must
   state in its description that the guard check and the mutation run inside the same

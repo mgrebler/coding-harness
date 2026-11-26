@@ -32,16 +32,43 @@ class TestCheckStageResult(unittest.TestCase):
             "Stage 2/6 (tasks): FAILED. Review ch-2-tasks-critic-escalation.md and re-run."
         )
 
-    def test_failure_without_escalation_file_points_at_the_log(self):
+    def test_failure_without_escalation_file_quotes_the_stage_logs_cause(self):
+        """21 runs ended "No escalation file was written", sending the human to the raw log."""
         with tempfile.TemporaryDirectory() as d:
             escalation = Path(d) / "ch-4-implement-critic-escalation.md"
+            (Path(d) / "ch-4-implement-auto.log").write_text(
+                "[run started 2026-11-01T00:00:00Z]\n[ch-4-implement-auto] FAIL: old run\n"
+                "[run started 2026-11-02T00:00:00Z]\n"
+                "[ch-4-implement-auto] ERROR: implement critic result moved aside\n"
+                "  agent noise\n"
+                "[ch-4-implement-auto] FAIL: quick CI checks still failing after fix attempt.\n"
+                "[ch-4-implement-auto] Remaining failures: unit\n"
+            )
             with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
                 ptia._check_stage_result(1, 4, "implement", escalation)
 
         self.assertEqual(cm.exception.code, 1)
-        message = mock_log.call_args[0][0]
-        self.assertIn("No escalation file was written", message)
-        self.assertNotIn("Review ch-4", message)
+        logged = [c.args[0] for c in mock_log.call_args_list]
+        self.assertIn("no escalation file", logged[0])
+        self.assertEqual(
+            logged[1:],
+            [
+                "  [ch-4-implement-auto] FAIL: quick CI checks still failing after fix attempt.",
+                "  [ch-4-implement-auto] Remaining failures: unit",
+            ],
+        )
+
+    def test_crash_cause_is_the_exception_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "ch-3-test-auto.log"
+            log_path.write_text(
+                "[run started x]\nTraceback (most recent call last):\n  File ...\n"
+                "claude_agent_sdk._errors.ProcessError: Command failed with exit code 1\n"
+            )
+            self.assertEqual(
+                ptia.stage_failure_cause(log_path),
+                ["claude_agent_sdk._errors.ProcessError: Command failed with exit code 1"],
+            )
 
     def test_usage_limit_exit_code_logs_paused_and_exits_with_that_code(self):
         with patch.object(ptia, "log") as mock_log, self.assertRaises(SystemExit) as cm:
@@ -61,7 +88,7 @@ class TestCheckStageResult(unittest.TestCase):
             )
 
         self.assertEqual(cm.exception.code, HUMAN_ACTION_EXIT_CODE)
-        self.assertIn("WAITING for human action", mock_log.call_args[0][0])
+        self.assertIn("WAITING for human action", mock_log.call_args_list[0][0][0])
 
     def test_stage_5_docs_failure_logs_escalation_hint_and_exits_1(self):
         with tempfile.TemporaryDirectory() as d:

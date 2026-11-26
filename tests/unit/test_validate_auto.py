@@ -69,7 +69,7 @@ class TestRunDisabled(_ProjectCase):
 class TestPreflight(_ProjectCase):
     def _preflight(self, dirty=(), authed=True):
         with (
-            patch.object(va, "dirty_files", return_value=list(dirty)),
+            patch.object(va, "uncommitted_paths", return_value=list(dirty)),
             patch.object(va.github_pr, "gh_authenticated", return_value=authed),
             patch.object(va, "log"),
         ):
@@ -106,6 +106,20 @@ class TestPreflight(_ProjectCase):
             self._preflight()
         self._config({"stages": {"docs": {"enabled": False}}, "validation": CONFIG})
         self._preflight()
+
+    def test_fixtures_dir_must_hold_this_features_fixtures(self):
+        """051 and 072 deployed with no fixtures and came back almost all BLOCKED."""
+        self._config({"validation": {**CONFIG, "fixtures_dir": "validation-fixtures"}})
+        with self.assertRaises(SystemExit):
+            self._preflight()
+        (self.spec_dir / "validation-fixtures").mkdir()
+        (self.spec_dir / "validation-fixtures" / "NONE").write_text("No email in this feature.\n")
+        self._preflight()
+
+    def test_probe_commands_need_a_command_and_description(self):
+        self._config({"validation": {**CONFIG, "probe_commands": {"query": {"command": "q"}}}})
+        with self.assertRaises(SystemExit):
+            self._preflight()
 
     def test_non_claude_generation_blocks(self):
         self._config(
@@ -331,8 +345,9 @@ class TestRunDirScope(unittest.TestCase):
             self.assertEqual(sorted(options.tools), ["Read", "Write"])
             self.assertNotIn("Glob", options.allowed_tools)
             self.assertEqual(options.disallowed_tools, ["mcp__playwright__browser_run_code_unsafe"])
-            [matcher] = options.hooks["PreToolUse"]
-            self.assertEqual(matcher.matcher, "Read|Write")
+            scope, session = options.hooks["PreToolUse"]
+            self.assertEqual(scope.matcher, "Read|Write")
+            self.assertIn(va.CLOSE_BROWSER_TOOL, session.matcher)
             self.assertEqual(options.system_prompt["type"], "file")
             self.assertEqual(Path(options.system_prompt["path"]).read_text(), "i" * 200_000)
 
@@ -356,7 +371,7 @@ class TestAgentNotes(unittest.TestCase):
         self.assertNotIn("PROJECT NOTES", self._instructions(""))
 
 
-class TestRun(_ProjectCase):
+class _RunCase(_ProjectCase):
     """End-to-end through run() with every external effect mocked."""
 
     def _agent_writing(self, *reports):
@@ -367,7 +382,7 @@ class TestRun(_ProjectCase):
         async def agent(instructions, task, config, mcp, run_dir):
             calls.append(task)
             report = next(reports)
-            for entry in report["scenarios"]:
+            for entry in report.get("scenarios", []):
                 if entry.get("record"):
                     (run_dir / f"{entry['id']}.webm").write_bytes(b"x")
             (run_dir / "report.json").write_text(json.dumps(report))
@@ -401,6 +416,8 @@ class TestRun(_ProjectCase):
         self.deploy = deploy
         return exited, push, ensure_pr, comment
 
+
+class TestRun(_RunCase):
     def test_finished_report_is_posted_without_redeploying(self):
         run_dir = self.spec_dir / "validation" / SHA[:12]
         run_dir.mkdir(parents=True)
@@ -468,6 +485,29 @@ class TestRun(_ProjectCase):
         self.assertEqual(len(calls), 2)
         self.assertIn("no recording", calls[1])
 
+    def test_running_out_of_turns_keeps_the_report_and_finishes_it(self):
+        """098: the agent hit 300 turns at 14 of 39 scenarios and the partial report was lost."""
+        partial = {"scenarios": []}
+        passing = {
+            "scenarios": [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok", "record": 1}]
+        }
+        write, calls = self._agent_writing(partial, passing)
+
+        async def agent(instructions, task, config, mcp, run_dir):
+            await write(instructions, task, config, mcp, run_dir)
+            if len(calls) == 1:
+                raise va.ResultError("Reached maximum number of turns (300)")
+
+        self.assertIsNone(self._run(agent)[0])
+        self.assertEqual(len(calls), 2)
+        self.assertIn("US1-AS1: missing from report", calls[1])
+
+    def test_turn_budget_scales_with_the_scenarios(self):
+        scenarios = [va.vr.Scenario(f"SC-{n:03}", "x") for n in range(39)]
+        self.assertEqual(va.agent_max_turns(CONFIG, scenarios[:3]), va.DEFAULT_MAX_TURNS)
+        self.assertEqual(va.agent_max_turns(CONFIG, scenarios), 39 * va.TURNS_PER_SCENARIO)
+        self.assertEqual(va.agent_max_turns({**CONFIG, "max_turns": 50}, scenarios), 50)
+
     def test_still_invalid_after_retry_escalates_without_posting(self):
         unrecorded = {"scenarios": [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok"}]}
         agent, calls = self._agent_writing(unrecorded, unrecorded)
@@ -476,6 +516,117 @@ class TestRun(_ProjectCase):
         self.assertEqual(len(calls), 2)
         comment.assert_not_called()
         self.assertIn("Report Invalid", (self.spec_dir / va.ESCALATION_FILENAME).read_text())
+
+
+UNFIT = {"setup_problem": "requests to https://db.example are blocked"}
+
+
+class TestSetupProblem(_RunCase):
+    """098's first run: blocked origins turned 34 of 36 scenarios BLOCKED."""
+
+    def test_escalates_without_attempting_scenarios_or_posting(self):
+        agent, calls = self._agent_writing(UNFIT)
+        exited, _, _, comment = self._run(agent)
+        self.assertEqual(exited, 1)
+        self.assertEqual(len(calls), 1)
+        comment.assert_not_called()
+        escalation = (self.spec_dir / va.ESCALATION_FILENAME).read_text()
+        self.assertIn("Environment Not Ready", escalation)
+        self.assertIn("db.example are blocked", escalation)
+
+    def test_rerun_checks_the_environment_again(self):
+        self._run(self._agent_writing(UNFIT)[0])
+        passing = {
+            "scenarios": [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok", "record": 1}]
+        }
+        agent, calls = self._agent_writing(passing)
+        self.assertIsNone(self._run(agent)[0])
+        self.assertEqual(len(calls), 1)
+
+
+PROBES = {
+    **CONFIG,
+    "probe_commands": {"query": {"command": "echo", "description": "Read-only SQL."}},
+}
+BLOCKED_REPORT = {
+    "scenarios": [{"id": "US1-AS1", "verdict": "BLOCKED", "reason": "the row isn't visible"}]
+}
+
+
+class TestOperatorPhase(_RunCase):
+    def _operator(self, verdict, cite_transcript=True):
+        """A fake operator agent that runs a real probe and rewrites the entry."""
+        run_dir = self.spec_dir / "validation" / SHA[:12]
+        self.queries = []
+
+        async def stream(_query):
+            transcript, output = va.run_probe("echo", ["saved row 1"], dict(os.environ), run_dir)
+            self.queries.append(output)
+            entry = {
+                "id": "US1-AS1",
+                "verdict": verdict,
+                "method": "probe",
+                "observed": "the row is saved",
+                "evidence": [str(transcript)] if cite_transcript else [],
+            }
+            (run_dir / "report.json").write_text(json.dumps({"scenarios": [entry]}))
+
+        return patch.multiple(va, stream_query=stream, query=lambda **_: None)
+
+    def test_probe_verdict_settles_a_blocked_scenario(self):
+        with self._operator("PASS"):
+            exited, _, _, comment = self._run(self._agent_writing(BLOCKED_REPORT)[0], PROBES)
+        self.assertIsNone(exited)
+        self.assertIn("saved row 1", self.queries[0])
+        report = json.loads((self.spec_dir / "validation" / SHA[:12] / "report.json").read_text())
+        self.assertEqual(report["scenarios"][0]["verdict"], "PASS")
+        self.assertEqual(report["operator_phase"], "done")
+        self.assertIn("probe: ", comment.call_args[0][1])
+
+    def test_probe_verdict_without_a_transcript_is_discarded(self):
+        with self._operator("PASS", cite_transcript=False):
+            exited, *_ = self._run(self._agent_writing(BLOCKED_REPORT)[0], PROBES)
+        self.assertEqual(exited, 1)
+        self.assertIn("US1-AS1** BLOCKED", (self.spec_dir / va.ESCALATION_FILENAME).read_text())
+
+    def test_not_run_without_probe_commands(self):
+        with self._operator("PASS"):
+            exited, *_ = self._run(self._agent_writing(BLOCKED_REPORT)[0])
+        self.assertEqual(exited, 1)
+        self.assertEqual(self.queries, [])
+
+
+class TestMergeOperatorVerdicts(unittest.TestCase):
+    def test_only_blocked_entries_can_change(self):
+        scenarios = [va.vr.Scenario("US1-AS1", "a"), va.vr.Scenario("US1-AS2", "b")]
+        before = {
+            "scenarios": [
+                {"id": "US1-AS1", "verdict": "PASS", "observed": "seen"},
+                {"id": "US1-AS2", "verdict": "BLOCKED", "reason": "not visible"},
+            ]
+        }
+        after = {
+            "scenarios": [
+                {"id": "US1-AS1", "verdict": "FAIL", "method": "probe", "observed": "x"},
+                {"id": "US1-AS2", "verdict": "BLOCKED", "reason": "no probe shows it"},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as d, patch.object(va, "log"):
+            merged = va.merge_operator_verdicts(before, after, scenarios, Path(d))
+        self.assertEqual(merged["scenarios"][0], before["scenarios"][0])
+        self.assertEqual(merged["scenarios"][1]["reason"], "no probe shows it")
+
+
+class TestRunProbe(unittest.TestCase):
+    def test_args_are_quoted_and_the_transcript_is_numbered(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d)
+            first, _ = va.run_probe("echo", ["a; touch pwned"], dict(os.environ), run_dir)
+            second, output = va.run_probe("echo", ["b"], dict(os.environ), run_dir)
+            self.assertEqual((first.name, second.name), ("probe-1.txt", "probe-2.txt"))
+            self.assertIn("a; touch pwned", first.read_text())
+            self.assertFalse((run_dir / "pwned").exists())
+            self.assertTrue(output.startswith("exit 0"))
 
 
 class TestPrDescription(_ProjectCase):
@@ -520,7 +671,7 @@ class TestPrDescription(_ProjectCase):
     def test_instructions_carry_artifacts_and_followup_link(self):
         (self.spec_dir / "plan.md").write_text("PLAN TEXT")
         (self.spec_dir / "tasks.md").write_text("- [ ] T1 [TEST] covers save\n- [ ] T2 [IMPL] x\n")
-        (self.spec_dir / va.FOLLOWUP_FILENAME).write_text("concerns")
+        (self.spec_dir / va.FOLLOWUP_FILENAME).write_text("High: refresh grace period is 60s")
         captured = {}
 
         async def capture(instructions, run_dir):
@@ -532,6 +683,7 @@ class TestPrDescription(_ProjectCase):
             self.assertIn(expected, instructions)
         self.assertNotIn("T2 [IMPL]", instructions)
         self.assertIn(f"`specs/{FEATURE}/{va.FOLLOWUP_FILENAME}`", instructions)
+        self.assertIn("High: refresh grace period is 60s", instructions)
 
     def test_human_owned_pr_is_not_redescribed(self):
         pr = {"number": 3, "url": "u", "body": "Written by a human", "baseRefName": "main"}
@@ -577,3 +729,348 @@ class TestPrTitle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+GUIDE = "# Ops\n\n## Writing a feature's fixtures\n\nUse fixtures.json.\n\n## Other\n\nx\n"
+DRAFTING = {
+    **CONFIG,
+    "fixtures_dir": "validation-fixtures",
+    "fixtures_guide": "docs/ops.md#writing-a-features-fixtures",
+}
+
+
+class _FixturesCase(_ProjectCase):
+    def setUp(self):
+        super().setUp()
+        (self.root / "docs").mkdir()
+        (self.root / "docs/ops.md").write_text(GUIDE)
+        for args in (
+            ["init", "-q"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["add", "-A"],
+            ["commit", "-q", "-m", "init"],
+        ):
+            subprocess.run(["git", *args], check=True, capture_output=True)
+        self.fixtures = self.spec_dir / "validation-fixtures"
+
+    def _head(self):
+        return va._git("rev-parse", "HEAD")
+
+    def _prepare(self, config=DRAFTING, writes=("fixtures.json",)):
+        calls = []
+
+        async def agent(instructions, config, fixtures_dir):
+            calls.append(instructions)
+            for name in writes:
+                fixtures_dir.mkdir(parents=True, exist_ok=True)
+                (fixtures_dir / name).write_text('{"US1-AS1": "email.eml"}')
+
+        with patch.object(va, "run_fixtures_agent", side_effect=agent), patch.object(va, "log"):
+            asyncio.run(va.prepare_fixtures(config, self.spec_dir, FEATURE))
+        return calls
+
+
+class TestFixturesConfig(_FixturesCase):
+    def test_guide_section_and_types(self):
+        self.assertIsNone(va._config_problem(DRAFTING, self.spec_dir))
+        bad = {
+            "unknown heading": {**DRAFTING, "fixtures_guide": "docs/ops.md#nope"},
+            "missing file": {**DRAFTING, "fixtures_guide": "docs/gone.md"},
+            "no fixtures_dir": {**CONFIG, "fixtures_guide": "docs/ops.md"},
+            "empty check command": {**DRAFTING, "fixtures_check_command": " "},
+            "bad turn budget": {**DRAFTING, "fixtures_max_turns": "60"},
+        }
+        for name, config in bad.items():
+            with self.subTest(name):
+                self.assertIsNotNone(va._config_problem(config, self.spec_dir))
+
+    def test_guide_text_is_the_named_section(self):
+        text, problem = va.fixtures_guide_text("docs/ops.md#writing-a-features-fixtures")
+        self.assertIsNone(problem)
+        self.assertIn("Use fixtures.json", text)
+        self.assertNotIn("## Other", text)
+
+
+class TestPrepareFixtures(_FixturesCase):
+    def test_drafts_and_commits_before_head_is_read(self):
+        before = self._head()
+        calls = self._prepare()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("Use fixtures.json", calls[0])
+        self.assertNotEqual(self._head(), before)
+        self.assertEqual(va._git("log", "-1", "--format=%s"), va.FIXTURES_COMMIT_SUBJECT)
+        self.assertEqual(va._git("status", "--porcelain"), "")
+        self.assertIn("drafted by an agent", va.fixtures_note(DRAFTING, self.spec_dir))
+
+    def test_rerun_does_not_draft_again(self):
+        self._prepare()
+        head = self._head()
+        self.assertEqual(self._prepare(), [])
+        self.assertEqual(self._head(), head)
+
+    def test_agent_writing_nothing_fails_before_anything_else(self):
+        head = self._head()
+        with self.assertRaises(SystemExit):
+            self._prepare(writes=())
+        self.assertEqual(self._head(), head)
+
+    def test_failed_check_escalates_without_committing(self):
+        head = self._head()
+        with self.assertRaises(SystemExit):
+            self._prepare(config={**DRAFTING, "fixtures_check_command": "echo bad id; exit 1"})
+        self.assertEqual(self._head(), head)
+        escalation = (self.spec_dir / va.ESCALATION_FILENAME).read_text()
+        self.assertIn("Fixtures Invalid", escalation)
+        self.assertIn("bad id", escalation)
+
+    def test_a_human_edit_is_not_reported_as_drafted(self):
+        self._prepare()
+        (self.fixtures / "fixtures.json").write_text("{}")
+        subprocess.run(["git", "commit", "-qam", "test: fix fixtures"], check=True)
+        self.assertEqual(va.fixtures_note(DRAFTING, self.spec_dir), "")
+
+    def test_without_a_guide_missing_fixtures_still_fail_preflight(self):
+        config = {**CONFIG, "fixtures_dir": "validation-fixtures"}
+        self.assertIn("missing or empty", va._config_problem(config, self.spec_dir))
+
+
+class TestFixturesAgentScope(unittest.TestCase):
+    def _decide(self, tool, tool_input):
+        with tempfile.TemporaryDirectory() as d:
+            cwd = Path.cwd()
+            os.chdir(d)
+            try:
+                hook = va._path_scope_hook(Path("specs/012-x/fx"), (Path("specs"), Path("docs")))
+                result = asyncio.run(
+                    hook({"tool_name": tool, "tool_input": tool_input}, None, None)
+                )
+            finally:
+                os.chdir(cwd)
+        return "deny" if result else "allow"
+
+    def test_writes_only_in_the_fixtures_dir_and_reads_only_specs_and_docs(self):
+        cases = {
+            ("Write", "specs/012-x/fx/fixtures.json"): "allow",
+            ("Write", "specs/012-x/plan.md"): "deny",
+            ("Read", "docs/ops.md"): "allow",
+            ("Read", ".env"): "deny",
+        }
+        for (tool, path), expected in cases.items():
+            with self.subTest(tool=tool, path=path):
+                self.assertEqual(self._decide(tool, {"file_path": path}), expected)
+        self.assertEqual(self._decide("Glob", {"pattern": "**/*.json", "path": "specs"}), "allow")
+        self.assertEqual(self._decide("Glob", {"pattern": "**/.env"}), "deny")
+        self.assertEqual(self._decide("Glob", {"pattern": "../**", "path": "specs"}), "deny")
+
+
+class TestRunDraftsBeforeReadingHead(_RunCase):
+    def test_fixtures_are_prepared_before_the_commit_is_chosen(self):
+        order = []
+
+        async def prepare(config, spec_dir, feature):
+            order.append("prepare")
+
+        passing = {
+            "scenarios": [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok", "record": 1}]
+        }
+        agent, _ = self._agent_writing(passing)
+        with (
+            patch.object(va, "prepare_fixtures", side_effect=prepare),
+            patch.object(va, "fixtures_note", return_value=""),
+            patch.object(
+                va, "already_validated", side_effect=lambda *a: order.append("sha") or False
+            ),
+        ):
+            self.assertIsNone(self._run(agent, config={**CONFIG, "fixtures_dir": "fx"})[0])
+        self.assertEqual(order[:2], ["prepare", "sha"])
+
+
+CHECK_FIXED = 'grep -q fixed "$VALIDATION_FIXTURES_DIR/fixtures.json" || { echo "QS-10 not in spec"; exit 1; }'
+
+
+class TestFixturesFollowUps(_FixturesCase):
+    def _hand_written(self, content, commit=True):
+        self.fixtures.mkdir(parents=True)
+        (self.fixtures / "fixtures.json").write_text(content)
+        if commit:
+            subprocess.run(["git", "add", "-A"], check=True)
+            subprocess.run(["git", "commit", "-qm", "test: fixtures"], check=True)
+
+    def _draft(self, contents, config):
+        """A fake fixtures agent writing contents[N] on its Nth call."""
+        contents = list(contents)
+        calls = []
+
+        async def agent(instructions, config, fixtures_dir):
+            calls.append(instructions)
+            fixtures_dir.mkdir(parents=True, exist_ok=True)
+            (fixtures_dir / "fixtures.json").write_text(contents.pop(0))
+
+        with patch.object(va, "run_fixtures_agent", side_effect=agent), patch.object(va, "log"):
+            try:
+                asyncio.run(va.prepare_fixtures(config, self.spec_dir, FEATURE))
+                code = None
+            except SystemExit as e:
+                code = e.code
+        return code, calls
+
+    def test_committed_fixtures_are_checked_too(self):
+        """055's committed fixtures named a quickstart section the spec had dropped."""
+        self._hand_written("stale")
+        head = self._head()
+        code, calls = self._draft([], {**DRAFTING, "fixtures_check_command": CHECK_FIXED})
+        self.assertEqual((code, calls, self._head()), (1, [], head))
+        escalation = (self.spec_dir / va.ESCALATION_FILENAME).read_text()
+        self.assertIn("QS-10 not in spec", escalation)
+        self.assertIn("Fix them, commit, and re-run.", escalation)
+
+    def test_committed_fixtures_that_pass_make_no_commit(self):
+        self._hand_written("fixed")
+        head = self._head()
+        code, _ = self._draft([], {**DRAFTING, "fixtures_check_command": CHECK_FIXED})
+        self.assertEqual((code, self._head()), (None, head))
+
+    def test_a_failed_draft_gets_one_fix_from_the_agent(self):
+        config = {**DRAFTING, "fixtures_check_command": CHECK_FIXED}
+        code, calls = self._draft(["broken", "fixed"], config)
+        self.assertIsNone(code)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("QS-10 not in spec", calls[1])
+        self.assertEqual(va._git("log", "-1", "--format=%s"), va.FIXTURES_COMMIT_SUBJECT)
+
+    def test_a_draft_failing_twice_escalates_with_both_outputs_uncommitted(self):
+        head = self._head()
+        config = {**DRAFTING, "fixtures_check_command": CHECK_FIXED}
+        code, calls = self._draft(["broken", "still broken"], config)
+        self.assertEqual((code, len(calls), self._head()), (1, 2, head))
+        escalation = (self.spec_dir / va.ESCALATION_FILENAME).read_text()
+        self.assertEqual(escalation.count("QS-10 not in spec"), 2)
+        self.assertIn("they are uncommitted", escalation)
+
+    def test_uncommitted_hand_written_fixtures_never_go_to_the_agent(self):
+        self._hand_written("broken", commit=False)
+        code, calls = self._draft([], {**DRAFTING, "fixtures_check_command": CHECK_FIXED})
+        self.assertEqual((code, calls), (1, []))
+
+    def test_fixtures_agent_gets_its_own_notes_not_the_browser_agents(self):
+        config = {
+            **DRAFTING,
+            "agent_notes": "BROWSER ONLY",
+            "fixtures_agent_notes": "FEWEST EMAILS",
+        }
+        _, calls = self._draft(["{}"], config)
+        self.assertIn("FEWEST EMAILS", calls[0])
+        self.assertNotIn("BROWSER ONLY", calls[0])
+
+    def test_commit_carries_a_configurable_trailer(self):
+        self._draft(["{}"], DRAFTING)
+        self.assertIn(va.DEFAULT_COMMIT_TRAILER, va._git("log", "-1", "--format=%B"))
+        subprocess.run(["git", "rm", "-rqf", str(self.fixtures)], check=True)
+        subprocess.run(["git", "commit", "-qm", "test: drop fixtures"], check=True)
+        self._draft(["{}"], {**DRAFTING, "commit_trailer": ""})
+        self.assertEqual(va._git("log", "-1", "--format=%B"), va.FIXTURES_COMMIT_SUBJECT)
+
+
+class TestUncommittedPaths(_FixturesCase):
+    def test_ignored_untracked_files_pass_and_tracked_changes_never_do(self):
+        (self.root / "brief.md").write_text("notes")
+        (self.root / "src").mkdir()
+        (self.root / "src/new.ts").write_text("x")
+        (self.root / "docs/ops.md").write_text("changed")
+        self.assertEqual(sorted(va.uncommitted_paths(["*.md"])), ["docs/ops.md", "src/new.ts"])
+        self.assertIn("brief.md", va.uncommitted_paths([]))
+
+
+class TestBranchMismatch(_RunCase):
+    def test_refused_before_anything_is_committed_or_pushed(self):
+        with patch.object(va, "prepare_fixtures") as prepare:
+            pr = {"number": 5, "url": "u", "body": "", "baseRefName": "main"}
+            with (
+                patch.object(va, "preflight", return_value={**CONFIG, "fixtures_dir": "fx"}),
+                patch.object(va, "_git", return_value="077-other"),
+                patch.object(va.github_pr, "push_branch") as push,
+                patch.object(va.github_pr, "ensure_draft_pr", return_value=pr),
+                patch.object(va, "log"),
+                self.assertRaises(SystemExit),
+            ):
+                asyncio.run(va.run(FEATURE))
+        prepare.assert_not_called()
+        push.assert_not_called()
+
+
+class TestSessionSaveGate(unittest.TestCase):
+    """077: the app rotated its session on use, and every browser launch after the
+    first started from the stale snapshot, so 21 scenarios came back BLOCKED."""
+
+    def _call(self, hook, tool, **tool_input):
+        result = asyncio.run(hook({"tool_name": tool, "tool_input": tool_input}, None, None))
+        return "deny" if result else "allow"
+
+    def test_close_waits_for_the_session_to_be_saved_to_the_launch_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            hook = va._session_save_gate(Path(d))
+            self.assertEqual(self._call(hook, va.CLOSE_BROWSER_TOOL), "deny")
+            self.assertEqual(self._call(hook, va.SAVE_SESSION_TOOL, filename="other.json"), "deny")
+            self.assertEqual(
+                self._call(hook, va.SAVE_SESSION_TOOL, filename=va.STORAGE_STATE_FILENAME), "allow"
+            )
+            self.assertEqual(self._call(hook, va.CLOSE_BROWSER_TOOL), "allow")
+            self.assertEqual(self._call(hook, va.CLOSE_BROWSER_TOOL), "deny")
+
+    def test_after_signing_in_again_the_browser_closes_without_saving(self):
+        with tempfile.TemporaryDirectory() as d:
+            hook = va._session_save_gate(Path(d))
+            self.assertEqual(self._call(hook, va.SIGN_IN_TOOL), "allow")
+            self.assertEqual(
+                self._call(hook, va.SAVE_SESSION_TOOL, filename=va.STORAGE_STATE_FILENAME), "deny"
+            )
+            self.assertEqual(self._call(hook, va.CLOSE_BROWSER_TOOL), "allow")
+
+    def test_storage_tools_are_enabled(self):
+        server = va.mcp_server({}, "https://p.example", Path("/s.json"), Path("/run"))
+        self.assertIn("--caps=devtools,storage", server["args"])
+
+
+class TestDisposableAccount(_RunCase):
+    """077: sign-out scenarios were BLOCKED by "never log out" although auth_command
+    made a fresh throwaway account for every run."""
+
+    def test_rules_and_tools_follow_the_setting(self):
+        def instructions(disposable):
+            return va.agent_instructions(
+                [], "spec", "qs", "", "https://p", Path("/run"), disposable_account=disposable
+            )
+
+        self.assertIn("Never log out", instructions(False))
+        self.assertNotIn("sign_in_again", instructions(False))
+        self.assertIn("you may sign out", instructions(True))
+        self.assertIn("sign_in_again", instructions(True))
+
+        servers = []
+
+        async def agent(instructions, task, config, mcp, run_dir):
+            servers.append(sorted(mcp))
+            entries = [{"id": "US1-AS1", "verdict": "PASS", "observed": "ok"}]
+            (run_dir / "US1-AS1.webm").write_bytes(b"x")
+            (run_dir / "report.json").write_text(json.dumps({"scenarios": entries}))
+
+        self._run(agent, config={**CONFIG, "disposable_account": True})
+        self.assertEqual(servers, [["playwright", "session"]])
+
+    def test_signing_in_again_reruns_auth_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d) / va.STORAGE_STATE_FILENAME
+            ok = {"auth_command": 'echo "{}" > "$VALIDATION_STORAGE_STATE"'}
+            with patch.object(va, "log"):
+                self.assertIsNone(va._sign_in(ok, dict(os.environ), "https://p", state))
+                self.assertTrue(state.exists())
+                problem = va._sign_in(
+                    {"auth_command": "exit 2"}, dict(os.environ), "https://p", state
+                )
+            self.assertIn("exited 2", problem)
+
+    def test_must_be_a_boolean(self):
+        self.assertIsNotNone(
+            va._config_problem({**CONFIG, "disposable_account": "yes"}, self.spec_dir)
+        )

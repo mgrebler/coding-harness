@@ -5,14 +5,16 @@ ollama.run_gate — this module only sequences gates and tracks resume state."""
 
 import argparse
 import asyncio
+import json
 import re
 import sys
+import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-from claude_agent_sdk import AgentDefinition, query
+from claude_agent_sdk import AgentDefinition, CLIConnectionError, ProcessError, query
 
 from agent_common import console, critic_reconcile, files, git, ollama, pipeline_status
 from agent_common import resume_state as rstate
@@ -134,6 +136,9 @@ class GateSpec(NamedTuple):
         -> the query(...) call that reconciles >1 critics' raw findings into the canonical result,
         when critic_type resolves to more than one configured critic. None (the
         default) for gates that will only ever have 0-or-1 critics configured.
+    discard_findings: (result) -> the findings it removed from result, for
+        findings deterministic code has already ruled out. The trimmed result
+        is written back before the gate's verdict is read.
     """
 
     result_prefix: str
@@ -142,6 +147,7 @@ class GateSpec(NamedTuple):
     label: str
     build_query: Callable[..., object]
     build_reconcile_query: Callable[..., object] | None = None
+    discard_findings: Callable[[dict], list] | None = None
 
 
 CRITIC_TOOLS = ["Read", "Write", "Bash", "Glob", "Grep"]
@@ -161,6 +167,7 @@ def claude_gate(
     prompt: Callable[[int, str, str], str],
     context: Callable[[], list[tuple[str, str]]],
     violations_context: str | None = None,
+    discard_findings: Callable[[dict], list] | None = None,
 ) -> GateSpec:
     """Build a GateSpec whose Claude critic and Claude reconciler are wired the
     same way for every gate, so a stage only states what differs:
@@ -174,6 +181,7 @@ def claude_gate(
         against — read at call time, so revised artifacts are current.
     violations_context: how format_violations_block describes the previous
         iteration's findings.
+    discard_findings: see GateSpec.
     """
     tag = result_prefix.removesuffix("-result")
     critics = agent_name.removesuffix("-critic")
@@ -256,8 +264,27 @@ def claude_gate(
         )
 
     return GateSpec(
-        result_prefix, script_name, critic_type, label, build_query, build_reconcile_query
+        result_prefix,
+        script_name,
+        critic_type,
+        label,
+        build_query,
+        build_reconcile_query,
+        discard_findings,
     )
+
+
+def _discard_findings(log, gate: GateSpec, iteration: int, path: Path, result: dict) -> None:
+    discarded = gate.discard_findings(result) if gate.discard_findings else []
+    if not discarded:
+        return
+    log(
+        f"{gate.label} (iteration {iteration}): discarded {len(discarded)} finding(s) "
+        "the deterministic checks rule out:"
+    )
+    for v in discarded:
+        log(f"  {v.get('location')}: {str(v.get('finding'))[:160]}")
+    files.write_file(path, json.dumps(result, indent=2) + "\n")
 
 
 async def _run_gate_for_iteration(
@@ -333,6 +360,7 @@ async def _run_gate_for_iteration(
                 )
                 sys.exit(1)
             schema_error = str(e)
+    _discard_findings(log, gate, iteration, path, result)
     status = result.get("status", "FAIL")
     record_pass_followups(spec_dir, gate.label.title(), iteration, result)
 
@@ -735,11 +763,19 @@ def confirm_review_existing(
         sys.exit(0)
 
 
+_MAX_LIMIT_WAITS = 3
+_MAX_LIMIT_WAIT = timedelta(hours=6)
+_LIMIT_RESET_MARGIN = timedelta(minutes=2)
+
+
 def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitable]) -> None:
     """
     Shared entrypoint for the async *-auto.py orchestrators: parses --feature
     (falling back to the current git branch), then runs run_coro(feature) via
     asyncio.run. Callers still need `if __name__ == "__main__": run_cli(...)`.
+    On a usage limit with a reset time under 6 hours away it waits for the reset
+    and runs the stage again (up to 3 times); a crashed Claude Code session
+    (CLIConnectionError, ProcessError) gets one re-run.
     """
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
@@ -750,18 +786,36 @@ def run_cli(agent_name: str, description: str, run_coro: Callable[[str], Awaitab
     feature = args.feature or git.get_feature_from_branch(agent_name)
     if stage := re.fullmatch(r"ch-\d+-(\w+)-auto", agent_name):
         pipeline_status.bind(Path("specs") / feature, stage[1])
-    ollama.check_providers(console.make_logger(agent_name))
-    try:
-        asyncio.run(run_coro(feature))
-    except console.SessionLimitError as e:
-        log = console.make_logger(agent_name)
-        log(f"PAUSED — hit a Claude usage/session limit: {e}")
-        pipeline_status.step(pipeline_status.PAUSED)
-        log(
-            "This is not a critic or code failure — re-run this command once the "
-            "limit resets. Progress made so far (commits, result files) is preserved."
-        )
-        sys.exit(console.USAGE_LIMIT_EXIT_CODE)
+    log = console.make_logger(agent_name)
+    ollama.check_providers(log)
+    limit_waits = 0
+    retried_crash = False
+    # Every stage resumes where it stopped, so running it again is how it continues.
+    while True:
+        try:
+            asyncio.run(run_coro(feature))
+            return
+        except console.SessionLimitError as e:
+            log(f"PAUSED — hit a Claude usage/session limit: {e}")
+            pipeline_status.step(pipeline_status.PAUSED)
+            now = datetime.now(UTC)
+            reset = console.limit_reset_time(str(e), now)
+            if reset is None or reset - now > _MAX_LIMIT_WAIT or limit_waits >= _MAX_LIMIT_WAITS:
+                log(
+                    "This is not a critic or code failure — re-run this command once the "
+                    "limit resets. Progress made so far (commits, result files) is preserved."
+                )
+                sys.exit(console.USAGE_LIMIT_EXIT_CODE)
+            limit_waits += 1
+            # Runs used to sit paused long after the limit reset (~17h across 10 pauses).
+            resume_at = reset + _LIMIT_RESET_MARGIN
+            log(f"Waiting until {resume_at:%H:%M} UTC, then resuming. Ctrl-C to stop instead.")
+            time.sleep((resume_at - now).total_seconds())
+        except (CLIConnectionError, ProcessError) as e:
+            if retried_crash:
+                raise
+            retried_crash = True
+            log(f"The Claude Code session crashed ({e}); running the stage again once.")
 
 
 def write_escalation(

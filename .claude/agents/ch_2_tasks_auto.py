@@ -44,11 +44,17 @@ from agent_common.driving_agent import (
     HUMAN_REVIEW_ATTESTATION_GUARDRAIL,
 )
 from agent_common.files import CONSTITUTION_PATH, read_file, require_spec_files
-from agent_common.preflight_checks import pending_human_approvals, task_format_violations
+from agent_common.preflight_checks import (
+    discard_accepted_format_findings,
+    pending_human_approvals,
+    task_format_violations,
+    task_tag_grammar,
+)
 from agent_common.resume_state import (
     apply_escalation_review,
     load_prior_violations,
     next_iteration,
+    read_result,
 )
 
 AGENT_NAME = "ch-2-tasks-auto"
@@ -88,7 +94,11 @@ def tasks_agent_definition(
     data_model_block = f"\n--- DATA MODEL ---\n{data_model}" if data_model else ""
     pairing_rule = (
         "- Every implementation task must have a paired test task (unit/component or e2e, "
-        "per the project's approved test stack in the constitution's Stack Constraints section)"
+        "per the project's approved test stack in the constitution's Stack Constraints section)\n"
+        "- One [TEST]/[IMPL] pair per deliverable, as the constitution's Task Atomicity section "
+        "defines it (e.g. one schema change, one API procedure, one UI component); a deliverable "
+        "spanning backend and frontend is two pairs. Never fold several procedures or components "
+        "into one pair"
         if test_stage_enabled
         else "- The test stage is disabled for this project (.specify/pipeline.json "
         "stages.test.enabled=false) — write plain [IMPL] tasks only. Do NOT create [TEST] "
@@ -119,12 +129,17 @@ Inputs already loaded for you:
 Key rules:
 - Use .specify/scripts/bash/setup-plan.sh --json to get FEATURE_SPEC, IMPL_PLAN, SPECS_DIR, BRANCH
 - Also read contracts/ and research.md from the spec directory if they exist
+- Find the existing tests this feature will break: for every behaviour the plan changes or
+  removes (UI copy, navigation, routes, enum or status values, API fields, defaults), grep the
+  test directories named in the constitution's "Test file location" bullets for assertions
+  that pin the old behaviour. For each affected test file, add a [TEST] task in the phase
+  that makes the change, before its [IMPL] task: "Update <file>: <which cases, and what they
+  must now assert>". The implement stage may not change a test case, so a test missed here
+  stops the pipeline at implementation
 - Organise tasks by phase: Setup → Foundational → one phase per user story (in spec priority order) → Polish
-- Every task must follow the checklist format: - [ ] T### [P?] [US#?] Description — file/path
-- Mark tasks [P] when they target different files with no dependencies
-- Tag [MANUAL] every task an agent cannot complete inside the repo — waiting for a human
-  approval, a live/cloud deploy, a real external account, a manual verification
-  checklist (see the template's Format section)
+- Every task must follow the checklist format: - [ ] T### [tags] Description — file/path
+- Tag tasks by this grammar:
+{task_tag_grammar(test_stage_enabled)}
 {pairing_rule}
 - Include a Checkpoint at the end of each phase with a concrete runnable verification command
 - Write tasks.md to the correct specs/$FEATURE/ path
@@ -133,6 +148,21 @@ Key rules:
 """,
         tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )
+
+
+def _earlier_findings(spec_dir: Path, before: int) -> list[dict]:
+    findings = []
+    for iteration in range(1, before):
+        try:
+            result = read_result(spec_dir, RESULT_PREFIX, iteration)
+        except (OSError, ValueError):
+            continue
+        findings += [
+            {"iteration": iteration, **{k: v.get(k) for k in ("rule", "location", "finding")}}
+            for v in result.get("violations", [])
+            if isinstance(v, dict) and v.get("severity") == "BLOCKING"
+        ]
+    return findings
 
 
 async def _run_format_gate(
@@ -163,10 +193,8 @@ async def _run_format_gate(
         )
         pipeline_status.step("fixing task format", attempt, max_attempts)
         user_prompt = (
-            f"Reformat specs/{feature}/tasks.md to comply with the machine-readable task "
-            f"format `- [ ] TXXX [TEST|IMPL] [PY] [USZ] description` (see .specify/templates/"
-            f"tasks-template.md), tagging [MANUAL] any task flagged as needing a human or an "
-            f"out-of-repo action. Fix ONLY the lines below — do not change task content, order, "
+            f"Reformat specs/{feature}/tasks.md to comply with the task format and tag rules "
+            f"(see .specify/templates/tasks-template.md). Fix ONLY the lines below — do not change task content, order, "
             f"or numbering beyond what's needed to fix the format:\n\n" + "\n".join(violations)
         )
         await local_agent_loop.run_agent(
@@ -265,6 +293,16 @@ async def run(feature: str):
             f"Violations to address: {json.dumps(pending_violations)} "
             f"Write updated tasks.md to specs/{feature}/tasks.md."
         )
+        earlier = _earlier_findings(spec_dir, pending_iter)
+        if earlier:
+            # The critic has reversed its own tag demands (049, 031); seeing them
+            # lets the agent hold to the grammar instead of undoing an earlier fix.
+            user_prompt += (
+                " Earlier iterations asked for the changes below, which are already applied. "
+                "Don't undo one unless a violation above explicitly requires it; where they "
+                "conflict, follow the tag grammar in your instructions. "
+                f"Earlier findings: {json.dumps(earlier)}"
+            )
         await local_agent_loop.run_agent(
             log,
             "tasks",
@@ -278,6 +316,9 @@ async def run(feature: str):
                 test_stage_enabled=test_stage_enabled,
             ),
             user_prompt,
+        )
+        await _run_format_gate(
+            feature, spec_dir, constitution, spec, plan, data_model, test_stage_enabled
         )
 
     async def on_pass(result: dict) -> None:
@@ -308,6 +349,9 @@ async def run(feature: str):
             "Returns structured JSON.",
             task=f"Validate tasks.md for feature {feature}.",
             violations_context="violations (already addressed by the tasks agent)",
+            discard_findings=lambda result: discard_accepted_format_findings(
+                result, read_file(spec_dir / "tasks.md")
+            ),
             prompt=lambda iteration, violations_block, output_instructions: (
                 build_tasks_critic_prompt(
                     constitution,
